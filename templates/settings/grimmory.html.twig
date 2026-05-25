@@ -1,0 +1,106 @@
+{% extends 'settings/_layout.html.twig' %}
+
+{% block settings_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Grimmory (Komga)</h2>
+        <p class="panel-sub">
+            Connect Spine Scout to your Grimmory / Booklore library via its Komga-compatible API
+            so it can list what you already own and surface new ingests on the Discover page.
+        </p>
+    </div>
+
+    {% if integration.id is not null %}
+        <div class="status-pill {{ integration.enabled ? 'status-pill-on' : 'status-pill-off' }}">
+            <span class="dot"></span>
+            {{ integration.enabled ? 'Enabled' : 'Disabled' }}
+            {% if integration.lastSyncAt %}
+                · Last sync {{ integration.lastSyncAt|date('Y-m-d H:i') }}
+            {% else %}
+                · No sync yet
+            {% endif %}
+            · {{ library_count }} book{{ library_count == 1 ? '' : 's' }} cached
+            {% if integration.lastError %}
+                · <span class="status-error">Last error: {{ integration.lastError }}</span>
+            {% endif %}
+        </div>
+
+        {% if integration.enabled %}
+            <form method="post" action="{{ path('settings_grimmory_sync') }}" class="inline-form">
+                <input type="hidden" name="_token" value="{{ csrf_token('grimmory_sync') }}">
+                <button type="submit" class="btn btn-secondary">Sync now</button>
+            </form>
+        {% endif %}
+    {% endif %}
+
+    {{ form_start(form, { attr: { class: 'settings-form', novalidate: 'novalidate' } }) }}
+        {{ form_errors(form) }}
+        <div class="field">
+            {{ form_label(form.baseUrl) }}
+            {{ form_widget(form.baseUrl) }}
+            {{ form_help(form.baseUrl) }}
+            {{ form_errors(form.baseUrl) }}
+        </div>
+
+        <div class="field-row">
+            <div class="field">
+                {{ form_label(form.username) }}
+                {{ form_widget(form.username) }}
+                {{ form_help(form.username) }}
+                {{ form_errors(form.username) }}
+            </div>
+            <div class="field">
+                {{ form_label(form.password) }}
+                {{ form_widget(form.password) }}
+                {{ form_errors(form.password) }}
+            </div>
+        </div>
+
+        <div class="field">
+            {{ form_label(form.syncIntervalMinutes) }}
+            {{ form_widget(form.syncIntervalMinutes) }}
+            {{ form_help(form.syncIntervalMinutes) }}
+            {{ form_errors(form.syncIntervalMinutes) }}
+        </div>
+
+        {% if form.selectedLibraries is defined %}
+            <div class="field">
+                {{ form_label(form.selectedLibraries) }}
+                <div class="checkbox-list">
+                    {{ form_widget(form.selectedLibraries) }}
+                </div>
+                {{ form_help(form.selectedLibraries) }}
+                {{ form_errors(form.selectedLibraries) }}
+            </div>
+        {% elseif integration.enabled %}
+            <p class="form-note">
+                Library list will appear here after the next sync. Hit <strong>Sync now</strong> above
+                to discover which libraries your Grimmory instance exposes.
+            </p>
+        {% endif %}
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save settings</button>
+        </div>
+    {{ form_end(form) }}
+
+    {% if recent_books|length > 0 %}
+        <div class="library-listing">
+            <h3 class="panel-subtitle">Recently seen ({{ library_count }} total)</h3>
+            <ul class="book-list">
+                {% for book in recent_books %}
+                    <li class="book-row">
+                        <div class="book-row-main">
+                            <span class="book-title">{{ book.title }}</span>
+                            {% if book.author %}<span class="book-author"> by {{ book.author }}</span>{% endif %}
+                        </div>
+                        {% if book.series %}
+                            <div class="book-row-meta">
+                                {{ book.series }}{% if book.seriesIndex %} #{{ book.seriesIndex }}{% endif %}
+                            </div>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+{% endblock %}

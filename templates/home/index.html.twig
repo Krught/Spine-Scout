@@ -1,0 +1,153 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Discover - Spine Scout{% endblock %}
+
+{% block body %}
+    <div data-controller="book-modal author-modal">
+        {% for section in sections %}
+            <section class="row">
+                <div class="row-header">
+                    <div>
+                        <h2 class="row-title">{{ section.title }}</h2>
+                        {% if section.subtitle is defined %}
+                            <p class="row-subtitle">{{ section.subtitle }}</p>
+                        {% endif %}
+                    </div>
+                    <a class="row-more" href="#">See all →</a>
+                </div>
+
+                {% if section.items is empty %}
+                    <p class="row-empty">{{ section.empty_message ?? "No books here yet. They will show up after the first Grimmory sync." }}</p>
+                {% elseif section.kind|default('') == 'genre' %}
+                <div class="carousel" data-controller="carousel">
+                    <button class="carousel-btn carousel-btn-left" aria-label="Scroll left" data-scroll="-1" data-carousel-target="left" data-action="click->carousel#scroll">‹</button>
+                    <div class="carousel-track genre-track" data-carousel-target="track">
+                        {% for genre in section.items %}
+                            <button type="button" class="genre-tile" data-genre-slug="{{ genre.slug }}" aria-label="Browse {{ genre.label }}" style="background: {{ genre.background }};">
+                                <span class="genre-tile-label">{{ genre.label }}</span>
+                            </button>
+                        {% endfor %}
+                    </div>
+                    <button class="carousel-btn carousel-btn-right" aria-label="Scroll right" data-scroll="1" data-carousel-target="right" data-action="click->carousel#scroll">›</button>
+                </div>
+                {% elseif section.kind|default('') == 'author' %}
+                <div class="carousel" data-controller="carousel">
+                    <button class="carousel-btn carousel-btn-left" aria-label="Scroll left" data-scroll="-1" data-carousel-target="left" data-action="click->carousel#scroll">‹</button>
+                    <div class="carousel-track" data-carousel-target="track">
+                        {% for author in section.items %}
+                            {% set author_clickable = author.slug is defined and author.slug %}
+                            <article class="card author-card{% if author_clickable %} card-clickable{% endif %}"
+                                     {% if author_clickable %}role="button" tabindex="0"
+                                     data-action="click->author-modal#open keydown.enter->author-modal#open keydown.space->author-modal#open"
+                                     data-author-modal-source-param="hardcover"
+                                     data-author-modal-slug-param="{{ author.slug }}"
+                                     data-author-modal-name-param="{{ author.name }}"
+                                     data-author-modal-image-param="{{ author.image_url ?? '' }}"
+                                     data-author-modal-external-url-param="{{ author.external_url ?? '' }}"{% endif %}>
+                                <div class="card-cover author-cover" style="background: {{ ['linear-gradient(135deg,#3a4a6b,#5c6f99)','linear-gradient(135deg,#7a3a5f,#a85b85)','linear-gradient(135deg,#2f5a4e,#508a76)','linear-gradient(135deg,#6b4a2a,#a3754a)','linear-gradient(135deg,#3d3d6b,#6a6ab0)','linear-gradient(135deg,#5a2a3d,#8a4a60)'][loop.index0 % 6] }};">
+                                    {% if author.image_url %}
+                                        <img class="card-cover-img" src="{{ author.image_url }}" alt="{{ author.name }}" loading="lazy">
+                                    {% endif %}
+                                    <div class="card-overlay author-overlay">
+                                        <div class="card-title" title="{{ author.name }}">{{ author.name }}</div>
+                                    </div>
+                                </div>
+                            </article>
+                        {% endfor %}
+                    </div>
+                    <button class="carousel-btn carousel-btn-right" aria-label="Scroll right" data-scroll="1" data-carousel-target="right" data-action="click->carousel#scroll">›</button>
+                </div>
+                {% else %}
+                <div class="carousel" data-controller="carousel">
+                    <button class="carousel-btn carousel-btn-left" aria-label="Scroll left" data-scroll="-1" data-carousel-target="left" data-action="click->carousel#scroll">‹</button>
+                    <div class="carousel-track" data-carousel-target="track">
+                        {% for item in section.items %}
+                            {% set meta_attrs = '' %}
+                            {% if item.meta_id is defined and item.meta_id %}
+                                {% set meta_attrs = 'data-book-modal-id-param="' ~ item.meta_id ~ '"' %}
+                            {% elseif item.meta_source is defined and item.meta_source and item.meta_external_id %}
+                                {% set meta_attrs = 'data-book-modal-source-param="' ~ item.meta_source ~ '" data-book-modal-external-id-param="' ~ item.meta_external_id ~ '"' %}
+                            {% endif %}
+                            {% set clickable = meta_attrs != '' %}
+                            <article class="card{% if clickable %} card-clickable{% endif %}"
+                                     {% if clickable %}role="button" tabindex="0" data-action="click->book-modal#open keydown.enter->book-modal#open keydown.space->book-modal#open"
+                                     data-book-modal-title-param="{{ item.title }}"
+                                     data-book-modal-author-param="{{ item.author ?? '' }}"
+                                     data-book-modal-cover-param="{{ item.cover_url ?? '' }}"
+                                     data-book-modal-external-url-param="{{ item.external_url ?? '' }}"
+                                     data-book-modal-downloaded-param="{{ (item.downloaded ?? false) ? '1' : '0' }}"
+                                     {{ meta_attrs|raw }}{% endif %}>
+                                <div class="card-cover" style="background: {{ ['linear-gradient(135deg,#3a4a6b,#5c6f99)','linear-gradient(135deg,#7a3a5f,#a85b85)','linear-gradient(135deg,#2f5a4e,#508a76)','linear-gradient(135deg,#6b4a2a,#a3754a)','linear-gradient(135deg,#3d3d6b,#6a6ab0)','linear-gradient(135deg,#5a2a3d,#8a4a60)'][loop.index0 % 6] }};">
+                                    {% if item.cover_url is defined and item.cover_url %}
+                                        <img class="card-cover-img" src="{{ item.cover_url }}" alt="{{ item.title }}" loading="lazy">
+                                    {% else %}
+                                        <span class="card-cover-title">{{ item.title|slice(0, 24) }}</span>
+                                    {% endif %}
+                                    {% if item.downloaded ?? false %}
+                                        <span class="card-check" title="In your library" aria-label="In your library">
+                                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+                                                <path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
+                                        </span>
+                                    {% elseif item.badge is defined and item.badge is not empty %}
+                                        <span class="card-badge card-badge-{{ item.badge|lower }}">{{ item.badge }}</span>
+                                    {% endif %}
+                                    <div class="card-overlay">
+                                        <div class="card-title" title="{{ item.title }}">{{ item.title }}</div>
+                                        {% if item.author %}<div class="card-meta">{{ item.author }}</div>{% endif %}
+                                        {% if item.requester is defined %}
+                                            <div class="card-requester">Requested by <strong>{{ item.requester }}</strong></div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </article>
+                        {% endfor %}
+                    </div>
+                    <button class="carousel-btn carousel-btn-right" aria-label="Scroll right" data-scroll="1" data-carousel-target="right" data-action="click->carousel#scroll">›</button>
+                </div>
+                {% endif %}
+            </section>
+        {% endfor %}
+
+        <div class="book-modal author-modal" data-author-modal-target="modal" data-action="click->author-modal#backdropClick keydown.esc@window->author-modal#close" hidden>
+            <div class="book-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="author-modal-name">
+                <button type="button" class="book-modal-close" aria-label="Close" data-action="click->author-modal#close">×</button>
+                <div class="book-modal-body">
+                    <div class="book-modal-cover-wrap">
+                        <div class="book-modal-cover author-modal-cover" data-author-modal-target="cover"></div>
+                        <button type="button" class="book-modal-search" data-action="click->author-modal#searchBooks">Search books by this author</button>
+                    </div>
+                    <div class="book-modal-content">
+                        <h2 class="book-modal-title" id="author-modal-name" data-author-modal-target="name"></h2>
+                        <div class="book-modal-author" data-author-modal-target="meta"></div>
+                        <div class="book-modal-status" data-author-modal-target="status">Loading…</div>
+                        <dl class="book-modal-facts" data-author-modal-target="facts"></dl>
+                        <div class="book-modal-description" data-author-modal-target="bio"></div>
+                    </div>
+                </div>
+                <div class="author-modal-works" data-author-modal-target="works"></div>
+            </div>
+        </div>
+
+        <div class="book-modal" data-book-modal-target="modal" data-action="click->book-modal#backdropClick keydown.esc@window->book-modal#close" hidden>
+            <div class="book-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="book-modal-title">
+                <button type="button" class="book-modal-close" aria-label="Close" data-action="click->book-modal#close">×</button>
+                <div class="book-modal-body">
+                    <div class="book-modal-cover-wrap">
+                        <div class="book-modal-cover" data-book-modal-target="cover"></div>
+                        <button type="button" class="book-modal-action" data-book-modal-target="action" hidden></button>
+                        <button type="button" class="book-modal-search" data-book-modal-target="search" hidden>Interactive Search</button>
+                    </div>
+                    <div class="book-modal-content">
+                        <h2 class="book-modal-title" id="book-modal-title" data-book-modal-target="title"></h2>
+                        <div class="book-modal-author" data-book-modal-target="author"></div>
+                        <div class="book-modal-status" data-book-modal-target="status">Loading…</div>
+                        <dl class="book-modal-facts" data-book-modal-target="facts"></dl>
+                        <div class="book-modal-genres" data-book-modal-target="genres"></div>
+                        <div class="book-modal-description" data-book-modal-target="description"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

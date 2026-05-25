@@ -1,0 +1,148 @@
+{% extends 'settings/_layout.html.twig' %}
+
+{% block settings_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Metadata sources</h2>
+        <p class="panel-sub">
+            External catalogs Spine Scout pulls from to populate the Discover page (Trending Books, etc.).
+            Each source has its own enable toggle and refresh cadence.
+        </p>
+    </div>
+
+    {# ─── Hardcover ───────────────────────────────────────────────── #}
+    <section class="metadata-source">
+        <header class="metadata-source-header">
+            <h3 class="panel-subtitle">Hardcover</h3>
+            <p class="panel-sub">
+                Pulls Trending Books via Hardcover's GraphQL API.
+                Requires an API token from <a href="https://hardcover.app/account/api" target="_blank" rel="noopener">your Hardcover account</a>.
+            </p>
+        </header>
+
+        {% if hardcover.id is not null %}
+            {% set trendingCount = (hardcover.cacheData.trending.books ?? [])|length %}
+            <div class="status-pill {{ hardcover.enabled and hardcover.hasCredentials ? 'status-pill-on' : 'status-pill-off' }}">
+                <span class="dot"></span>
+                {{ hardcover.enabled and hardcover.hasCredentials ? 'Enabled' : 'Disabled' }}
+                {% if hardcover.lastSyncAt %}
+                    · Last refresh {{ hardcover.lastSyncAt|date('Y-m-d H:i') }}
+                {% else %}
+                    · No refresh yet
+                {% endif %}
+                · {{ trendingCount }} trending cached
+                {% if hardcover.lastError %}
+                    · <span class="status-error">Last error: {{ hardcover.lastError }}</span>
+                {% endif %}
+            </div>
+
+            {% if hardcover.enabled and hardcover.hasCredentials %}
+                <form method="post" action="{{ path('settings_metadata_hardcover_refresh') }}" class="inline-form">
+                    <input type="hidden" name="_token" value="{{ csrf_token('metadata_hardcover_refresh') }}">
+                    <button type="submit" class="btn btn-secondary">Refresh now</button>
+                </form>
+            {% endif %}
+        {% endif %}
+
+        {{ form_start(hardcover_form, { attr: { class: 'settings-form', novalidate: 'novalidate' } }) }}
+            {{ form_errors(hardcover_form) }}
+            <div class="field field-toggle">
+                {{ form_widget(hardcover_form.enabled) }}
+                {{ form_label(hardcover_form.enabled) }}
+                {{ form_help(hardcover_form.enabled) }}
+            </div>
+            <div class="field">
+                {{ form_label(hardcover_form.apiToken) }}
+                {{ form_widget(hardcover_form.apiToken) }}
+                {{ form_help(hardcover_form.apiToken) }}
+                {{ form_errors(hardcover_form.apiToken) }}
+            </div>
+            <div class="field">
+                {{ form_label(hardcover_form.syncIntervalMinutes) }}
+                {{ form_widget(hardcover_form.syncIntervalMinutes) }}
+                {{ form_help(hardcover_form.syncIntervalMinutes) }}
+                {{ form_errors(hardcover_form.syncIntervalMinutes) }}
+            </div>
+            <fieldset class="field-group">
+                <legend>Edition matching</legend>
+                <p class="panel-sub">
+                    Hardcover knows of many editions per book (translations, formats, reprints). When matching a
+                    trending book against your library, we prefer editions matching these settings, so a book you
+                    own as a US hardcover doesn't go unmatched because Hardcover returned the German paperback first.
+                </p>
+                <div class="field">
+                    {{ form_label(hardcover_form.preferredLanguages) }}
+                    {{ form_widget(hardcover_form.preferredLanguages) }}
+                    {{ form_help(hardcover_form.preferredLanguages) }}
+                    {{ form_errors(hardcover_form.preferredLanguages) }}
+                </div>
+                <div class="field">
+                    {{ form_label(hardcover_form.preferredFormats) }}
+                    {{ form_widget(hardcover_form.preferredFormats) }}
+                    {{ form_help(hardcover_form.preferredFormats) }}
+                    {{ form_errors(hardcover_form.preferredFormats) }}
+                </div>
+                <div class="field">
+                    {{ form_label(hardcover_form.preferredCountries) }}
+                    {{ form_widget(hardcover_form.preferredCountries) }}
+                    {{ form_help(hardcover_form.preferredCountries) }}
+                    {{ form_errors(hardcover_form.preferredCountries) }}
+                </div>
+            </fieldset>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save Hardcover</button>
+            </div>
+        {{ form_end(hardcover_form) }}
+    </section>
+
+    {# ─── Open Library ────────────────────────────────────────────── #}
+    <section class="metadata-source">
+        <header class="metadata-source-header">
+            <h3 class="panel-subtitle">Open Library</h3>
+            <p class="panel-sub">
+                Pulls trending works from openlibrary.org. No account or API key required.
+            </p>
+        </header>
+
+        {% if openlibrary.id is not null %}
+            {% set olTrendingCount = (openlibrary.cacheData.trending.books ?? [])|length %}
+            <div class="status-pill {{ openlibrary.enabled ? 'status-pill-on' : 'status-pill-off' }}">
+                <span class="dot"></span>
+                {{ openlibrary.enabled ? 'Enabled' : 'Disabled' }}
+                {% if openlibrary.lastSyncAt %}
+                    · Last refresh {{ openlibrary.lastSyncAt|date('Y-m-d H:i') }}
+                {% else %}
+                    · No refresh yet
+                {% endif %}
+                · {{ olTrendingCount }} trending cached
+                {% if openlibrary.lastError %}
+                    · <span class="status-error">Last error: {{ openlibrary.lastError }}</span>
+                {% endif %}
+            </div>
+
+            {% if openlibrary.enabled %}
+                <form method="post" action="{{ path('settings_metadata_openlibrary_refresh') }}" class="inline-form">
+                    <input type="hidden" name="_token" value="{{ csrf_token('metadata_openlibrary_refresh') }}">
+                    <button type="submit" class="btn btn-secondary">Refresh now</button>
+                </form>
+            {% endif %}
+        {% endif %}
+
+        {{ form_start(openlibrary_form, { attr: { class: 'settings-form', novalidate: 'novalidate' } }) }}
+            {{ form_errors(openlibrary_form) }}
+            <div class="field field-toggle">
+                {{ form_widget(openlibrary_form.enabled) }}
+                {{ form_label(openlibrary_form.enabled) }}
+                {{ form_help(openlibrary_form.enabled) }}
+            </div>
+            <div class="field">
+                {{ form_label(openlibrary_form.syncIntervalMinutes) }}
+                {{ form_widget(openlibrary_form.syncIntervalMinutes) }}
+                {{ form_help(openlibrary_form.syncIntervalMinutes) }}
+                {{ form_errors(openlibrary_form.syncIntervalMinutes) }}
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save Open Library</button>
+            </div>
+        {{ form_end(openlibrary_form) }}
+    </section>
+{% endblock %}

@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# This file is the entry point to configure your own services.
+# Files in the packages/ subdirectory configure your dependencies.
+# See also https://symfony.com/doc/current/service_container/import.html
+
+# Put parameters here that don't need to change on each machine where the app is deployed
+# https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
+parameters:
+    # Installed app version. Bump on release. The "latest deployed" value below
+    # is what the sidebar status badge compares against; for now both are set
+    # by hand, so the badge always reports up-to-date.
+    app.version: '0.0.1'
+    app.latest_version: '0.0.1'
+
+services:
+    # default configuration for services in *this* file
+    _defaults:
+        autowire: true      # Automatically injects dependencies in your services.
+        autoconfigure: true # Automatically registers your services as commands, event subscribers, etc.
+
+    # makes classes in src/ available to be used as services
+    # this creates a service per class whose id is the fully-qualified class name
+    App\:
+        resource: '../src/'
+
+    App\Service\CoverCache:
+        arguments:
+            # In-container path; the host location is configured via
+            # SPINESCOUT_COVER_CACHE_DIR in .env and bind-mounted here by compose.
+            $cacheDir: '%kernel.project_dir%/book-covers'
+
+    # Reuse Doctrine's PDO connection so sessions share the app DB pool instead
+    # of opening a second connection. LOCK_TRANSACTIONAL (1) prevents lost
+    # writes when the same session is touched by concurrent requests.
+    session.pdo_handler.pdo:
+        class: PDO
+        factory: ['@doctrine.dbal.default_connection', 'getNativeConnection']
+
+    Symfony\Component\HttpFoundation\Session\Storage\Handler\PdoSessionHandler:
+        arguments:
+            - '@session.pdo_handler.pdo'
+            - { lock_mode: 1 }
+
+    App\MessageHandler\PurgeExpiredSessionsHandler:
+        arguments:
+            $maxLifetime: 2592000
+
+    # add more service definitions when explicit configuration is needed
+    # please note that last definitions always *replace* previous ones

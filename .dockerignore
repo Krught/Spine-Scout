@@ -1,0 +1,27 @@
+.git
+.gitignore
+.idea
+.vscode
+.env.local
+.env.*.local
+
+var/cache/*
+var/log/*
+var/share/*
+!var/cache/.gitkeep
+!var/log/.gitkeep
+
+# Cover cache is bind-mounted at runtime; never bake it into the image.
+book-covers
+
+# Postgres bind-mount; root-owned (uid 70, mode 0700) so the build can't read it anyway.
+application-data
+
+vendor
+node_modules
+
+tests
+phpunit.dist.xml
+project_documentation
+
+docker/**/*.md

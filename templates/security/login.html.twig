@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Sign in - Spine Scout</title>
+        <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 128 128%22><rect width=%22128%22 height=%22128%22 rx=%2224%22 fill=%22%23f0b429%22/><text x=%2250%25%22 y=%2274%22 font-size=%2280%22 font-family=%22system-ui,sans-serif%22 font-weight=%22700%22 text-anchor=%22middle%22 fill=%22%231a1a1a%22>S</text></svg>">
+        {{ importmap('app') }}
+    </head>
+    <body class="auth-body">
+        <main class="auth-card">
+            <h1 class="auth-title">Sign in to Spine Scout</h1>
+
+            {% if error %}
+                <p class="auth-error">{{ error.messageKey|trans(error.messageData, 'security') }}</p>
+            {% endif %}
+
+            <form method="post" action="{{ path('app_login') }}" class="auth-form" novalidate>
+                <label>
+                    Username
+                    <input type="text" name="_username" value="{{ last_username }}" required autofocus autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+                </label>
+                <label>
+                    Password
+                    <input type="password" name="_password" required autocomplete="current-password">
+                </label>
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('authenticate') }}">
+                <button type="submit" class="auth-submit">Sign in</button>
+            </form>
+        </main>
+    </body>
+</html>

@@ -1,0 +1,38 @@
+{% extends 'setup/_layout.html.twig' %}
+
+{% block title %}Choose a username - Spine Scout{% endblock %}
+
+{% block setup_step %}
+    <h1 class="setup-title">Welcome to Spine Scout</h1>
+    <p class="setup-lede">
+        No accounts exist yet. The first user you create will become the
+        administrator of this Spine Scout instance.
+    </p>
+
+    <form method="post" action="{{ path('app_setup') }}" class="setup-form" novalidate autocomplete="off">
+        <label class="setup-field">
+            <span class="setup-label">Username</span>
+            <input
+                type="text"
+                name="username"
+                value="{{ username }}"
+                required
+                autofocus
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                minlength="3"
+                maxlength="60"
+                pattern="[A-Za-z0-9][A-Za-z0-9._\-]{1,58}[A-Za-z0-9]"
+                placeholder="admin"
+            >
+            <span class="setup-help">3–60 characters. Letters, digits, dot, dash, underscore.</span>
+        </label>
+
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token(csrf_token) }}">
+
+        <div class="setup-actions">
+            <button type="submit" class="setup-submit">Next</button>
+        </div>
+    </form>
+{% endblock %}
