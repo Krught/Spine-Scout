@@ -1,0 +1,114 @@
+.browse-section { margin-bottom: 2rem; }
+
+.browse-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    padding: 0 0.25rem;
+}
+
+.browse-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.browse-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--fg-dim);
+    font-size: 0.85rem;
+}
+.browse-control-label {
+    white-space: nowrap;
+}
+
+.browse-select,
+.browse-dir,
+.browse-filters {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.45rem 0.7rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.browse-select:hover,
+.browse-dir:hover,
+.browse-filters:hover {
+    background: var(--bg-elev-2);
+    border-color: var(--fg-dim);
+}
+.browse-select:focus,
+.browse-dir:focus-visible,
+.browse-filters:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.browse-dir,
+.browse-filters {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    line-height: 1;
+}
+.browse-dir svg {
+    transition: transform 0.2s ease;
+}
+.browse-dir-asc svg {
+    transform: rotate(180deg);
+}
+
+.book-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+    gap: 1.1rem 0.9rem;
+    padding: 0.25rem;
+}
+.book-grid .card {
+    flex: initial;
+    scroll-snap-align: none;
+}
+
+.browse-sentinel {
+    height: 1px;
+    width: 100%;
+}
+
+.browse-status {
+    color: var(--fg-dim);
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 1rem 0 0.5rem;
+    min-height: 1.5rem;
+}
+
+.row-title-icon {
+    vertical-align: -3px;
+    margin-right: 0.4rem;
+    color: var(--fg-dim);
+}
+
+.browse-spinner {
+    display: inline-block;
+    width: 0.9rem;
+    height: 0.9rem;
+    margin-right: 0.4rem;
+    vertical-align: -2px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: browse-spin 0.8s linear infinite;
+}
+
+@keyframes browse-spin {
+    to { transform: rotate(360deg); }
+}

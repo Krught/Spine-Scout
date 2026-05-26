@@ -1,0 +1,71 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Browse - Spine Scout{% endblock %}
+
+{% block body %}
+    <div data-controller="book-modal browse"
+         data-browse-items-url-value="{{ path('browse_items') }}"
+         data-browse-search-url-value="{{ path('browse_search') }}">
+        <section class="browse-section">
+            <div class="browse-header">
+                <h2 class="row-title" data-browse-target="rowTitle">Trending</h2>
+                <div class="browse-controls">
+                    <label class="browse-control">
+                        <span class="browse-control-label">Sort by</span>
+                        <select class="browse-select" data-browse-target="sort" data-action="change->browse#refresh">
+                            <option value="trending" selected>Trending</option>
+                            <option value="title">Title</option>
+                            <option value="released">Release Date</option>
+                            <option value="author">Author</option>
+                        </select>
+                    </label>
+                    <button type="button"
+                            class="browse-dir browse-dir-asc"
+                            data-browse-target="dir"
+                            data-direction="asc"
+                            data-action="click->browse#toggleDir"
+                            aria-label="Toggle sort direction"
+                            title="Ascending">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-browse-target="dirIcon">
+                            <path d="M12 5v14"/>
+                            <path d="M19 12l-7 7-7-7"/>
+                        </svg>
+                        <span class="browse-dir-text" data-browse-target="dirText">Asc</span>
+                    </button>
+                    <button type="button" class="browse-filters" data-action="click->browse#openFilters">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M3 5h18"/>
+                            <path d="M6 12h12"/>
+                            <path d="M10 19h4"/>
+                        </svg>
+                        Filters
+                    </button>
+                </div>
+            </div>
+            <div class="book-grid" data-browse-target="grid"></div>
+            <div class="browse-sentinel" data-browse-target="sentinel" aria-hidden="true"></div>
+            <p class="browse-status" data-browse-target="status"></p>
+        </section>
+
+        <div class="book-modal" data-book-modal-target="modal" data-action="click->book-modal#backdropClick keydown.esc@window->book-modal#close" hidden>
+            <div class="book-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="book-modal-title">
+                <button type="button" class="book-modal-close" aria-label="Close" data-action="click->book-modal#close">×</button>
+                <div class="book-modal-body">
+                    <div class="book-modal-cover-wrap">
+                        <div class="book-modal-cover" data-book-modal-target="cover"></div>
+                        <button type="button" class="book-modal-action" data-book-modal-target="action" hidden></button>
+                        <button type="button" class="book-modal-search" data-book-modal-target="search" hidden>Interactive Search</button>
+                    </div>
+                    <div class="book-modal-content">
+                        <h2 class="book-modal-title" id="book-modal-title" data-book-modal-target="title"></h2>
+                        <div class="book-modal-author" data-book-modal-target="author"></div>
+                        <div class="book-modal-status" data-book-modal-target="status">Loading…</div>
+                        <dl class="book-modal-facts" data-book-modal-target="facts"></dl>
+                        <div class="book-modal-genres" data-book-modal-target="genres"></div>
+                        <div class="book-modal-description" data-book-modal-target="description"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

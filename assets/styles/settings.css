@@ -1,0 +1,102 @@
+.settings { max-width: 56rem; }
+
+.settings-header { margin-bottom: 1.5rem; }
+.settings-header h1 {
+    margin: 0 0 0.25rem;
+    font-size: 1.75rem;
+    letter-spacing: -0.01em;
+}
+.settings-header p {
+    margin: 0;
+    color: var(--fg-muted);
+}
+
+.settings-tabs {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.5rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.settings-tabs::-webkit-scrollbar { display: none; }
+
+.settings-tab {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.7rem 1rem;
+    color: var(--fg-muted);
+    font-size: 0.92rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    white-space: nowrap;
+}
+.settings-tab:hover { color: var(--fg); }
+.settings-tab.active {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+}
+.settings-tab-icon { font-size: 1rem; }
+
+.settings-panel {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.75rem;
+}
+
+.panel-header { margin-bottom: 1.5rem; }
+.panel-title {
+    margin: 0 0 0.4rem;
+    font-size: 1.2rem;
+}
+.panel-sub {
+    margin: 0;
+    color: var(--fg-muted);
+    max-width: 44rem;
+}
+.panel-empty {
+    color: var(--fg-muted);
+    margin: 0;
+}
+
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.8rem;
+    border-radius: 20px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    margin-bottom: 1.5rem;
+}
+.status-pill .dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--fg-dim);
+}
+.status-pill-on .dot  { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
+.status-pill-off .dot { background: #ef4444; }
+.status-error { color: #ef4444; }
+
+.flash {
+    padding: 0.7rem 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    border: 1px solid transparent;
+}
+.flash-success {
+    background: rgba(34, 197, 94, 0.1);
+    border-color: rgba(34, 197, 94, 0.3);
+    color: #86efac;
+}
+.flash-error {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: #fca5a5;
+}

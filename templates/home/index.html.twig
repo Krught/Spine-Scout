@@ -9,9 +9,6 @@
                 <div class="row-header">
                     <div>
                         <h2 class="row-title">{{ section.title }}</h2>
-                        {% if section.subtitle is defined %}
-                            <p class="row-subtitle">{{ section.subtitle }}</p>
-                        {% endif %}
                     </div>
                     <a class="row-more" href="#">See all →</a>
                 </div>
@@ -23,7 +20,13 @@
                     <button class="carousel-btn carousel-btn-left" aria-label="Scroll left" data-scroll="-1" data-carousel-target="left" data-action="click->carousel#scroll">‹</button>
                     <div class="carousel-track genre-track" data-carousel-target="track">
                         {% for genre in section.items %}
-                            <button type="button" class="genre-tile" data-genre-slug="{{ genre.slug }}" aria-label="Browse {{ genre.label }}" style="background: {{ genre.background }};">
+                            <button type="button" class="genre-tile"
+                                    data-genre-slug="{{ genre.slug }}"
+                                    data-action="click->book-modal#searchFor"
+                                    data-search-term="{{ genre.label }}"
+                                    data-search-type="genre"
+                                    aria-label="Browse {{ genre.label }}"
+                                    style="background: {{ genre.background }};">
                                 <span class="genre-tile-label">{{ genre.label }}</span>
                             </button>
                         {% endfor %}

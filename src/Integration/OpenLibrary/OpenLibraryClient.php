@@ -13,6 +13,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 final class OpenLibraryClient
 {
     private const TRENDING_URL = 'https://openlibrary.org/trending/daily.json';
+    private const SEARCH_URL   = 'https://openlibrary.org/search.json';
     private const COVERS_BASE  = 'https://covers.openlibrary.org/b/id/';
     private const WORKS_BASE   = 'https://openlibrary.org';
     private const USER_AGENT   = 'SpineScout/1.0 (+https://spinescout.local)';
@@ -56,6 +57,82 @@ final class OpenLibraryClient
 
         $out = [];
         foreach ($works as $row) {
+            if (!is_array($row) || empty($row['title'])) {
+                continue;
+            }
+            $authors = is_array($row['author_name'] ?? null) ? $row['author_name'] : [];
+            $coverId = $row['cover_i'] ?? null;
+            $workKey = isset($row['key']) ? (string) $row['key'] : null;
+
+            $out[] = new TrendingBook(
+                title: (string) $row['title'],
+                author: $authors === [] ? null : implode(', ', array_slice($authors, 0, 3)),
+                coverUrl: is_int($coverId) || (is_string($coverId) && ctype_digit($coverId))
+                    ? self::COVERS_BASE . $coverId . '-M.jpg'
+                    : null,
+                externalUrl: $workKey !== null ? self::WORKS_BASE . $workKey : null,
+                isbns: $this->extractIsbns($row),
+            );
+        }
+        return $out;
+    }
+
+    /**
+     * @return list<TrendingBook>
+     *
+     * @throws OpenLibraryException
+     */
+    public function searchBooks(string $query, int $limit = 50, int $page = 1, string $type = 'title'): array
+    {
+        $query = trim($query);
+        if ($query === '') {
+            return [];
+        }
+        // OpenLibrary's search.json accepts field-prefixed Lucene-style queries:
+        // `title:`, `author:`, `subject:`. `series:` and `publisher:` are tolerated
+        // (matched against indexed editions); unknown fields degrade to full-text.
+        $fieldMap = [
+            'title' => 'title',
+            'author' => 'author',
+            'genre' => 'subject',
+            'series' => 'series',
+            'publisher' => 'publisher',
+        ];
+        $field = $fieldMap[$type] ?? 'title';
+        $needsQuotes = preg_match('/\s/', $query) === 1;
+        $q = $field . ':' . ($needsQuotes ? '"' . str_replace('"', '', $query) . '"' : $query);
+        try {
+            $response = $this->httpClient->request('GET', self::SEARCH_URL, [
+                'timeout' => 30,
+                'query' => [
+                    'q' => $q,
+                    'limit' => max(1, min(100, $limit)),
+                    'page' => max(1, $page),
+                    'fields' => 'key,title,author_name,cover_i,isbn',
+                ],
+                'headers' => [
+                    'Accept' => 'application/json',
+                    'User-Agent' => self::USER_AGENT,
+                ],
+            ]);
+            $status = $response->getStatusCode();
+            if ($status >= 400) {
+                throw new OpenLibraryException(sprintf('Open Library returned HTTP %d.', $status));
+            }
+            $body = $response->toArray(false);
+        } catch (TransportException $e) {
+            throw new OpenLibraryException('Could not reach Open Library: ' . $e->getMessage(), previous: $e);
+        } catch (HttpExceptionInterface $e) {
+            throw new OpenLibraryException('Could not parse Open Library response: ' . $e->getMessage(), previous: $e);
+        }
+
+        $docs = $body['docs'] ?? null;
+        if (!is_array($docs)) {
+            throw new OpenLibraryException('Unexpected search payload: missing `docs`.');
+        }
+
+        $out = [];
+        foreach ($docs as $row) {
             if (!is_array($row) || empty($row['title'])) {
                 continue;
             }

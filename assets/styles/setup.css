@@ -1,0 +1,157 @@
+.setup-body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+        radial-gradient(1100px 600px at 50% -10%, rgba(240, 180, 41, 0.08), transparent 70%),
+        var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 2rem 1rem;
+}
+.setup-stage {
+    width: 100%;
+    max-width: 34rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.75rem;
+}
+.setup-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 1.25rem;
+    letter-spacing: 0.02em;
+}
+.setup-brand-mark { font-size: 1.6rem; }
+.setup-brand-name { font-weight: 600; color: var(--fg); }
+
+.setup-card {
+    width: 100%;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 2.25rem 2.25rem 2rem;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.setup-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.78rem;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.setup-progress-text { margin-left: 0.25rem; }
+.setup-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: background 120ms ease;
+}
+.setup-dot-active { background: var(--accent); }
+.setup-dot-done   { background: var(--fg-muted); }
+
+.setup-title {
+    margin: 0 0 0.5rem;
+    font-size: 1.55rem;
+    line-height: 1.2;
+    color: var(--fg);
+}
+.setup-lede {
+    margin: 0 0 1.5rem;
+    color: var(--fg-muted);
+    font-size: 0.95rem;
+    line-height: 1.55;
+}
+.setup-username {
+    font-weight: 600;
+    color: var(--accent);
+}
+.setup-back-link {
+    color: var(--fg-dim);
+    text-decoration: underline;
+    font-size: 0.85rem;
+    margin-left: 0.35rem;
+}
+.setup-back-link:hover { color: var(--fg-muted); }
+
+.setup-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+}
+.setup-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+.setup-label {
+    font-size: 0.82rem;
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+}
+.setup-form input[type="text"],
+.setup-form input[type="password"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.7rem 0.85rem;
+    color: var(--fg);
+    font-size: 1rem;
+    font-family: inherit;
+    width: 100%;
+    box-sizing: border-box;
+}
+.setup-form input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(240, 180, 41, 0.18);
+}
+.setup-help {
+    font-size: 0.78rem;
+    color: var(--fg-dim);
+}
+.setup-error {
+    margin: 0 0 1.25rem;
+    padding: 0.7rem 0.9rem;
+    background: rgba(220, 60, 60, 0.12);
+    border: 1px solid rgba(220, 60, 60, 0.5);
+    color: #f4b5b5;
+    border-radius: 8px;
+    font-size: 0.9rem;
+}
+
+.setup-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.75rem;
+}
+.setup-submit {
+    margin-left: auto;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border: 0;
+    border-radius: 8px;
+    padding: 0.75rem 1.4rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+}
+.setup-submit:hover { filter: brightness(1.08); }
+.setup-back {
+    color: var(--fg-muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+}
+.setup-back:hover { color: var(--fg); }

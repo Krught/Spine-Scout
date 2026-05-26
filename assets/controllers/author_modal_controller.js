@@ -89,14 +89,12 @@ export default class extends Controller {
         }
     }
 
-    // Placeholder: no search endpoint yet — populate topbar search and focus.
     searchBooks() {
-        const input = document.querySelector('.topbar .search-input');
-        if (!input) return;
-        input.value = this.currentName || '';
-        this.close();
-        input.focus();
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+        const name = this.currentName || '';
+        if (!name) return;
+        try { window.localStorage.setItem('spinescout.searchType', 'author'); } catch (_) { /* ignore */ }
+        const params = new URLSearchParams({ q: name, type: 'author' });
+        window.location.href = `/browse?${params.toString()}`;
     }
 
     render(author) {

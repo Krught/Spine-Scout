@@ -68,22 +68,15 @@ final class HomeController extends AbstractController
 
         return $this->render('home/index.html.twig', [
             'sections' => [
-                ['title' => 'Recently Added',  'subtitle' => 'New arrivals in your library',  'items' => $recentlyAdded],
-                ['title' => 'Trending',        'subtitle' => $trendingSubtitle,                'items' => $trendingItems,
+                ['title' => 'Recently Added', 'items' => $recentlyAdded],
+                ['title' => 'Trending', 'items' => $trendingItems,
                  'empty_message' => $trendingEmpty],
-                ['title' => 'New Releases',    'subtitle' => 'Out in the last few months',     'items' => $newReleases,
-                 'empty_message' => $hardcoverEmpty],
-                ['title' => 'Upcoming',        'subtitle' => 'Releases on the horizon',        'items' => $upcoming,
-                 'empty_message' => $hardcoverEmpty],
-                ['title' => 'Browse by Genre', 'subtitle' => 'Jump into a category',           'items' => $genres,
-                 'kind' => 'genre'],
-                ['title' => 'Staff Picks',     'subtitle' => 'Highly rated by readers',        'items' => $staffPicks,
-                 'empty_message' => $hardcoverEmpty],
-                ['title' => 'Popular Authors', 'subtitle' => 'Most-followed on Hardcover',     'items' => $authors,
-                 'kind' => 'author', 'empty_message' => $hardcoverEmpty],
-                ['title' => 'Recent Requests', 'subtitle' => 'What your users are asking for', 'items' => [],
-                 'kind' => 'request',
-                 'empty_message' => 'Book requests will appear here once the request flow is available.'],
+                ['title' => 'New Releases', 'items' => $newReleases, 'empty_message' => $hardcoverEmpty],
+                ['title' => 'Upcoming', 'items' => $upcoming, 'empty_message' => $hardcoverEmpty],
+                ['title' => 'Browse by Genre', 'items' => $genres, 'kind' => 'genre'],
+                ['title' => 'Staff Picks', 'items' => $staffPicks, 'empty_message' => $hardcoverEmpty],
+                ['title' => 'Popular Authors', 'items' => $authors, 'kind' => 'author', 'empty_message' => $hardcoverEmpty],
+                ['title' => 'Recent Requests', 'items' => [], 'kind' => 'request', 'empty_message' => 'Book requests will appear here once the request flow is available.'],
             ],
         ]);
     }

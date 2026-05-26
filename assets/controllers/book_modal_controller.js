@@ -92,8 +92,26 @@ export default class extends Controller {
             return;
         }
         this.authorTarget.innerHTML = names
-            .map(n => `<span class="book-modal-link" role="link" tabindex="0">${escapeHtml(n)}</span>`)
+            .map(n => `<span class="book-modal-link" role="link" tabindex="0" data-action="click->book-modal#searchFor keydown.enter->book-modal#searchFor keydown.space->book-modal#searchFor" data-search-term="${escapeAttr(n)}" data-search-type="author">${escapeHtml(n)}</span>`)
             .join(', ');
+    }
+
+    searchFor(event) {
+        const el = event.currentTarget;
+        const term = (el && el.dataset && el.dataset.searchTerm) ? el.dataset.searchTerm.trim() : '';
+        if (!term) return;
+        if (event && event.preventDefault) event.preventDefault();
+        const validTypes = ['title', 'author', 'genre', 'series', 'publisher'];
+        const rawType = el.dataset.searchType || 'title';
+        const type = validTypes.includes(rawType) ? rawType : 'title';
+        try {
+            const stored = type;
+            if (stored !== 'title') window.localStorage.setItem('spinescout.searchType', stored);
+            else window.localStorage.removeItem('spinescout.searchType');
+        } catch (_) { /* ignore */ }
+        const params = new URLSearchParams({ q: term });
+        if (type !== 'title') params.set('type', type);
+        window.location.href = `/browse?${params.toString()}`;
     }
 
     close() {
@@ -136,10 +154,10 @@ export default class extends Controller {
             const badgeHtml = badge !== ''
                 ? ` <span class="book-modal-series-badge">${escapeHtml(badge)}</span>`
                 : '';
-            facts.push(['Series', `<span class="book-modal-link" role="link" tabindex="0">${escapeHtml(book.series)}</span>${badgeHtml}`]);
+            facts.push(['Series', `<span class="book-modal-link" role="link" tabindex="0" data-action="click->book-modal#searchFor keydown.enter->book-modal#searchFor keydown.space->book-modal#searchFor" data-search-term="${escapeAttr(book.series)}" data-search-type="series">${escapeHtml(book.series)}</span>${badgeHtml}`]);
         }
         if (book.publisher) {
-            facts.push(['Publisher', `<span class="book-modal-link" role="link" tabindex="0">${escapeHtml(book.publisher)}</span>`]);
+            facts.push(['Publisher', `<span class="book-modal-link" role="link" tabindex="0" data-action="click->book-modal#searchFor keydown.enter->book-modal#searchFor keydown.space->book-modal#searchFor" data-search-term="${escapeAttr(book.publisher)}" data-search-type="publisher">${escapeHtml(book.publisher)}</span>`]);
         }
         if (book.publishedDate) facts.push(['Published', escapeHtml(book.publishedDate)]);
         if (book.language) facts.push(['Language', escapeHtml(book.language)]);
@@ -150,7 +168,7 @@ export default class extends Controller {
 
         if (Array.isArray(book.genres) && book.genres.length > 0) {
             this.genresTarget.innerHTML = book.genres
-                .map(g => `<span class="book-modal-genre" role="link" tabindex="0">${escapeHtml(g)}</span>`)
+                .map(g => `<span class="book-modal-genre" role="link" tabindex="0" data-action="click->book-modal#searchFor keydown.enter->book-modal#searchFor keydown.space->book-modal#searchFor" data-search-term="${escapeAttr(g)}" data-search-type="genre">${escapeHtml(g)}</span>`)
                 .join('');
         }
 
@@ -167,4 +185,8 @@ function escapeHtml(str) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+function escapeAttr(str) {
+    return escapeHtml(str);
 }

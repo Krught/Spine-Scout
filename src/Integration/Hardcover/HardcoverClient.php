@@ -7,6 +7,9 @@ namespace App\Integration\Hardcover;
 use App\Entity\Integration;
 use App\Integration\Hardcover\Dto\PopularAuthor;
 use App\Integration\Hardcover\Dto\TrendingBook;
+use Psr\Cache\CacheItemPoolInterface;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -20,8 +23,8 @@ final class HardcoverClient
     private const USER_AGENT = 'SpineScout/1.0 (+https://spinescout.local)';
 
     private const TRENDING_IDS_QUERY_TEMPLATE = <<<'GQL'
-        query SpineScoutTrendingIds($limit: Int!) {
-          books_trending(limit: $limit, offset: 0, from: "%FROM%", to: "%TO%") {
+        query SpineScoutTrendingIds($limit: Int!, $offset: Int!) {
+          books_trending(limit: $limit, offset: $offset, from: "%FROM%", to: "%TO%") {
             ids
             error
           }
@@ -65,8 +68,16 @@ final class HardcoverClient
         }
         GQL;
 
+    /** Genre tag list cache — Hardcover's Genre vocabulary changes rarely, so refresh daily. */
+    private const GENRE_TAGS_CACHE_KEY = 'hardcover.genre_tags.v1';
+    private const GENRE_TAGS_CACHE_TTL = 86400;
+    /** Cap on genre tags pulled in one shot — Hardcover's Genre vocabulary is well under this. */
+    private const GENRE_TAGS_FETCH_LIMIT = 1000;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
+        private readonly CacheItemPoolInterface $cache,
+        private readonly LoggerInterface $logger = new NullLogger(),
     ) {
     }
 
@@ -75,7 +86,7 @@ final class HardcoverClient
      *
      * @throws HardcoverException
      */
-    public function fetchTrending(Integration $integration, int $limit = 25): array
+    public function fetchTrending(Integration $integration, int $limit = 25, int $offset = 0): array
     {
         // `books_trending` returns only ids; book records come from a follow-up `books(where:_in)`
         // query, re-ordered here because Hasura doesn't preserve `_in` order.
@@ -87,7 +98,7 @@ final class HardcoverClient
             '%FROM%' => $from->format('Y-m-d'),
             '%TO%' => $to->format('Y-m-d'),
         ]);
-        $idsData = $this->graphql($integration, $idsQuery, ['limit' => $limit]);
+        $idsData = $this->graphql($integration, $idsQuery, ['limit' => $limit, 'offset' => max(0, $offset)]);
         $trending = $idsData['books_trending'] ?? null;
         if (!is_array($trending) || !isset($trending['ids']) || !is_array($trending['ids'])) {
             throw new HardcoverException('Unexpected trending payload: missing books_trending.ids');
@@ -127,6 +138,283 @@ final class HardcoverClient
                 isbns: $this->extractIsbns($row['editions'] ?? null, $integration->getHardcoverEditionPreferences()),
             );
         }
+        return $out;
+    }
+
+    /**
+     * @return list<TrendingBook>
+     *
+     * @throws HardcoverException
+     */
+    public function searchBooks(Integration $integration, string $query, int $limit = 50, int $page = 1, string $type = 'title'): array
+    {
+        $query = trim($query);
+        if ($query === '') {
+            return [];
+        }
+        $perPage = max(1, min(100, $limit));
+        $page = max(1, $page);
+
+        // For author/series/publisher/genre we do a two-step resolve so results are *strictly*
+        // by that entity rather than a fuzzy book-text match:
+        //   1) resolve query → top-N entity ids (Hardcover `search` for author/series/publisher;
+        //      a direct `tags` lookup under the Genre tag_category for genre, since Hardcover
+        //      has no `query_type: "Genre"`)
+        //   2) `books(where: {<relation>: {<fk>: {_in: $ids}}})` filtered, ordered, paginated
+        if (in_array($type, ['author', 'series', 'publisher'], true)) {
+            return $this->searchBooksByEntity($integration, $query, $type, $perPage, $page);
+        }
+        if ($type === 'genre') {
+            return $this->searchBooksByGenre($integration, $query, $perPage, $page);
+        }
+
+        $searchQuery = <<<'GQL'
+            query SpineScoutSearch($q: String!, $per: Int!, $page: Int!) {
+              search(query: $q, query_type: "Book", per_page: $per, page: $page) {
+                ids
+              }
+            }
+            GQL;
+        $data = $this->graphql($integration, $searchQuery, ['q' => $query, 'per' => $perPage, 'page' => $page]);
+        $hits = $data['search'] ?? null;
+        if (!is_array($hits) || !isset($hits['ids']) || !is_array($hits['ids'])) {
+            throw new HardcoverException('Unexpected search payload: missing search.ids');
+        }
+        $ids = array_values(array_filter(array_map('intval', $hits['ids'])));
+        if ($ids === []) {
+            return [];
+        }
+        $booksData = $this->graphql($integration, self::BOOKS_BY_IDS_QUERY, ['ids' => $ids]);
+        $rows = $booksData['books'] ?? null;
+        if (!is_array($rows)) {
+            throw new HardcoverException('Unexpected books payload: missing `books`.');
+        }
+        $byId = [];
+        foreach ($rows as $row) {
+            if (is_array($row) && isset($row['id'])) {
+                $byId[(int) $row['id']] = $row;
+            }
+        }
+        $prefs = $integration->getHardcoverEditionPreferences();
+        $out = [];
+        foreach ($ids as $id) {
+            $row = $byId[$id] ?? null;
+            if ($row === null || empty($row['title'])) {
+                continue;
+            }
+            $out[] = new TrendingBook(
+                title: (string) $row['title'],
+                author: $this->extractAuthor($row['cached_contributors'] ?? null),
+                coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
+                externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
+                isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
+            );
+        }
+        return $out;
+    }
+
+    /**
+     * Two-step "strict by-entity" search for author / series / publisher.
+     *
+     * Resolves up to TOP_ENTITY_HITS ids of the named entity, then filters `books` through
+     * the appropriate relation. Results are ordered by users_count (popularity) and paginated
+     * via limit/offset derived from $page so the caller's incremental pagination still works.
+     *
+     * @return list<TrendingBook>
+     *
+     * @throws HardcoverException
+     */
+    private function searchBooksByEntity(Integration $integration, string $query, string $type, int $perPage, int $page): array
+    {
+        // Top-N tolerates name ambiguity (e.g. "John Smith") — first hit is usually correct
+        // but a couple of fallbacks help when the index ranks an obscure namesake first.
+        $TOP_ENTITY_HITS = 3;
+        $queryTypeMap = [
+            'author'    => 'Author',
+            'series'    => 'Series',
+            'publisher' => 'Publisher',
+        ];
+        $queryType = $queryTypeMap[$type];
+
+        $resolveQuery = <<<'GQL'
+            query SpineScoutResolveEntity($q: String!, $per: Int!, $type: String!) {
+              search(query: $q, query_type: $type, per_page: $per, page: 1) {
+                ids
+              }
+            }
+            GQL;
+        $resolved = $this->graphql($integration, $resolveQuery, ['q' => $query, 'per' => $TOP_ENTITY_HITS, 'type' => $queryType]);
+        $hits = $resolved['search'] ?? null;
+        if (!is_array($hits) || !isset($hits['ids']) || !is_array($hits['ids'])) {
+            throw new HardcoverException('Unexpected search payload: missing search.ids');
+        }
+        $entityIds = array_values(array_filter(array_map('intval', $hits['ids'])));
+        if ($entityIds === []) {
+            return [];
+        }
+
+        // Relation map: from `books` table → filter through.
+        //   author    → `contributions.author_id`        (polymorphic contributions table)
+        //   series    → `book_series.series_id`          (book↔series join table)
+        //   publisher → `editions.publisher_id`          (publisher lives on editions, not books)
+        $where = match ($type) {
+            'author'    => ['contributions' => ['author_id' => ['_in' => $entityIds]]],
+            'series'    => ['book_series'   => ['series_id' => ['_in' => $entityIds]]],
+            'publisher' => ['editions'      => ['publisher_id' => ['_in' => $entityIds]]],
+        };
+
+        $offset = ($page - 1) * $perPage;
+        $booksQuery = '
+            query SpineScoutBooksByEntity($where: books_bool_exp!, $limit: Int!, $offset: Int!) {
+              books(
+                where: $where
+                order_by: {users_count: desc_nulls_last}
+                limit: $limit
+                offset: $offset
+              ) { ' . self::BOOKS_FIELDS . ' }
+            }
+        ';
+        $data = $this->graphql($integration, $booksQuery, [
+            'where'  => $where,
+            'limit'  => $perPage,
+            'offset' => $offset,
+        ]);
+        return $this->mapBooks($data, $integration);
+    }
+
+    /**
+     * Two-step genre search: resolve user text → top-N Genre tag ids by matching against the
+     * cached Genre tag vocabulary (Hardcover's Hasura blocks `_ilike`/`_iregex`/`_similar`, so
+     * substring matching has to happen client-side), then return books filtered through
+     * `books.taggings.tag_id`, ordered by users_count (trending).
+     *
+     * @return list<TrendingBook>
+     *
+     * @throws HardcoverException
+     */
+    private function searchBooksByGenre(Integration $integration, string $query, int $perPage, int $page): array
+    {
+        $TOP_GENRE_HITS = 3;
+        $tagIds = $this->resolveGenreTagIds($integration, $query, $TOP_GENRE_HITS);
+        if ($tagIds === []) {
+            return [];
+        }
+
+        $offset = ($page - 1) * $perPage;
+        $booksQuery = '
+            query SpineScoutBooksByGenre($where: books_bool_exp!, $limit: Int!, $offset: Int!) {
+              books(
+                where: $where
+                order_by: {users_count: desc_nulls_last}
+                limit: $limit
+                offset: $offset
+              ) { ' . self::BOOKS_FIELDS . ' }
+            }
+        ';
+        $data = $this->graphql($integration, $booksQuery, [
+            'where'  => ['taggings' => ['tag_id' => ['_in' => $tagIds]]],
+            'limit'  => $perPage,
+            'offset' => $offset,
+        ]);
+        return $this->mapBooks($data, $integration);
+    }
+
+    /**
+     * Pick up to $limit Genre tag ids whose name contains $query (case-insensitive), ordered by
+     * the tag's `count` (popularity). Falls back to prefix-match priority so "fant" → "Fantasy"
+     * outranks "High Fantasy".
+     *
+     * @return list<int>
+     *
+     * @throws HardcoverException
+     */
+    private function resolveGenreTagIds(Integration $integration, string $query, int $limit): array
+    {
+        $needle = strtolower(trim($query));
+        if ($needle === '') {
+            return [];
+        }
+        $tags = $this->fetchGenreTags($integration);
+
+        $ranked = [];
+        foreach ($tags as $tag) {
+            $name = strtolower($tag['tag']);
+            $slug = strtolower($tag['slug']);
+            // Rank: exact > prefix > substring; tiebreak by tag count (already pre-sorted).
+            $rank = null;
+            if ($name === $needle || $slug === $needle) {
+                $rank = 0;
+            } elseif (str_starts_with($name, $needle) || str_starts_with($slug, $needle)) {
+                $rank = 1;
+            } elseif (str_contains($name, $needle) || str_contains($slug, $needle)) {
+                $rank = 2;
+            }
+            if ($rank !== null) {
+                $ranked[] = ['rank' => $rank, 'id' => $tag['id']];
+            }
+        }
+        if ($ranked === []) {
+            return [];
+        }
+        // Stable sort by rank — `fetchGenreTags` returned them already by count desc, so within
+        // a rank the most popular wins.
+        usort($ranked, fn (array $a, array $b) => $a['rank'] <=> $b['rank']);
+
+        return array_slice(array_map(static fn (array $r): int => $r['id'], $ranked), 0, $limit);
+    }
+
+    /**
+     * Fetches & caches the Genre tag vocabulary from Hardcover (id, tag name, slug, count),
+     * ordered by `count desc`. Cached for a day; the Genre list is essentially static. Public
+     * so the trending-refresh handler can prewarm it on schedule (user-facing genre searches
+     * shouldn't pay the upstream roundtrip).
+     *
+     * @return list<array{id: int, tag: string, slug: string, count: int}>
+     *
+     * @throws HardcoverException
+     */
+    public function fetchGenreTags(Integration $integration, bool $forceRefresh = false): array
+    {
+        $item = $this->cache->getItem(self::GENRE_TAGS_CACHE_KEY);
+        if (!$forceRefresh && $item->isHit()) {
+            $cached = $item->get();
+            if (is_array($cached)) {
+                /** @var list<array{id: int, tag: string, slug: string, count: int}> $cached */
+                return $cached;
+            }
+        }
+
+        $query = <<<'GQL'
+            query SpineScoutGenreTags($limit: Int!) {
+              tags(
+                where: {tag_category: {category: {_eq: "Genre"}}}
+                order_by: {count: desc_nulls_last}
+                limit: $limit
+              ) { id tag slug count }
+            }
+            GQL;
+        $data = $this->graphql($integration, $query, ['limit' => self::GENRE_TAGS_FETCH_LIMIT]);
+        $rows = $data['tags'] ?? null;
+        if (!is_array($rows)) {
+            throw new HardcoverException('Unexpected tags payload: missing `tags`.');
+        }
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || !isset($row['id'], $row['tag'], $row['slug'])) {
+                continue;
+            }
+            $out[] = [
+                'id'    => (int) $row['id'],
+                'tag'   => (string) $row['tag'],
+                'slug'  => (string) $row['slug'],
+                'count' => (int) ($row['count'] ?? 0),
+            ];
+        }
+
+        $item->set($out);
+        $item->expiresAfter(self::GENRE_TAGS_CACHE_TTL);
+        $this->cache->save($item);
+
         return $out;
     }
 
@@ -553,6 +841,10 @@ final class HardcoverClient
             throw new HardcoverException('Hardcover API token is not configured.');
         }
 
+        // Parse the operation name from the first `query Name(...)` line — gives logs a stable
+        // handle (e.g. "SpineScoutBooksByGenre") without us having to thread one through every call.
+        $opName = preg_match('/\bquery\s+([A-Za-z0-9_]+)/', $query, $m) ? $m[1] : 'anonymous';
+        $startNs = hrtime(true);
         try {
             $response = $this->httpClient->request('POST', self::ENDPOINT, [
                 'timeout' => 30,
@@ -565,6 +857,13 @@ final class HardcoverClient
                 'json' => ['query' => $query, 'variables' => $variables],
             ]);
             $status = $response->getStatusCode();
+            $elapsedMs = (int) round((hrtime(true) - $startNs) / 1_000_000);
+            $this->logger->info('Hardcover GraphQL', [
+                'op' => $opName,
+                'status' => $status,
+                'elapsed_ms' => $elapsedMs,
+                'vars' => array_keys($variables),
+            ]);
             if ($status === 401 || $status === 403) {
                 throw new HardcoverException(sprintf('Hardcover rejected our API token (HTTP %d).', $status));
             }

@@ -133,6 +133,48 @@ final class BookRepository extends ServiceEntityRepository
         return $this->findOneBy(['source' => $source, 'externalId' => $externalId]);
     }
 
+    public const BROWSE_SORTS = ['title', 'released', 'author'];
+
+    /**
+     * @return list<Book>
+     */
+    public function findDownloadedPage(int $offset, int $limit, string $sort = 'title', string $direction = 'ASC'): array
+    {
+        $direction = strtoupper($direction) === 'DESC' ? 'DESC' : 'ASC';
+        if (!in_array($sort, self::BROWSE_SORTS, true)) {
+            $sort = 'title';
+        }
+
+        $qb = $this->createQueryBuilder('b')
+            ->where('b.removedAt IS NULL')
+            ->andWhere('b.downloaded = true')
+            ->setFirstResult(max(0, $offset))
+            ->setMaxResults(max(1, $limit));
+
+        switch ($sort) {
+            case 'released':
+                // publishedDate is a free-form 32-char string; lexicographic order
+                // matches chronological order for ISO-ish "YYYY", "YYYY-MM", "YYYY-MM-DD".
+                $qb->addSelect('b.publishedDate AS HIDDEN sort_key')
+                   ->orderBy('sort_key', $direction);
+                break;
+            case 'title':
+                $qb->addSelect('LOWER(b.title) AS HIDDEN sort_key')
+                   ->orderBy('sort_key', $direction);
+                break;
+            case 'author':
+                $qb->addSelect('LOWER(b.author) AS HIDDEN sort_key')
+                   ->orderBy('sort_key', $direction);
+                break;
+            default:
+                $qb->addSelect('LOWER(b.title) AS HIDDEN sort_key')
+                   ->orderBy('sort_key', $direction);
+                break;
+        }
+
+        return $qb->addOrderBy('b.id', $direction)->getQuery()->getResult();
+    }
+
     public function findRecentlyAdded(int $limit = 15): array
     {
         // DQL forbids COALESCE in ORDER BY, so select it as a HIDDEN

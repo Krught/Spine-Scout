@@ -76,6 +76,20 @@ final class RefreshHardcoverTrendingHandler
             $this->logger->warning('Hardcover popular authors refresh failed', ['error' => $e->getMessage()]);
         }
 
+        // Prewarm the Genre tag vocabulary so user-facing /browse/search?type=genre never pays
+        // the ~1000-row fetch. The client itself owns the cache.app entry + 24h TTL; we just
+        // make sure the entry exists and is fresh every sync cycle.
+        try {
+            $tags = $this->client->fetchGenreTags($integration, forceRefresh: true);
+            $cache['genres'] = [
+                'fetched_at' => (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
+                'count'      => count($tags),
+            ];
+        } catch (HardcoverException $e) {
+            $errors[] = 'genres: ' . $e->getMessage();
+            $this->logger->warning('Hardcover genre vocabulary refresh failed', ['error' => $e->getMessage()]);
+        }
+
         $integration->setCacheData($cache);
         $integration->setLastSyncAt(new \DateTimeImmutable());
         $integration->setLastError($errors === [] ? null : implode('; ', $errors));
