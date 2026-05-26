@@ -13,14 +13,15 @@
         {% endblock %}
     </head>
     <body>
-        <div class="app-shell">
+        <div class="app-shell" data-controller="sidebar">
+            <div class="sidebar-backdrop" data-action="click->sidebar#close" aria-hidden="true"></div>
             <aside class="sidebar">
                 <a class="brand brand-spine" href="{{ path('home') }}" aria-label="Spine Scout home">
                     <img src="{{ asset('images/spine-scout-logo.webp') }}" alt="Spine Scout" class="brand-spine-img">
                 </a>
 
                 {% set current_route = app.request.attributes.get('_route') ?? '' %}
-                <nav class="sidebar-nav">
+                <nav class="sidebar-nav" data-action="click->sidebar#close">
                     <a class="nav-item{% if current_route == 'home' %} active{% endif %}" href="{{ path('home') }}">
                         <svg class="nav-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <circle cx="12" cy="12" r="9"/>
@@ -81,6 +82,14 @@
 
             <div class="content">
                 <header class="topbar">
+                    <button type="button" class="topbar-menu-btn" data-action="click->sidebar#toggle" aria-label="Open menu">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <line x1="4" y1="6" x2="20" y2="6"/>
+                            <line x1="4" y1="12" x2="20" y2="12"/>
+                            <line x1="4" y1="18" x2="20" y2="18"/>
+                        </svg>
+                    </button>
+                    <a class="topbar-brand" href="{{ path('home') }}">Spine Scout</a>
                     {% set _q_type = app.request.query.get('type') %}
                     {% set _q_type = _q_type in ['title', 'author', 'genre', 'series', 'publisher'] ? _q_type : 'title' %}
                     <div class="search-wrap"
@@ -88,10 +97,16 @@
                          data-search-browse-url-value="{{ path('browse') }}"
                          data-search-current-route-value="{{ current_route }}"
                          data-search-type-value="{{ _q_type }}">
+                        <button type="button" class="search-icon-btn" data-action="click->search#toggleMobile" aria-label="Search">
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="11" cy="11" r="7"/>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                            </svg>
+                        </button>
                         <input type="search" placeholder="Search for books, authors, series..."
                                class="search-input"
                                data-search-target="input"
-                               data-action="input->search#onInput keydown.enter->search#submit">
+                               data-action="input->search#onInput keydown.enter->search#submit keydown.escape->search#onInputKeydown">
                         <div class="search-types" role="group" aria-label="Search type">
                             <button type="button"
                                     class="search-type-btn{% if _q_type == 'title' %} is-active{% endif %}"
@@ -124,7 +139,7 @@
                     </div>
                     <div class="topbar-right">
                         {% if app.user %}
-                            <div class="avatar" title="{{ app.user.username }}">{{ app.user.username|slice(0, 1)|upper }}</div>
+                            <a class="avatar" href="{{ path('app_logout') }}" title="Sign out ({{ app.user.username }})">{{ app.user.username|slice(0, 1)|upper }}</a>
                             <a class="topbar-logout" href="{{ path('app_logout') }}">Sign out</a>
                         {% endif %}
                     </div>

@@ -211,6 +211,23 @@ body.book-modal-open { overflow: hidden; }
     white-space: pre-wrap;
 }
 
+@media (max-width: 768px) {
+    .book-modal {
+        padding: 0;
+        align-items: stretch;
+    }
+    .book-modal-dialog {
+        width: 100%;
+        max-width: none;
+        max-height: 100vh;
+        height: 100vh;
+        border-radius: 0;
+        border-left: 0;
+        border-right: 0;
+        box-shadow: none;
+    }
+}
+
 @media (max-width: 640px) {
     .book-modal-body {
         grid-template-columns: 1fr;

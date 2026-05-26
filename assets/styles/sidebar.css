@@ -129,17 +129,20 @@
     font-size: 0.72rem;
 }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
     .sidebar {
-        position: static;
-        height: auto;
-        flex-direction: row;
-        overflow-x: auto;
-        padding: 0.5rem;
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 16rem;
+        height: 100vh;
+        z-index: 50;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
     }
-    .sidebar-nav { display: flex; gap: 0.5rem; padding: 0; }
-    .nav-item { padding: 0.5rem 0.75rem; font-size: 0.95rem; }
-    .nav-text { display: none; }
-    .sidebar-footer { display: none; }
-    .brand { border-bottom: none; padding: 0.5rem 1rem; }
+    .app-shell.sidebar-open .sidebar {
+        transform: none;
+    }
 }

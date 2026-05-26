@@ -35,6 +35,25 @@ a:hover { color: var(--accent); }
     min-height: 100vh;
 }
 
-@media (max-width: 800px) {
+.sidebar-backdrop {
+    display: none;
+}
+
+@media (max-width: 768px) {
     .app-shell { grid-template-columns: 1fr; }
+
+    .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+        z-index: 40;
+    }
+    .app-shell.sidebar-open .sidebar-backdrop {
+        opacity: 1;
+        pointer-events: auto;
+    }
 }

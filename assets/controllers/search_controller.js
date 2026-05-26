@@ -41,6 +41,25 @@ export default class extends Controller {
         this.timer = window.setTimeout(() => this.submit(), IDLE_SUBMIT_MS);
     }
 
+    toggleMobile(event) {
+        if (event) event.preventDefault();
+        const expanded = this.element.classList.toggle('is-expanded');
+        if (expanded && this.hasInputTarget) {
+            window.requestAnimationFrame(() => this.inputTarget.focus());
+        }
+    }
+
+    collapseMobile() {
+        this.element.classList.remove('is-expanded');
+    }
+
+    onInputKeydown(event) {
+        if (event.key === 'Escape') {
+            this.collapseMobile();
+            if (this.hasInputTarget) this.inputTarget.blur();
+        }
+    }
+
     setType(event) {
         if (event) event.preventDefault();
         const btn = event && event.currentTarget;
