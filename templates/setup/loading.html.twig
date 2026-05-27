@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Setting things up - Spine Scout</title>
+        <link rel="stylesheet" href="{{ asset('styles/base.css') }}">
+        <link rel="stylesheet" href="{{ asset('styles/setup-loading.css') }}">
+        {% if redirect_url %}
+            <meta http-equiv="refresh" content="{{ (delay_ms / 1000)|round }};url={{ redirect_url }}">
+        {% endif %}
+    </head>
+    <body class="loading-body">
+        <div class="loading-sky" aria-hidden="true">
+            {% for i in 1..14 %}
+                <span class="book book-{{ ((i - 1) % 6) + 1 }} book-pos-{{ i }}"></span>
+            {% endfor %}
+        </div>
+
+        <div class="loading-pile" aria-hidden="true">
+            <span class="pile-book pile-book-1"></span>
+            <span class="pile-book pile-book-2"></span>
+            <span class="pile-book pile-book-3"></span>
+            <span class="pile-book pile-book-4"></span>
+            <span class="pile-book pile-book-5"></span>
+            <span class="pile-shadow"></span>
+        </div>
+
+        <div class="loading-caption" role="status" aria-live="polite">
+            <h1 class="loading-title">Stocking the shelves</h1>
+            <p class="loading-text">Pulling your library together<span class="loading-dots"><span>.</span><span>.</span><span>.</span></span></p>
+        </div>
+
+        {% if redirect_url %}
+            <script>
+                setTimeout(function () { window.location.replace({{ redirect_url|json_encode|raw }}); }, {{ delay_ms }});
+            </script>
+        {% endif %}
+    </body>
+</html>

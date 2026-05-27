@@ -1,0 +1,172 @@
+/* Falling-books loading screen. Shown after Komga is connected during setup,
+ * and viewable in dev at /_dev/setup-loading. All animation is CSS-only so
+ * tweaks just need a browser refresh. */
+
+.loading-body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+        radial-gradient(900px 500px at 50% 110%, rgba(240, 180, 41, 0.10), transparent 70%),
+        var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    position: relative;
+}
+
+.loading-sky {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+/* ------- Falling books ------- */
+
+.book {
+    position: absolute;
+    top: -80px;
+    width: 32px;
+    height: 44px;
+    border-radius: 2px 3px 3px 2px;
+    box-shadow: inset -4px 0 0 rgba(0, 0, 0, 0.18), 0 2px 4px rgba(0, 0, 0, 0.25);
+    animation-name: book-fall;
+    animation-timing-function: cubic-bezier(0.5, 0.05, 0.7, 0.4);
+    animation-iteration-count: infinite;
+    will-change: transform, opacity;
+}
+.book::before {
+    /* Spine highlight on the left edge. */
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 4px;
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 2px 0 0 2px;
+}
+.book::after {
+    /* Page edge stripe near the right (just before the shadow band). */
+    content: "";
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    right: 5px;
+    width: 2px;
+    background: rgba(255, 255, 255, 0.55);
+}
+
+/* Book color palette. */
+.book-1 { background: #c0392b; }
+.book-2 { background: #2e7d8f; }
+.book-3 { background: #d4a017; }
+.book-4 { background: #6b4f8a; }
+.book-5 { background: #3d6b3a; }
+.book-6 { background: #8a4a2b; }
+
+/* Per-book position, size, delay, and duration. Scatter horizontally,
+ * stagger timing so something is always falling. */
+.book-pos-1  { left:  4%; animation-duration: 2.6s; animation-delay: 0.0s; transform: scale(1.0); }
+.book-pos-2  { left: 13%; animation-duration: 3.1s; animation-delay: 0.7s; transform: scale(0.85); }
+.book-pos-3  { left: 22%; animation-duration: 2.4s; animation-delay: 1.4s; transform: scale(1.1); }
+.book-pos-4  { left: 31%; animation-duration: 3.4s; animation-delay: 0.3s; transform: scale(0.9); }
+.book-pos-5  { left: 40%; animation-duration: 2.8s; animation-delay: 1.9s; transform: scale(1.05); }
+.book-pos-6  { left: 48%; animation-duration: 3.0s; animation-delay: 0.9s; transform: scale(0.95); }
+.book-pos-7  { left: 56%; animation-duration: 2.5s; animation-delay: 2.2s; transform: scale(1.15); }
+.book-pos-8  { left: 64%; animation-duration: 3.2s; animation-delay: 0.4s; transform: scale(0.88); }
+.book-pos-9  { left: 72%; animation-duration: 2.7s; animation-delay: 1.6s; transform: scale(1.0); }
+.book-pos-10 { left: 80%; animation-duration: 3.3s; animation-delay: 0.1s; transform: scale(1.1); }
+.book-pos-11 { left: 88%; animation-duration: 2.6s; animation-delay: 2.0s; transform: scale(0.92); }
+.book-pos-12 { left: 18%; animation-duration: 2.9s; animation-delay: 2.5s; transform: scale(1.05); }
+.book-pos-13 { left: 60%; animation-duration: 3.5s; animation-delay: 1.1s; transform: scale(0.9); }
+.book-pos-14 { left: 76%; animation-duration: 2.4s; animation-delay: 2.8s; transform: scale(1.0); }
+
+@keyframes book-fall {
+    0%   { transform: translateY(0)       rotate(0deg);   opacity: 0; }
+    8%   { opacity: 1; }
+    /* Land just above the pile area; the per-book transform: scale() above is
+     * preserved by composing rotate after translate (browsers handle this). */
+    92%  { opacity: 1; }
+    100% { transform: translateY(78vh)    rotate(540deg); opacity: 0.95; }
+}
+
+/* ------- Pile at the bottom ------- */
+
+.loading-pile {
+    position: absolute;
+    left: 50%;
+    bottom: 22vh;
+    transform: translateX(-50%);
+    width: 220px;
+    height: 60px;
+    pointer-events: none;
+}
+.pile-book {
+    position: absolute;
+    width: 80px;
+    height: 22px;
+    border-radius: 2px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4), inset 0 -4px 0 rgba(0, 0, 0, 0.18);
+}
+.pile-book-1 { background: #6b4f8a; left:   0; bottom:  0; transform: rotate(-3deg); width: 110px; }
+.pile-book-2 { background: #c0392b; left:  20px; bottom: 16px; transform: rotate(2deg); width: 95px; }
+.pile-book-3 { background: #d4a017; left:  55px; bottom: 30px; transform: rotate(-4deg); width: 100px; }
+.pile-book-4 { background: #2e7d8f; left:  35px; bottom: 44px; transform: rotate(3deg); width: 90px; }
+.pile-book-5 { background: #3d6b3a; left:  60px; bottom: 58px; transform: rotate(-2deg); width: 80px;
+               animation: pile-pop 2.4s ease-out infinite; }
+.pile-shadow {
+    position: absolute;
+    left: 50%;
+    bottom: -10px;
+    transform: translateX(-50%);
+    width: 180px;
+    height: 14px;
+    background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.45), transparent 70%);
+    filter: blur(2px);
+}
+
+@keyframes pile-pop {
+    0%, 100% { transform: rotate(-2deg) translateY(0); }
+    50%      { transform: rotate(-2deg) translateY(-3px); }
+}
+
+/* ------- Caption ------- */
+
+.loading-caption {
+    position: absolute;
+    bottom: 8vh;
+    left: 0;
+    right: 0;
+    text-align: center;
+    z-index: 2;
+}
+.loading-title {
+    margin: 0 0 0.5rem;
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--fg);
+}
+.loading-text {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: 0.95rem;
+}
+.loading-dots {
+    display: inline-block;
+    margin-left: 2px;
+}
+.loading-dots span {
+    display: inline-block;
+    animation: dot-bounce 1.4s infinite ease-in-out both;
+}
+.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dot-bounce {
+    0%, 80%, 100% { opacity: 0.2; }
+    40%           { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .book, .pile-book-5, .loading-dots span { animation: none; }
+    .book { display: none; }
+}

@@ -1,0 +1,39 @@
+{% extends 'setup/_layout.html.twig' %}
+
+{% block title %}Connect Hardcover - Spine Scout{% endblock %}
+
+{% block setup_step %}
+    <h1 class="setup-title">Recommended: Hardcover for metadata</h1>
+    <p class="setup-lede">
+        We recommend using <strong>Hardcover</strong> for book metadata and search.
+        Paste an API token below to enable it now, or skip and configure it later from Settings.
+    </p>
+
+    <form method="post" action="{{ path('app_setup_hardcover') }}" class="setup-form" novalidate>
+        <label class="setup-field">
+            <span class="setup-label">Hardcover API Token</span>
+            <input
+                type="text"
+                name="token"
+                value="{{ token }}"
+                autofocus
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+            >
+            <span class="setup-help">
+                Need a token?
+                <a href="{{ docs_url }}" target="_blank" rel="noopener" class="setup-back-link">How to get an API Key</a>
+            </span>
+        </label>
+
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token(csrf_token) }}">
+
+        <div class="setup-actions">
+            {# Primary submit listed first so Enter activates it, not Skip. CSS keeps Skip visually on the left. #}
+            <button type="submit" class="setup-submit">Enable Hardcover</button>
+            <button type="submit" name="skip" value="1" class="setup-skip" formnovalidate>Skip</button>
+        </div>
+    </form>
+{% endblock %}

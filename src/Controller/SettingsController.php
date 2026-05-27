@@ -141,7 +141,7 @@ final class SettingsController extends AbstractController
         $this->seedDefaults($hardcover, $openLibrary);
 
         $hardcoverForm = $this->createForm(HardcoverIntegrationType::class, $hardcover, [
-            'has_existing_credentials' => $hardcover->hasCredentials(),
+            'existing_token' => (string) ($hardcover->getCredentials()['token'] ?? ''),
             'edition_preferences' => $hardcover->getHardcoverEditionPreferences(),
         ]);
         $openLibraryForm = $this->createForm(OpenLibraryIntegrationType::class, $openLibrary);

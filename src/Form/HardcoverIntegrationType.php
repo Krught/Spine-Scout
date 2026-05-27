@@ -8,7 +8,6 @@ use App\Entity\Integration;
 use Symfony\Component\Form\AbstractType;
 use Symfony\Component\Form\Extension\Core\Type\CheckboxType;
 use Symfony\Component\Form\Extension\Core\Type\IntegerType;
-use Symfony\Component\Form\Extension\Core\Type\PasswordType;
 use Symfony\Component\Form\Extension\Core\Type\TextType;
 use Symfony\Component\Form\FormBuilderInterface;
 use Symfony\Component\OptionsResolver\OptionsResolver;
@@ -18,7 +17,7 @@ final class HardcoverIntegrationType extends AbstractType
 {
     public function buildForm(FormBuilderInterface $builder, array $options): void
     {
-        $hasExistingToken = (bool) ($options['has_existing_credentials'] ?? false);
+        $existingToken = (string) ($options['existing_token'] ?? '');
         $prefs = (array) ($options['edition_preferences'] ?? ['languages' => [], 'formats' => [], 'countries' => []]);
 
         $builder
@@ -27,13 +26,17 @@ final class HardcoverIntegrationType extends AbstractType
                 'required' => false,
                 'help' => 'Pulls Trending Books from Hardcover when enabled and a token is set.',
             ])
-            ->add('apiToken', PasswordType::class, [
+            ->add('apiToken', TextType::class, [
                 'label' => 'Hardcover API token',
                 'mapped' => false,
                 'required' => false,
+                'data' => $existingToken,
                 'attr' => [
-                    'placeholder' => $hasExistingToken ? '•••••••• (leave blank to keep current)' : 'Paste from hardcover.app account settings',
+                    'placeholder' => 'Paste from hardcover.app account settings',
                     'autocomplete' => 'off',
+                    'autocapitalize' => 'off',
+                    'autocorrect' => 'off',
+                    'spellcheck' => 'false',
                 ],
                 'help' => 'Get one at hardcover.app → Account → Hardcover API. Tokens expire annually on Jan 1.',
             ])
@@ -78,10 +81,10 @@ final class HardcoverIntegrationType extends AbstractType
     {
         $resolver->setDefaults([
             'data_class' => Integration::class,
-            'has_existing_credentials' => false,
+            'existing_token' => '',
             'edition_preferences' => ['languages' => [], 'formats' => [], 'countries' => []],
         ]);
-        $resolver->setAllowedTypes('has_existing_credentials', 'bool');
+        $resolver->setAllowedTypes('existing_token', 'string');
         $resolver->setAllowedTypes('edition_preferences', 'array');
     }
 }
