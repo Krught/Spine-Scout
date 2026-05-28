@@ -54,6 +54,7 @@ export default class extends Controller {
         this.hasMore = true;
         this.loading = false;
         this.totalRendered = 0;
+        this.cancelled = false;
     }
 
     currentSort() {
@@ -85,6 +86,12 @@ export default class extends Controller {
     }
 
     disconnect() {
+        // Turbo's snapshot-preview phase connects a controller on the cached DOM, then
+        // disconnects it when the fresh page swaps in. Without this flag, in-flight
+        // loadMore() promises continue, append to the now-detached grid (invisible),
+        // and recurse forever — sentinelNeedsFill() returns true on detached nodes
+        // because getBoundingClientRect().top === 0.
+        this.cancelled = true;
         this.observer?.disconnect();
         if (this.onScroll) {
             window.removeEventListener('scroll', this.onScroll);
@@ -190,7 +197,7 @@ export default class extends Controller {
     }
 
     maybeLoadMore(/* source */) {
-        if (!this.hasMore || this.loading) return;
+        if (this.cancelled || !this.hasMore || this.loading) return;
         if (this.sentinelNeedsFill()) this.loadMore();
     }
 
@@ -205,7 +212,7 @@ export default class extends Controller {
     }
 
     async loadMore() {
-        if (this.loading || !this.hasMore) return;
+        if (this.cancelled || this.loading || !this.hasMore) return;
         this.loading = true;
         this.statusTarget.textContent = 'Loading…';
 
@@ -229,8 +236,10 @@ export default class extends Controller {
 
         try {
             const res = await fetch(url, { headers: { Accept: 'application/json' } });
+            if (this.cancelled) return;
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
+            if (this.cancelled) return;
             if (requestSort !== this.currentSort() || requestDir !== this.currentDir() || requestQuery !== this.searchQuery) {
                 return;
             }
@@ -258,7 +267,7 @@ export default class extends Controller {
         // of view; if the first batch didn't fill the viewport + a buffer row, the
         // sentinel stays visible and we'd never refetch. Top up explicitly until
         // the page is full or upstream is exhausted.
-        if (this.hasMore && this.sentinelNeedsFill()) {
+        if (!this.cancelled && this.hasMore && this.sentinelNeedsFill()) {
             this.loadMore();
         }
     }
@@ -298,6 +307,7 @@ export default class extends Controller {
         article.dataset.bookModalAuthorParam = item.author ?? '';
         article.dataset.bookModalCoverParam = item.cover_url ?? '';
         article.dataset.bookModalDownloadedParam = item.downloaded ? '1' : '0';
+        article.dataset.bookModalRequestStatusParam = item.request_status || '';
 
         const cover = document.createElement('div');
         cover.className = 'card-cover';
@@ -324,6 +334,22 @@ export default class extends Controller {
             check.setAttribute('aria-label', 'In your library');
             check.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
             cover.appendChild(check);
+        } else if (item.request_status) {
+            const labels = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
+            const icons = {
+                pending: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+                approved: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M7 10v9h-3v-9h3zm3 9c-.55 0-1-.45-1-1v-8.4l3.6-6.6c.32-.58 1.04-.79 1.62-.46.42.23.66.69.61 1.16l-.49 4.3h5.16c1.1 0 2 .9 2 2 0 .27-.06.53-.16.78l-2.55 6.78c-.29.78-1.04 1.3-1.88 1.3h-6.91z" fill="currentColor"/></svg>',
+                rejected: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>',
+            };
+            if (icons[item.request_status]) {
+                const badge = document.createElement('span');
+                badge.className = `card-status card-status-${item.request_status}`;
+                const label = labels[item.request_status];
+                badge.title = label;
+                badge.setAttribute('aria-label', label);
+                badge.innerHTML = icons[item.request_status];
+                cover.appendChild(badge);
+            }
         }
 
         const overlay = document.createElement('div');

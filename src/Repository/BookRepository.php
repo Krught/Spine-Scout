@@ -175,6 +175,84 @@ final class BookRepository extends ServiceEntityRepository
         return $qb->addOrderBy('b.id', $direction)->getQuery()->getResult();
     }
 
+    /**
+     * Books currently on a `(source, section)` shelf, ordered by rank.
+     *
+     * @return list<Book>
+     */
+    public function findBySection(string $source, string $section, int $limit = 25): array
+    {
+        return $this->createQueryBuilder('b')
+            ->innerJoin(\App\Entity\BookSectionEntry::class, 'e', 'WITH', 'e.book = b')
+            ->where('e.source = :source')
+            ->andWhere('e.section = :section')
+            ->setParameter('source', $source)
+            ->setParameter('section', $section)
+            ->orderBy('e.rank', 'ASC')
+            ->setMaxResults(max(1, $limit))
+            ->getQuery()
+            ->getResult();
+    }
+
+    /**
+     * Upsert a non-library book by `(source, external_id)`. Preserves `downloaded=true` if it
+     * was already set (we never demote a library book to metadata-only) and refreshes the
+     * fields a shelf entry knows about. Returns the persisted entity. Caller must flush.
+     */
+    /**
+     * @param list<string> $rawIsbns the full edition list from the integration; will be
+     *                                normalized + deduped before storage.
+     */
+    public function upsertMetadataBook(
+        string $source,
+        string $externalId,
+        string $title,
+        ?string $author,
+        ?string $externalUrl,
+        ?string $coverUrl,
+        array $rawIsbns,
+        \DateTimeImmutable $now,
+    ): Book {
+        $book = $this->findOneBySourceAndExternalId($source, $externalId);
+        if ($book === null) {
+            $book = new Book($source, $externalId, $title);
+            $book->setDownloaded(false);
+            $this->getEntityManager()->persist($book);
+        } else {
+            $book->setTitle($title);
+        }
+        if ($author !== null) {
+            $book->setAuthor($author);
+        }
+        if ($externalUrl !== null) {
+            $book->setExternalUrl($externalUrl);
+        }
+        if ($coverUrl !== null) {
+            $book->setCoverUrl($coverUrl);
+        }
+
+        $normalized = [];
+        foreach ($rawIsbns as $candidate) {
+            $n = self::normalizeIsbn($candidate);
+            if ($n !== null) {
+                $normalized[$n] = true;
+            }
+        }
+        $normalizedList = array_keys($normalized);
+        if ($normalizedList !== []) {
+            $book->setIsbns($normalizedList);
+            if ($book->getIsbn() === null) {
+                $book->setIsbn($normalizedList[0]);
+            }
+        }
+
+        $book->setLastSeenAt($now);
+        if ($book->isRemoved()) {
+            $book->setRemovedAt(null);
+        }
+        return $book;
+    }
+
     public function findRecentlyAdded(int $limit = 15): array
     {
         // DQL forbids COALESCE in ORDER BY, so select it as a HIDDEN

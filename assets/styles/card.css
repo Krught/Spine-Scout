@@ -78,6 +78,33 @@
     position: relative;
 }
 
+.card-status {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.card-status::before {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.75);
+}
+.card-status svg {
+    position: relative;
+}
+/* Colors mirror the request-status pills in requests.css and the popup button states. */
+.card-status-pending  { background: rgb(240, 180, 41); color: rgb(240, 180, 41); }
+.card-status-approved { background: rgb(99, 102, 241); color: rgb(99, 102, 241); }
+.card-status-rejected { background: rgb(180, 60, 60);  color: rgb(180, 60, 60);  }
+
 .card-overlay {
     position: absolute;
     inset: 0;

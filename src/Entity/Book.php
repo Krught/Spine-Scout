@@ -48,12 +48,26 @@ class Book
     #[ORM\Column(length: 1000, nullable: true)]
     private ?string $externalUrl = null;
 
+    /** Remote cover URL (Hardcover/OpenLibrary). Library books use the Komga proxy instead. */
+    #[ORM\Column(length: 1000, nullable: true)]
+    private ?string $coverUrl = null;
+
     #[ORM\Column(length: 64, nullable: true)]
     private ?string $komgaLibraryId = null;
 
     /** Normalized (digits only, trailing 'X' for ISBN-10). Canonical "have" key for trending matches. */
     #[ORM\Column(length: 20, nullable: true)]
     private ?string $isbn = null;
+
+    /**
+     * Every edition's ISBN, normalized. Populated for metadata-only entries (Hardcover/OL
+     * trending) so we can flag "downloaded" even when the owned copy is a different edition
+     * than the one whose ISBN we put in the singular `isbn` column. Empty for Grimmory rows.
+     *
+     * @var list<string>
+     */
+    #[ORM\Column(type: Types::JSON, options: ['jsonb' => true, 'default' => '[]'])]
+    private array $isbns = [];
 
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $addedAt = null;
@@ -141,11 +155,19 @@ class Book
     public function getExternalUrl(): ?string { return $this->externalUrl; }
     public function setExternalUrl(?string $url): self { $this->externalUrl = $url; return $this; }
 
+    public function getCoverUrl(): ?string { return $this->coverUrl; }
+    public function setCoverUrl(?string $url): self { $this->coverUrl = $url; return $this; }
+
     public function getKomgaLibraryId(): ?string { return $this->komgaLibraryId; }
     public function setKomgaLibraryId(?string $id): self { $this->komgaLibraryId = $id; return $this; }
 
     public function getIsbn(): ?string { return $this->isbn; }
     public function setIsbn(?string $isbn): self { $this->isbn = $isbn; return $this; }
+
+    /** @return list<string> */
+    public function getIsbns(): array { return $this->isbns; }
+    /** @param list<string> $isbns */
+    public function setIsbns(array $isbns): self { $this->isbns = array_values(array_unique($isbns)); return $this; }
 
     public function getAddedAt(): ?\DateTimeImmutable { return $this->addedAt; }
     public function setAddedAt(?\DateTimeImmutable $at): self { $this->addedAt = $at; return $this; }

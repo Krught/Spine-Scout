@@ -9,10 +9,13 @@ use App\Entity\Integration;
 use App\Form\GrimmoryIntegrationType;
 use App\Form\HardcoverIntegrationType;
 use App\Form\OpenLibraryIntegrationType;
+use App\Entity\BookSectionEntry;
+use App\Message\PurgeStaleBooks;
 use App\Message\RefreshHardcoverTrending;
 use App\Message\RefreshOpenLibraryTrending;
 use App\Message\SyncGrimmoryLibrary;
 use App\Repository\BookRepository;
+use App\Repository\BookSectionEntryRepository;
 use App\Repository\IntegrationRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -126,11 +129,30 @@ final class SettingsController extends AbstractController
         Request $request,
         IntegrationRepository $repository,
         EntityManagerInterface $em,
+        BookSectionEntryRepository $sectionEntries,
     ): Response {
         $hardcover  = $repository->getOrCreate(Integration::KIND_HARDCOVER);
         $openLibrary = $repository->getOrCreate(Integration::KIND_OPENLIBRARY);
 
         $this->seedDefaults($hardcover, $openLibrary);
+
+        // Trending counts are now derived from the live link table rather than the JSONB blob.
+        $hardcoverTrendingCount = $this->countSection($em, Book::SOURCE_HARDCOVER, BookSectionEntry::SECTION_TRENDING);
+        $openLibraryTrendingCount = $this->countSection($em, Book::SOURCE_OPENLIBRARY, BookSectionEntry::SECTION_TRENDING);
+        $purgeThresholdDays = $hardcover->getBookPurgeThresholdDays();
+
+        if ($request->isMethod('POST') && $request->request->has('purge_threshold')) {
+            if (!$this->isCsrfTokenValid('metadata_purge_threshold', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+            } else {
+                $days = (int) $request->request->get('purge_threshold');
+                $hardcover->setBookPurgeThresholdDays($days);
+                $openLibrary->setBookPurgeThresholdDays($days);
+                $em->flush();
+                $this->addFlash('success', 'Purge threshold saved.');
+                return $this->redirectToRoute('settings_metadata');
+            }
+        }
 
         $hardcoverForm = $this->createForm(HardcoverIntegrationType::class, $hardcover, [
             'existing_token' => (string) ($hardcover->getCredentials()['token'] ?? ''),
@@ -169,7 +191,19 @@ final class SettingsController extends AbstractController
             'openlibrary_form' => $openLibraryForm,
             'hardcover' => $hardcover,
             'openlibrary' => $openLibrary,
+            'hardcover_trending_count' => $hardcoverTrendingCount,
+            'openlibrary_trending_count' => $openLibraryTrendingCount,
+            'purge_threshold_days' => $purgeThresholdDays,
         ]);
+    }
+
+    private function countSection(EntityManagerInterface $em, string $source, string $section): int
+    {
+        $value = $em->getConnection()->fetchOne(
+            'SELECT COUNT(*) FROM book_section_entries WHERE source = :s AND section = :sec',
+            ['s' => $source, 'sec' => $section],
+        );
+        return is_numeric($value) ? (int) $value : 0;
     }
 
     #[Route('/metadata/hardcover/refresh', name: 'metadata_hardcover_refresh', methods: ['POST'])]
@@ -181,6 +215,18 @@ final class SettingsController extends AbstractController
         }
         $bus->dispatch(new RefreshHardcoverTrending(force: true));
         $this->addFlash('success', 'Hardcover refresh queued.');
+        return $this->redirectToRoute('settings_metadata');
+    }
+
+    #[Route('/metadata/purge', name: 'metadata_purge', methods: ['POST'])]
+    public function purgeStaleBooks(Request $request, MessageBusInterface $bus): Response
+    {
+        if (!$this->isCsrfTokenValid('metadata_purge', (string) $request->request->get('_token'))) {
+            $this->addFlash('error', 'Invalid CSRF token.');
+            return $this->redirectToRoute('settings_metadata');
+        }
+        $bus->dispatch(new PurgeStaleBooks(force: true));
+        $this->addFlash('success', 'Stale-book purge queued.');
         return $this->redirectToRoute('settings_metadata');
     }
 

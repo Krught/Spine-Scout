@@ -11,15 +11,20 @@ use App\Integration\Hardcover\HardcoverException;
 use App\Integration\Hardcover\Dto\TrendingBook;
 use App\Integration\OpenLibrary\OpenLibraryClient;
 use App\Integration\OpenLibrary\OpenLibraryException;
+use App\Message\TouchBooksSeen;
+use App\Entity\User;
 use App\Repository\BookRepository;
+use App\Repository\BookRequestRepository;
 use App\Repository\IntegrationRepository;
 use App\Service\CoverCache;
+use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 
 final class BrowseController extends AbstractController
@@ -44,6 +49,9 @@ final class BrowseController extends AbstractController
         private readonly OpenLibraryClient $openLibrary,
         private readonly CacheItemPoolInterface $cache,
         private readonly LoggerInterface $logger,
+        private readonly BookRepository $bookRepo,
+        private readonly EntityManagerInterface $em,
+        private readonly MessageBusInterface $bus,
     ) {
     }
 
@@ -54,7 +62,7 @@ final class BrowseController extends AbstractController
     }
 
     #[Route('/browse/items', name: 'browse_items', methods: ['GET'])]
-    public function items(Request $request, BookRepository $books, IntegrationRepository $integrations): JsonResponse
+    public function items(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests): JsonResponse
     {
         $offset = max(0, $request->query->getInt('offset', 0));
         $limit  = min(self::MAX_LIMIT, max(1, $request->query->getInt('limit', 100)));
@@ -69,7 +77,8 @@ final class BrowseController extends AbstractController
 
         $libraryIsbns = $books->downloadedIsbns();
         $libraryKeys  = $books->downloadedTitleAuthorKeys();
-        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys);
+        $statusMaps = $this->statusMaps($requests);
+        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps);
 
         $this->sortCards($cards, $sort, $dir);
 
@@ -89,7 +98,7 @@ final class BrowseController extends AbstractController
     }
 
     #[Route('/browse/search', name: 'browse_search', methods: ['GET'])]
-    public function search(Request $request, BookRepository $books, IntegrationRepository $integrations): JsonResponse
+    public function search(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests): JsonResponse
     {
         $q      = trim((string) $request->query->get('q', ''));
         $offset = max(0, $request->query->getInt('offset', 0));
@@ -112,7 +121,8 @@ final class BrowseController extends AbstractController
 
         $libraryIsbns = $books->downloadedIsbns();
         $libraryKeys  = $books->downloadedTitleAuthorKeys();
-        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys);
+        $statusMaps = $this->statusMaps($requests);
+        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps);
 
         // Trending sort is meaningless on a search pool — fall back to the upstream
         // result order, which is relevance.
@@ -176,7 +186,12 @@ final class BrowseController extends AbstractController
             foreach ($books as $b) {
                 $pool['books'][] = $b->toArray();
             }
+            $this->writeThrough(Book::SOURCE_HARDCOVER, $books);
             if (count($books) < self::SEARCH_PAGE_SIZE) {
+                $pool['exhausted'] = true;
+                break;
+            }
+            if (count($pool['books']) >= self::SEARCH_MAX_ITEMS) {
                 $pool['exhausted'] = true;
                 break;
             }
@@ -202,7 +217,12 @@ final class BrowseController extends AbstractController
                     foreach ($books as $b) {
                         $pool['books'][] = $b->toArray();
                     }
+                    $this->writeThrough(Book::SOURCE_OPENLIBRARY, $books);
                     if (count($books) < self::SEARCH_PAGE_SIZE) {
+                        $pool['exhausted'] = true;
+                        break;
+                    }
+                    if (count($pool['books']) >= self::SEARCH_MAX_ITEMS) {
                         $pool['exhausted'] = true;
                         break;
                     }
@@ -260,7 +280,12 @@ final class BrowseController extends AbstractController
             foreach ($books as $b) {
                 $pool['books'][] = $b->toArray();
             }
+            $this->writeThrough(Book::SOURCE_HARDCOVER, $books);
             if (count($books) < self::UPSTREAM_PAGE_SIZE) {
+                $pool['exhausted'] = true;
+                break;
+            }
+            if (count($pool['books']) >= self::UPSTREAM_MAX_ITEMS) {
                 $pool['exhausted'] = true;
                 break;
             }
@@ -276,6 +301,7 @@ final class BrowseController extends AbstractController
                     foreach ($books as $b) {
                         $pool['books'][] = $b->toArray();
                     }
+                    $this->writeThrough(Book::SOURCE_OPENLIBRARY, $books);
                     $pool['source'] = Integration::KIND_OPENLIBRARY;
                     $pool['exhausted'] = true;
                 } catch (OpenLibraryException $e) {
@@ -295,9 +321,10 @@ final class BrowseController extends AbstractController
      * @param array{source: string, books: list<array<string, mixed>>} $pool
      * @param array<string, true> $libraryIsbns
      * @param array<string, true> $libraryKeys
+     * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $statusMaps
      * @return list<array<string, mixed>>
      */
-    private function normalizeCards(array $pool, array $libraryIsbns, array $libraryKeys): array
+    private function normalizeCards(array $pool, array $libraryIsbns, array $libraryKeys, array $statusMaps): array
     {
         $source = $pool['source'] ?? '';
         $out = [];
@@ -314,9 +341,26 @@ final class BrowseController extends AbstractController
                 if (!is_string($isbn) && !is_int($isbn)) continue;
                 if (isset($libraryIsbns[(string) $isbn])) { $downloaded = true; break; }
             }
-            if (!$downloaded && $isbns === []) {
-                $key = BookRepository::normalizeTitleAuthor($title, $author);
-                $downloaded = $key !== null && isset($libraryKeys[$key]);
+            $taKey = BookRepository::normalizeTitleAuthor($title, $author);
+            if (!$downloaded && $taKey !== null && isset($libraryKeys[$taKey])) {
+                $downloaded = true;
+            }
+
+            $requestStatus = null;
+            foreach ($isbns as $isbn) {
+                if (!is_string($isbn) && !is_int($isbn)) continue;
+                $key = (string) $isbn;
+                if (isset($statusMaps['isbns'][$key])) {
+                    $requestStatus = $statusMaps['isbns'][$key];
+                    break;
+                }
+            }
+            if ($requestStatus === null && $taKey !== null && isset($statusMaps['titleAuthor'][$taKey])) {
+                $requestStatus = $statusMaps['titleAuthor'][$taKey];
+            }
+            if ($requestStatus === 'available') {
+                $downloaded = true;
+                $requestStatus = null;
             }
 
             $remoteCover = $b['coverUrl'] ?? null;
@@ -327,6 +371,7 @@ final class BrowseController extends AbstractController
                 'title' => $title,
                 'author' => $author,
                 'downloaded' => $downloaded,
+                'request_status' => $requestStatus,
                 'cover_url' => is_string($remoteCover) && $remoteCover !== ''
                     ? $this->covers->proxyUrlForRemote($remoteCover)
                     : null,
@@ -336,6 +381,17 @@ final class BrowseController extends AbstractController
             ];
         }
         return $out;
+    }
+
+    /**
+     * @return array{isbns: array<string, string>, titleAuthor: array<string, string>}
+     */
+    private function statusMaps(BookRequestRepository $requests): array
+    {
+        $user = $this->getUser();
+        return $user instanceof User
+            ? $requests->statusMapsForUser($user)
+            : ['isbns' => [], 'titleAuthor' => []];
     }
 
     /**
@@ -356,6 +412,62 @@ final class BrowseController extends AbstractController
             $kb = strtolower((string) ($b[$field] ?? ''));
             return $factor * strcmp($ka, $kb);
         });
+    }
+
+    /**
+     * Upsert every upstream book result into the local `books` table (with `downloaded=false`
+     * if it isn't there yet) and bump `last_seen_at`. The home page and request flow then see
+     * trending/search results as first-class rows. Entries without a stable slug are skipped —
+     * the upstream feed can't always emit one and we don't want duplicate metadata-only rows.
+     *
+     * @param list<TrendingBook> $books
+     */
+    private function writeThrough(string $source, array $books): void
+    {
+        if ($books === []) {
+            return;
+        }
+        $now = new \DateTimeImmutable();
+        $ids = [];
+        foreach ($books as $b) {
+            $slug = $this->slugFromExternalUrl($source, $b->externalUrl);
+            if ($slug === null) {
+                continue;
+            }
+            $book = $this->bookRepo->upsertMetadataBook(
+                source: $source,
+                externalId: $slug,
+                title: $b->title,
+                author: $b->author,
+                externalUrl: $b->externalUrl,
+                coverUrl: $b->coverUrl,
+                rawIsbns: $b->isbns,
+                now: $now,
+            );
+            if ($book->getId() === null) {
+                $this->em->flush();
+            }
+            $ids[] = (int) $book->getId();
+        }
+        $this->em->flush();
+        if ($ids !== []) {
+            $this->bus->dispatch(new TouchBooksSeen($ids));
+        }
+    }
+
+    private function slugFromExternalUrl(string $source, ?string $externalUrl): ?string
+    {
+        if ($externalUrl === null || $externalUrl === '') {
+            return null;
+        }
+        $path = parse_url($externalUrl, PHP_URL_PATH) ?: '';
+        if ($source === Book::SOURCE_HARDCOVER && preg_match('~/books/([^/?#]+)~', $path, $m)) {
+            return $m[1];
+        }
+        if ($source === Book::SOURCE_OPENLIBRARY && preg_match('~/works/(OL[A-Z0-9]+W)~', $path, $m)) {
+            return $m[1];
+        }
+        return null;
     }
 
     /**

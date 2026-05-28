@@ -62,10 +62,6 @@ class Integration
     #[ORM\Column(type: Types::JSON, options: ['jsonb' => true, 'default' => '[]'])]
     private array $selectedLibraries = [];
 
-    /** Per-kind free-form cache (fetch handlers own the shape). @var array<string, mixed> */
-    #[ORM\Column(type: Types::JSON, options: ['jsonb' => true, 'default' => '{}'])]
-    private array $cacheData = [];
-
     /** Per-kind free-form options (consumers own the schema). @var array<string, mixed> */
     #[ORM\Column(type: Types::JSON, options: ['jsonb' => true, 'default' => '{}'])]
     private array $options = [];
@@ -145,11 +141,6 @@ class Integration
     }
 
     /** @return array<string, mixed> */
-    public function getCacheData(): array { return $this->cacheData; }
-    /** @param array<string, mixed> $data */
-    public function setCacheData(array $data): self { $this->cacheData = $data; return $this; }
-
-    /** @return array<string, mixed> */
     public function getOptions(): array { return $this->options; }
     /** @param array<string, mixed> $options */
     public function setOptions(array $options): self { $this->options = $options; return $this; }
@@ -194,6 +185,39 @@ class Integration
             'formats'   => array_values(array_filter($prefs['formats']   ?? [], static fn ($v) => is_string($v) && $v !== '')),
             'countries' => array_values(array_filter($prefs['countries'] ?? [], static fn ($v) => is_string($v) && $v !== '')),
         ];
+        $this->options = $options;
+        return $this;
+    }
+
+    public function getBookPurgeThresholdDays(): int
+    {
+        $v = $this->options['book_purge_threshold_days'] ?? null;
+        $n = is_int($v) ? $v : (is_numeric($v) ? (int) $v : 30);
+        return max(1, min(365, $n));
+    }
+
+    public function setBookPurgeThresholdDays(int $days): self
+    {
+        $options = $this->options;
+        $options['book_purge_threshold_days'] = max(1, min(365, $days));
+        $this->options = $options;
+        return $this;
+    }
+
+    public function getHardcoverGenreCount(): ?int
+    {
+        $v = $this->options['hardcover_genre_count'] ?? null;
+        return is_int($v) ? $v : null;
+    }
+
+    public function setHardcoverGenreCount(?int $count): self
+    {
+        $options = $this->options;
+        if ($count === null) {
+            unset($options['hardcover_genre_count']);
+        } else {
+            $options['hardcover_genre_count'] = $count;
+        }
         $this->options = $options;
         return $this;
     }

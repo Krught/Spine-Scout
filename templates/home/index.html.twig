@@ -79,6 +79,7 @@
                                      data-book-modal-cover-param="{{ item.cover_url ?? '' }}"
                                      data-book-modal-external-url-param="{{ item.external_url ?? '' }}"
                                      data-book-modal-downloaded-param="{{ (item.downloaded ?? false) ? '1' : '0' }}"
+                                     data-book-modal-request-status-param="{{ item.request_status ?? '' }}"
                                      {{ meta_attrs|raw }}{% endif %}>
                                 <div class="card-cover" style="background: {{ ['linear-gradient(135deg,#3a4a6b,#5c6f99)','linear-gradient(135deg,#7a3a5f,#a85b85)','linear-gradient(135deg,#2f5a4e,#508a76)','linear-gradient(135deg,#6b4a2a,#a3754a)','linear-gradient(135deg,#3d3d6b,#6a6ab0)','linear-gradient(135deg,#5a2a3d,#8a4a60)'][loop.index0 % 6] }};">
                                     {% if item.cover_url is defined and item.cover_url %}
@@ -91,6 +92,24 @@
                                             <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
                                                 <path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                                             </svg>
+                                        </span>
+                                    {% elseif item.request_status is defined and item.request_status %}
+                                        {% set rs_labels = {'pending': 'Pending', 'approved': 'Approved', 'rejected': 'Rejected'} %}
+                                        <span class="card-status card-status-{{ item.request_status }}" title="{{ rs_labels[item.request_status] ?? item.request_status }}" aria-label="{{ rs_labels[item.request_status] ?? item.request_status }}">
+                                            {% if item.request_status == 'pending' %}
+                                                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+                                                    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.5"/>
+                                                    <path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                                </svg>
+                                            {% elseif item.request_status == 'approved' %}
+                                                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+                                                    <path d="M7 10v9h-3v-9h3zm3 9c-.55 0-1-.45-1-1v-8.4l3.6-6.6c.32-.58 1.04-.79 1.62-.46.42.23.66.69.61 1.16l-.49 4.3h5.16c1.1 0 2 .9 2 2 0 .27-.06.53-.16.78l-2.55 6.78c-.29.78-1.04 1.3-1.88 1.3h-6.91z" fill="currentColor"/>
+                                                </svg>
+                                            {% elseif item.request_status == 'rejected' %}
+                                                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+                                                    <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                                                </svg>
+                                            {% endif %}
                                         </span>
                                     {% elseif item.badge is defined and item.badge is not empty %}
                                         <span class="card-badge card-badge-{{ item.badge|lower }}">{{ item.badge }}</span>

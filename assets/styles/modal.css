@@ -94,6 +94,21 @@ body.book-modal-open { overflow: hidden; }
     color: #ffffff;
     cursor: default;
 }
+.book-modal-action.is-pending {
+    background: rgb(240, 180, 41);
+    color: #1a1a1a;
+    cursor: default;
+}
+.book-modal-action.is-approved {
+    background: rgb(99, 102, 241);
+    color: #ffffff;
+    cursor: default;
+}
+.book-modal-action.is-rejected {
+    background: rgb(180, 60, 60);
+    color: #ffffff;
+    cursor: default;
+}
 .book-modal-search {
     width: 180px;
     padding: 0.45rem 0.9rem;

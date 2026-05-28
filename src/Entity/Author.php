@@ -61,6 +61,13 @@ class Author
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $metadataFetchedAt = null;
 
+    /** Rank within the most recent "popular authors" shelf (1 = top). NULL when not on the current shelf. */
+    #[ORM\Column(nullable: true)]
+    private ?int $popularRank = null;
+
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $popularFetchedAt = null;
+
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
 
@@ -120,6 +127,12 @@ class Author
 
     public function getMetadataFetchedAt(): ?\DateTimeImmutable { return $this->metadataFetchedAt; }
     public function setMetadataFetchedAt(?\DateTimeImmutable $when): self { $this->metadataFetchedAt = $when; return $this; }
+
+    public function getPopularRank(): ?int { return $this->popularRank; }
+    public function setPopularRank(?int $rank): self { $this->popularRank = $rank; return $this; }
+
+    public function getPopularFetchedAt(): ?\DateTimeImmutable { return $this->popularFetchedAt; }
+    public function setPopularFetchedAt(?\DateTimeImmutable $when): self { $this->popularFetchedAt = $when; return $this; }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
     public function getUpdatedAt(): \DateTimeImmutable { return $this->updatedAt; }

@@ -68,15 +68,23 @@ final class BookMetadataController extends AbstractController
                 }
             }
         }
-        $requested = false;
+        $requestStatus = null;
         $user = $this->getUser();
         if ($user instanceof User && $book->getId() !== null) {
-            $requested = $this->requests->findOneByUserAndBook($user, $book) !== null;
+            $existing = $this->requests->findOneByUserAndBook($user, $book);
+            if ($existing !== null) {
+                $requestStatus = $existing->getStatus();
+            }
+        }
+        // Available means the request was fulfilled into the library — surface it as downloaded.
+        if ($requestStatus === 'available') {
+            $downloaded = true;
+            $requestStatus = null;
         }
 
         return [
             'id'            => $book->getId(),
-            'requested'     => $requested,
+            'requestStatus' => $requestStatus,
             'title'         => $book->getTitle(),
             'author'        => $book->getAuthor(),
             'publisher'     => $book->getPublisher(),

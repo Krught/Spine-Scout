@@ -32,6 +32,7 @@ export default class extends Controller {
         // Homepage seed is authoritative-positive: server response can upgrade
         // false→true but never the reverse.
         this.seedDownloaded = params.bookModalDownloadedParam === '1';
+        this.seedRequestStatus = params.bookModalRequestStatusParam || null;
         this.currentBookId = params.bookModalIdParam ? Number(params.bookModalIdParam) : null;
         this.currentSeed = {
             source: params.bookModalSourceParam || null,
@@ -41,7 +42,7 @@ export default class extends Controller {
             author: params.bookModalAuthorParam || '',
             coverUrl: params.bookModalCoverParam || '',
         };
-        this.setAction(this.seedDownloaded, false);
+        this.setAction(this.seedDownloaded, this.seedRequestStatus);
         this.modalTarget.hidden = false;
         document.body.classList.add('book-modal-open');
 
@@ -79,17 +80,22 @@ export default class extends Controller {
         }
     }
 
-    setAction(downloaded, requested) {
+    setAction(downloaded, requestStatus) {
         const action = this.actionTarget;
         action.hidden = false;
-        action.classList.remove('is-get', 'is-have', 'is-requested');
+        action.classList.remove('is-get', 'is-have', 'is-requested', 'is-pending', 'is-approved', 'is-rejected');
+        const statusMap = {
+            pending:  { text: 'Pending',  cls: 'is-pending' },
+            approved: { text: 'Approved', cls: 'is-approved' },
+            rejected: { text: 'Rejected', cls: 'is-rejected' },
+        };
         if (downloaded) {
             action.textContent = 'In Library';
             action.classList.add('is-have');
             action.disabled = true;
-        } else if (requested) {
-            action.textContent = 'Requested';
-            action.classList.add('is-requested');
+        } else if (requestStatus && statusMap[requestStatus]) {
+            action.textContent = statusMap[requestStatus].text;
+            action.classList.add(statusMap[requestStatus].cls);
             action.disabled = true;
         } else {
             action.textContent = 'Get';
@@ -146,7 +152,7 @@ export default class extends Controller {
             if (data && typeof data.bookId === 'number') {
                 this.currentBookId = data.bookId;
             }
-            this.setAction(this.seedDownloaded, true);
+            this.setAction(this.seedDownloaded, 'pending');
         } catch (e) {
             action.disabled = false;
             action.textContent = previousText;
@@ -206,7 +212,7 @@ export default class extends Controller {
         if (typeof book.id === 'number') {
             this.currentBookId = book.id;
         }
-        this.setAction(this.seedDownloaded || !!book.downloaded, !!book.requested);
+        this.setAction(this.seedDownloaded || !!book.downloaded, book.requestStatus || this.seedRequestStatus || null);
 
         if (book.fetched === false) {
             this.statusTarget.textContent = "Couldn't reach the metadata provider — try again later.";
