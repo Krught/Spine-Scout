@@ -681,6 +681,7 @@ final class HardcoverClient
             'series'        => $series,
             'seriesIndex'   => $seriesIndex,
             'seriesTotal'   => $seriesTotal,
+            'coverUrl'      => $this->extractCoverUrl($row['cached_image'] ?? null),
         ];
     }
 

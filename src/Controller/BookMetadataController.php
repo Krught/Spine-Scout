@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Entity\Book;
+use App\Entity\User;
 use App\Repository\BookRepository;
+use App\Repository\BookRequestRepository;
 use App\Service\BookMetadataService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -17,6 +19,7 @@ final class BookMetadataController extends AbstractController
     public function __construct(
         private readonly BookMetadataService $metadata,
         private readonly BookRepository $books,
+        private readonly BookRequestRepository $requests,
     ) {
     }
 
@@ -65,7 +68,15 @@ final class BookMetadataController extends AbstractController
                 }
             }
         }
+        $requested = false;
+        $user = $this->getUser();
+        if ($user instanceof User && $book->getId() !== null) {
+            $requested = $this->requests->findOneByUserAndBook($user, $book) !== null;
+        }
+
         return [
+            'id'            => $book->getId(),
+            'requested'     => $requested,
             'title'         => $book->getTitle(),
             'author'        => $book->getAuthor(),
             'publisher'     => $book->getPublisher(),

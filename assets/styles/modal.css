@@ -89,6 +89,11 @@ body.book-modal-open { overflow: hidden; }
     color: #ffffff;
     cursor: default;
 }
+.book-modal-action.is-requested {
+    background: #6b21a8;
+    color: #ffffff;
+    cursor: default;
+}
 .book-modal-search {
     width: 180px;
     padding: 0.45rem 0.9rem;

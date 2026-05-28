@@ -1,0 +1,76 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Requests - Spine Scout{% endblock %}
+
+{% block body %}
+    <section class="requests-section">
+        <header class="requests-header">
+            <h1 class="requests-title">Requests</h1>
+        </header>
+
+        {% if items is empty %}
+            <div class="requests-empty">No requests yet.</div>
+        {% else %}
+            <ul class="requests-list">
+                {% set _cover_gradients = [
+                    'linear-gradient(135deg,#3a4a6b,#5c6f99)',
+                    'linear-gradient(135deg,#7a3a5f,#a85b85)',
+                    'linear-gradient(135deg,#2f5a4e,#508a76)',
+                    'linear-gradient(135deg,#6b4a2a,#a3754a)',
+                    'linear-gradient(135deg,#3d3d6b,#6a6ab0)',
+                    'linear-gradient(135deg,#5a2a3d,#8a4a60)',
+                ] %}
+                {% for item in items %}
+                    {% set r = item.entity %}
+                    {% set status = r.status %}
+                    {% set is_owner = app.user and app.user.id == r.requestedBy.id %}
+                    {% set can_approve = is_granted('ROLE_ADMIN') and status == 'pending' %}
+                    {% set can_delete = is_granted('ROLE_ADMIN') or is_owner %}
+                    {% set _dur = random(900, 3600) %}
+                    <li class="request-row" data-controller="cover-palette" data-cover-palette-target-value=".request-cover"
+                        style="--row-fill-duration: {{ _dur }}ms;">
+                        <div class="request-left">
+                            {% if item.cover_url %}
+                                <img class="request-cover" src="{{ item.cover_url }}" alt="" loading="lazy">
+                            {% else %}
+                                <div class="request-cover request-cover-placeholder" aria-hidden="true"
+                                     style="background: {{ _cover_gradients[loop.index0 % 6] }};">
+                                    <span class="request-cover-title">{{ r.book.title|slice(0, 24) }}</span>
+                                </div>
+                            {% endif %}
+                            <div class="request-titleblock">
+                                <div class="request-booktitle">{{ r.book.title }}</div>
+                                {% if r.book.author %}
+                                    <div class="request-bookauthor">{{ r.book.author }}</div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="request-meta">
+                            <span class="request-status request-status-{{ status }}">{{ r.statusLabel }}</span>
+                            <span class="request-when">
+                                Requested {{ item.ago }} by <strong>{{ r.requestedBy.username }}</strong>
+                            </span>
+                        </div>
+
+                        <div class="request-actions">
+                            {% if can_approve %}
+                                <form method="post" action="{{ path('requests_approve', {id: r.id}) }}">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token('approve-request-' ~ r.id) }}">
+                                    <button type="submit" class="request-btn request-btn-approve">Approve</button>
+                                </form>
+                            {% endif %}
+                            {% if can_delete %}
+                                <form method="post" action="{{ path('requests_delete', {id: r.id}) }}"
+                                      onsubmit="return confirm('Remove this request?');">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token('delete-request-' ~ r.id) }}">
+                                    <button type="submit" class="request-btn request-btn-delete">Remove Request</button>
+                                </form>
+                            {% endif %}
+                        </div>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    </section>
+{% endblock %}

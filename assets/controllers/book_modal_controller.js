@@ -5,6 +5,8 @@ export default class extends Controller {
 
     connect() {
         this.requestSeq = 0;
+        this.currentBookId = null;
+        this.currentSeed = null;
     }
 
     async open(event) {
@@ -30,7 +32,16 @@ export default class extends Controller {
         // Homepage seed is authoritative-positive: server response can upgrade
         // false→true but never the reverse.
         this.seedDownloaded = params.bookModalDownloadedParam === '1';
-        this.setAction(this.seedDownloaded);
+        this.currentBookId = params.bookModalIdParam ? Number(params.bookModalIdParam) : null;
+        this.currentSeed = {
+            source: params.bookModalSourceParam || null,
+            externalId: params.bookModalExternalIdParam || null,
+            externalUrl: params.bookModalExternalUrlParam || null,
+            title: params.bookModalTitleParam || '',
+            author: params.bookModalAuthorParam || '',
+            coverUrl: params.bookModalCoverParam || '',
+        };
+        this.setAction(this.seedDownloaded, false);
         this.modalTarget.hidden = false;
         document.body.classList.add('book-modal-open');
 
@@ -68,21 +79,80 @@ export default class extends Controller {
         }
     }
 
-    setAction(downloaded) {
+    setAction(downloaded, requested) {
         const action = this.actionTarget;
         action.hidden = false;
+        action.classList.remove('is-get', 'is-have', 'is-requested');
         if (downloaded) {
             action.textContent = 'In Library';
             action.classList.add('is-have');
-            action.classList.remove('is-get');
+            action.disabled = true;
+        } else if (requested) {
+            action.textContent = 'Requested';
+            action.classList.add('is-requested');
             action.disabled = true;
         } else {
             action.textContent = 'Get';
             action.classList.add('is-get');
-            action.classList.remove('is-have');
             action.disabled = false;
         }
         this.searchTarget.hidden = downloaded;
+    }
+
+    async requestBook(event) {
+        if (event && event.preventDefault) event.preventDefault();
+        const action = this.actionTarget;
+        if (action.disabled) return;
+        if (this.currentBookId === null && (!this.currentSeed || !this.currentSeed.source || !this.currentSeed.externalId)) {
+            return;
+        }
+
+        const tokenEl = document.querySelector('meta[name="csrf-token"]');
+        const token = tokenEl ? tokenEl.getAttribute('content') : '';
+
+        const payload = { _csrf_token: token };
+        if (this.currentBookId !== null) {
+            payload.bookId = this.currentBookId;
+        } else {
+            payload.source = this.currentSeed.source;
+            payload.externalId = this.currentSeed.externalId;
+            if (this.currentSeed.title) payload.title = this.currentSeed.title;
+            if (this.currentSeed.author) payload.author = this.currentSeed.author;
+            if (this.currentSeed.externalUrl) payload.externalUrl = this.currentSeed.externalUrl;
+        }
+        if (this.currentSeed && this.currentSeed.coverUrl) {
+            payload.coverUrl = this.currentSeed.coverUrl;
+        }
+
+        const previousText = action.textContent;
+        action.disabled = true;
+        action.textContent = 'Requesting…';
+
+        try {
+            const response = await fetch('/requests/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                action.disabled = false;
+                action.textContent = previousText;
+                this.statusTarget.textContent = `Couldn't create request (HTTP ${response.status}).`;
+                this.statusTarget.hidden = false;
+                return;
+            }
+            const data = await response.json();
+            if (data && typeof data.bookId === 'number') {
+                this.currentBookId = data.bookId;
+            }
+            this.setAction(this.seedDownloaded, true);
+        } catch (e) {
+            action.disabled = false;
+            action.textContent = previousText;
+            this.statusTarget.textContent = "Couldn't create request.";
+            this.statusTarget.hidden = false;
+        }
     }
 
     renderAuthor(raw) {
@@ -133,7 +203,10 @@ export default class extends Controller {
         if (book.title) this.titleTarget.textContent = book.title;
         if (book.author) this.renderAuthor(book.author);
 
-        this.setAction(this.seedDownloaded || !!book.downloaded);
+        if (typeof book.id === 'number') {
+            this.currentBookId = book.id;
+        }
+        this.setAction(this.seedDownloaded || !!book.downloaded, !!book.requested);
 
         if (book.fetched === false) {
             this.statusTarget.textContent = "Couldn't reach the metadata provider — try again later.";

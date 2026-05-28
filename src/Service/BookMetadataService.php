@@ -15,12 +15,15 @@ use App\Integration\OpenLibrary\OpenLibraryException;
 use App\Repository\BookRepository;
 use App\Repository\IntegrationRepository;
 use Doctrine\ORM\EntityManagerInterface;
+use Psr\Cache\CacheItemPoolInterface;
 
 /**
  * Persists upstream lookup results so subsequent clicks on the same book are served from the DB.
  */
 final class BookMetadataService
 {
+    private const COVER_CACHE_TTL = 60 * 60 * 24 * 30;
+
     public function __construct(
         private readonly BookRepository $books,
         private readonly IntegrationRepository $integrations,
@@ -28,7 +31,64 @@ final class BookMetadataService
         private readonly GrimmoryClient $grimmory,
         private readonly HardcoverClient $hardcover,
         private readonly OpenLibraryClient $openLibrary,
+        private readonly CoverCache $covers,
+        private readonly CacheItemPoolInterface $cache,
     ) {
+    }
+
+    /**
+     * Returns a cover-proxy URL for the given book, fetching from upstream if needed.
+     *
+     * - Grimmory books are derived deterministically from the external id.
+     * - For Hardcover/OpenLibrary, the proxy URL is cached in the PSR pool keyed by
+     *   book id so repeat lookups (e.g. on /requests) don't go back to upstream.
+     */
+    public function ensureCoverProxyUrl(Book $book): ?string
+    {
+        if ($book->getSource() === Book::SOURCE_GRIMMORY) {
+            return $this->covers->proxyUrlForKomga($book->getExternalId());
+        }
+
+        $bookId = $book->getId();
+        if ($bookId === null) {
+            return null;
+        }
+
+        $cacheKey = 'book.cover.' . $bookId;
+        $item = $this->cache->getItem($cacheKey);
+        if ($item->isHit()) {
+            $value = $item->get();
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
+        $remoteUrl = $this->fetchRemoteCoverUrl($book);
+        if ($remoteUrl === null) {
+            return null;
+        }
+        $proxyUrl = $this->covers->proxyUrlForRemote($remoteUrl);
+        $item->set($proxyUrl);
+        $item->expiresAfter(self::COVER_CACHE_TTL);
+        $this->cache->save($item);
+        return $proxyUrl;
+    }
+
+    private function fetchRemoteCoverUrl(Book $book): ?string
+    {
+        try {
+            $data = match ($book->getSource()) {
+                Book::SOURCE_HARDCOVER   => $this->fetchFromHardcover($book->getExternalId()),
+                Book::SOURCE_OPENLIBRARY => $this->openLibrary->fetchBookMetadataByKey($book->getExternalId()),
+                default => null,
+            };
+        } catch (GrimmoryException | HardcoverException | OpenLibraryException) {
+            return null;
+        }
+        if (!is_array($data) || empty($data['coverUrl'])) {
+            return null;
+        }
+        return (string) $data['coverUrl'];
     }
 
     /**

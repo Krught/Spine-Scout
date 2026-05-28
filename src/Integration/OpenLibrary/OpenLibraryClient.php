@@ -252,6 +252,19 @@ final class OpenLibraryClient
             // Editions endpoint is best-effort; the popup still renders with work-level fields.
         }
 
+        $coverUrl = null;
+        $covers = is_array($work['covers'] ?? null) ? $work['covers'] : [];
+        foreach ($covers as $c) {
+            if (is_int($c) && $c > 0) {
+                $coverUrl = self::COVERS_BASE . $c . '-M.jpg';
+                break;
+            }
+            if (is_string($c) && ctype_digit($c) && (int) $c > 0) {
+                $coverUrl = self::COVERS_BASE . $c . '-M.jpg';
+                break;
+            }
+        }
+
         return [
             'title'         => $title,
             'author'        => $author,
@@ -265,6 +278,7 @@ final class OpenLibraryClient
             'series'        => null,
             'seriesIndex'   => null,
             'seriesTotal'   => null,
+            'coverUrl'      => $coverUrl,
         ];
     }
 

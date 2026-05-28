@@ -40,14 +40,6 @@ final class SettingsController extends AbstractController
         ]);
     }
 
-    #[Route('/users', name: 'users')]
-    public function users(): Response
-    {
-        return $this->render('settings/users.html.twig', [
-            'active_tab' => 'users',
-        ]);
-    }
-
     #[Route('/grimmory', name: 'grimmory')]
     public function grimmory(
         Request $request,
