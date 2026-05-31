@@ -18,7 +18,9 @@ RUN composer install \
 # ---- Stage 2: PHP-FPM runtime ---------------------------------------------
 FROM php:8.4-fpm-alpine AS app
 
-# System packages required by Symfony + Doctrine (Postgres) + intl
+# System packages required by Symfony + Doctrine (Postgres) + intl + GD.
+# Cloudflare bypass is delegated to the bundled FlareSolverr compose service, so
+# no browser ships in this image.
 RUN apk add --no-cache \
         bash \
         git \

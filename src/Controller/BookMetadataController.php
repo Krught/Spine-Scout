@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Entity\Book;
+use App\Entity\BookRequest;
+use App\Entity\DownloadJob;
 use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
@@ -74,6 +76,11 @@ final class BookMetadataController extends AbstractController
             $existing = $this->requests->findOneByUserAndBook($user, $book);
             if ($existing !== null) {
                 $requestStatus = $existing->getStatus();
+                // Downloaded but not yet imported — surface as a distinct pseudo-status
+                // so the popup shows a "Downloaded" badge (matches the card icon).
+                if ($requestStatus === BookRequest::STATUS_APPROVED && $existing->getDeliveryStatus() === DownloadJob::STATUS_COMPLETE) {
+                    $requestStatus = 'downloaded';
+                }
             }
         }
         // Available means the request was fulfilled into the library — surface it as downloaded.

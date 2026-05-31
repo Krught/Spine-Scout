@@ -43,6 +43,13 @@ class BookRequest
     #[ORM\Column(length: 16, options: ['default' => self::STATUS_PENDING])]
     private string $status = self::STATUS_PENDING;
 
+    /**
+     * Mirrors the latest associated DownloadJob.status when one exists.
+     * ProcessDownloadJobHandler keeps it in sync.
+     */
+    #[ORM\Column(length: 16, nullable: true)]
+    private ?string $deliveryStatus = null;
+
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
 
@@ -91,6 +98,9 @@ class BookRequest
             default                => ucfirst($this->status),
         };
     }
+
+    public function getDeliveryStatus(): ?string { return $this->deliveryStatus; }
+    public function setDeliveryStatus(?string $status): self { $this->deliveryStatus = $status; return $this; }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
     public function getUpdatedAt(): \DateTimeImmutable { return $this->updatedAt; }

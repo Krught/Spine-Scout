@@ -3,6 +3,7 @@ twig:
     globals:
         app_version: '%app.version%'
         app_latest_version: '%app.latest_version%'
+        dev_tools: '@App\Dev\DevTools'
 
 when@test:
     twig:

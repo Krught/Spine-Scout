@@ -100,3 +100,503 @@
     border-color: rgba(239, 68, 68, 0.3);
     color: #fca5a5;
 }
+
+/* --- best-match + direct-download tabs --- */
+
+.settings-fieldset {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem 1.25rem;
+    margin: 0 0 1.25rem;
+}
+.settings-fieldset > legend {
+    padding: 0 0.5rem;
+    font-weight: 600;
+    color: var(--fg);
+}
+
+.settings-empty-state {
+    background: rgba(148, 163, 184, 0.08);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+.settings-empty-state h3 {
+    margin: 0 0 0.4rem;
+    font-size: 1.05rem;
+}
+.settings-empty-state p {
+    margin: 0 0 0.4rem;
+    color: var(--fg-muted);
+}
+
+.field-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.75rem 1rem;
+}
+
+.field-checkbox,
+.field-radio {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.25rem 0;
+    color: var(--fg);
+}
+.field-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.orderable-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.orderable-list__item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.02);
+    cursor: grab;
+}
+.orderable-list__item--dragging { opacity: 0.5; }
+.orderable-list__item--over {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.08);
+}
+.orderable-list__handle {
+    color: var(--fg-muted);
+    cursor: grab;
+    user-select: none;
+    font-size: 1.1rem;
+}
+.orderable-list__label {
+    flex: 1;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.9rem;
+}
+.orderable-list__enabled {
+    display: flex;
+    gap: 0.3rem;
+    align-items: center;
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+}
+.orderable-list__actions {
+    display: flex;
+    gap: 0.25rem;
+}
+.orderable-list__btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.8rem;
+    height: 1.8rem;
+    padding: 0 0.45rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease, transform 80ms ease;
+}
+.orderable-list__btn:hover {
+    color: var(--fg);
+    border-color: var(--fg-muted);
+    background: var(--bg-elev);
+}
+.orderable-list__btn:active { transform: translateY(1px); }
+.orderable-list__btn:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.orderable-list-add {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.6rem;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+}
+.orderable-list-add input,
+.orderable-list-add select {
+    flex: 1;
+}
+
+/* Fixed, named mirror sources — each a paste-a-blob textarea. */
+.mirror-section {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    background: rgba(255, 255, 255, 0.02);
+    margin-bottom: 0.6rem;
+}
+.mirror-section__label {
+    display: block;
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 0.15rem;
+}
+.mirror-section__help {
+    margin: 0 0 0.45rem;
+}
+
+/* Token/chip input — type a URL, Tab to turn it into a removable bubble. */
+.token-input {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 2.5rem;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    cursor: text;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.token-input:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+/* Let chips participate directly in the container's flex wrap. */
+.token-input__chips {
+    display: contents;
+}
+.token-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    max-width: 100%;
+    padding: 0.2rem 0.3rem 0.2rem 0.55rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    cursor: grab;
+    user-select: none;
+}
+.token-chip:active {
+    cursor: grabbing;
+}
+.token-chip--dragging {
+    opacity: 0.45;
+}
+/* Drop indicator: a bar on the left edge (where the dragged chip lands). */
+.token-chip--over {
+    box-shadow: -3px 0 0 0 var(--accent);
+}
+.token-chip__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 28rem;
+}
+.token-chip__remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.15rem;
+    height: 1.15rem;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    transition: color 120ms ease, background 120ms ease;
+}
+.token-chip__remove:hover {
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.15);
+}
+.token-input__field {
+    flex: 1;
+    min-width: 12rem;
+    border: none;
+    background: transparent;
+    color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.85rem;
+    padding: 0.2rem;
+    outline: none;
+}
+
+/* "Add" buttons inside the dashed add-rows — primary-tinted pill. */
+.orderable-list-add > button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.45rem 0.95rem;
+    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--fg);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+.orderable-list-add > button::before {
+    content: '+';
+    font-weight: 700;
+    font-size: 1rem;
+    line-height: 0.9;
+}
+.orderable-list-add > button:hover {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    border-color: var(--accent);
+}
+.orderable-list-add > button:active {
+    transform: translateY(1px);
+}
+.orderable-list-add > button:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Custom checkbox: square, accent border, animated check.
+   Scoped to anywhere a checkbox appears inside the settings panel — covers
+   form_widget()-rendered fields on the Grimmory and Metadata tabs as well as
+   the hand-written .field-checkbox and .orderable-list__enabled markup on the
+   Best Match / Direct Downloads tabs. */
+.settings-panel input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1.1rem;
+    height: 1.1rem;
+    flex-shrink: 0;
+    margin: 0;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    display: inline-grid;
+    place-content: center;
+    vertical-align: middle;
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.settings-panel input[type="checkbox"]::before {
+    content: '';
+    width: 0.62rem;
+    height: 0.62rem;
+    clip-path: polygon(14% 44%, 0% 60%, 40% 100%, 100% 22%, 84% 8%, 36% 64%);
+    background: var(--accent-fg, #fff);
+    transform: scale(0);
+    transform-origin: center;
+    transition: transform 120ms ease;
+}
+.settings-panel input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+.settings-panel input[type="checkbox"]:checked::before {
+    transform: scale(1);
+}
+.settings-panel input[type="checkbox"]:hover {
+    border-color: var(--fg-muted);
+}
+.settings-panel input[type="checkbox"]:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.field-checkbox {
+    align-items: flex-start;
+    cursor: pointer;
+}
+.field-checkbox > span { line-height: 1.3; }
+.orderable-list__enabled { cursor: pointer; }
+
+/* Grimmory's library-selection checkbox list (rendered by form_widget into a
+   .checkbox-list div). Make each option a tappable row. */
+.settings-panel .checkbox-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.5rem 0.65rem;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.settings-panel .checkbox-list > div {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+.settings-panel .checkbox-list label {
+    font-weight: 500;
+    color: var(--fg);
+    cursor: pointer;
+    user-select: none;
+}
+
+/* forms.css ships a same-specificity rule that pins .field-checkbox boxes to
+   1rem; bump our specificity so settings-tab checkboxes are uniformly sized. */
+.settings-panel .field-checkbox input[type="checkbox"] {
+    width: 1.1rem;
+    height: 1.1rem;
+}
+
+/* ── Development panel (Settings → Development) ───────────────────────────── */
+.dev-test__title {
+    margin: 0 0 0.25rem;
+}
+.dev-config {
+    margin: 0.75rem 0;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.02);
+}
+.dev-config h4 {
+    margin: 0 0 0.4rem;
+    font-size: 0.9rem;
+}
+.dev-config__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+}
+.dev-config__state {
+    display: inline-block;
+    width: 1.2rem;
+}
+.dev-form__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.6rem;
+}
+@media (max-width: 720px) {
+    .dev-form__grid { grid-template-columns: 1fr; }
+}
+.dev-result {
+    margin-top: 1rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.75rem;
+}
+.dev-result h4 {
+    margin: 0.75rem 0 0.35rem;
+    font-size: 0.9rem;
+}
+.dev-result__url {
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.8rem;
+    margin: 0 0 0.5rem;
+}
+.dev-result__table-wrap {
+    overflow-x: auto;
+}
+.dev-result__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+.dev-result__table th,
+.dev-result__table td {
+    text-align: left;
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+.dev-result__raw {
+    margin-top: 0.75rem;
+}
+.dev-result__raw summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+}
+.dev-result__raw pre {
+    max-height: 28rem;
+    overflow: auto;
+    padding: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* --- Dev: downloads activity / live log ------------------------------- */
+.dev-activity {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    align-items: start;
+}
+@media (max-width: 900px) {
+    .dev-activity { grid-template-columns: 1fr; }
+}
+.dev-live-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4ad07a;
+    margin-right: 0.35rem;
+    animation: dev-pulse 1.6s ease-in-out infinite;
+}
+@keyframes dev-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.dev-job-status {
+    text-transform: capitalize;
+    font-size: 0.78rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+}
+.dev-job-status-complete { color: #7fc8a4; }
+.dev-job-status-downloading, .dev-job-status-resolving { color: #6aa0f0; }
+.dev-job-status-error { color: #f7a4a4; }
+.dev-job-error { color: #f7a4a4; }
+.dev-log {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 460px;
+    overflow-y: auto;
+    font-size: 0.8rem;
+    font-family: var(--mono, ui-monospace, monospace);
+}
+.dev-log__line {
+    padding: 0.2rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.dev-log__time { color: #7c8aa0; }
+.dev-log__subject { color: #cdd7e6; font-weight: 600; }
+.dev-log__msg { color: #aebacb; }
+.dev-log__line-warn .dev-log__msg { color: #e8c98a; }
+.dev-log__line-error .dev-log__msg { color: #f7a4a4; }

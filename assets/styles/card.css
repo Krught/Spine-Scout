@@ -104,6 +104,7 @@
 .card-status-pending  { background: rgb(240, 180, 41); color: rgb(240, 180, 41); }
 .card-status-approved { background: rgb(99, 102, 241); color: rgb(99, 102, 241); }
 .card-status-rejected { background: rgb(180, 60, 60);  color: rgb(180, 60, 60);  }
+.card-status-downloaded { background: rgb(45, 166, 184); color: rgb(45, 166, 184); }
 
 .card-overlay {
     position: absolute;

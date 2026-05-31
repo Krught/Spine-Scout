@@ -83,11 +83,12 @@ export default class extends Controller {
     setAction(downloaded, requestStatus) {
         const action = this.actionTarget;
         action.hidden = false;
-        action.classList.remove('is-get', 'is-have', 'is-requested', 'is-pending', 'is-approved', 'is-rejected');
+        action.classList.remove('is-get', 'is-have', 'is-requested', 'is-pending', 'is-approved', 'is-rejected', 'is-downloaded');
         const statusMap = {
-            pending:  { text: 'Pending',  cls: 'is-pending' },
-            approved: { text: 'Approved', cls: 'is-approved' },
-            rejected: { text: 'Rejected', cls: 'is-rejected' },
+            pending:    { text: 'Pending',    cls: 'is-pending' },
+            approved:   { text: 'Approved',   cls: 'is-approved' },
+            rejected:   { text: 'Rejected',   cls: 'is-rejected' },
+            downloaded: { text: 'Downloaded', cls: 'is-downloaded' },
         };
         if (downloaded) {
             action.textContent = 'In Library';

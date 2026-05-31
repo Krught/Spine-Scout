@@ -10,6 +10,7 @@ services:
       MESSENGER_TRANSPORT_DSN: doctrine://default?auto_setup=0
     volumes:
       - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:rw
+      - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
     depends_on:
       database:
         condition: service_healthy
@@ -46,6 +47,7 @@ services:
       - -vv
     volumes:
       - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:rw
+      - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
     restart: unless-stopped
     depends_on:
       database:
@@ -66,3 +68,13 @@ services:
       start_period: 60s
     volumes:
       - ${SPINESCOUT_DATABASE_DATA_DIR:-./application-data}:/var/lib/postgresql/data:rw
+
+  # Bundled Cloudflare-challenge solver.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    environment:
+      LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
+      LOG_HTML: "false"
+      CAPTCHA_SOLVER: none
+      TZ: ${TZ:-UTC}
+    restart: unless-stopped

@@ -8,6 +8,12 @@
             <h1 class="requests-title">Requests</h1>
         </header>
 
+        {% for label, messages in app.flashes %}
+            {% for msg in messages %}
+                <div class="flash flash-{{ label }}">{{ msg }}</div>
+            {% endfor %}
+        {% endfor %}
+
         {% if items is empty %}
             <div class="requests-empty">No requests yet.</div>
         {% else %}
@@ -25,6 +31,7 @@
                     {% set status = r.status %}
                     {% set is_owner = app.user and app.user.id == r.requestedBy.id %}
                     {% set can_approve = is_granted('ROLE_ADMIN') and status == 'pending' %}
+                    {% set can_recheck = is_granted('ROLE_ADMIN') and status == 'approved' and (r.deliveryStatus is null or r.deliveryStatus in ['error', 'cancelled']) %}
                     {% set can_delete = is_granted('ROLE_ADMIN') or is_owner %}
                     {% set _dur = random(900, 3600) %}
                     <li class="request-row" data-controller="cover-palette" data-cover-palette-target-value=".request-cover"
@@ -47,7 +54,19 @@
                         </div>
 
                         <div class="request-meta">
-                            <span class="request-status request-status-{{ status }}">{{ r.statusLabel }}</span>
+                            {% set ds = r.deliveryStatus %}
+                            {% if status == 'available' %}
+                                <span class="request-status request-status-available">In Library</span>
+                            {% elseif status == 'approved' and ds == 'complete' %}
+                                <span class="request-status request-status-downloaded">Downloaded</span>
+                            {% else %}
+                                <span class="request-status request-status-{{ status }}">{{ r.statusLabel }}</span>
+                            {% endif %}
+                            {% if status == 'approved' and item.job and ds in ['downloading', 'resolving'] %}
+                                <span class="request-progress" aria-label="Download progress">
+                                    <span class="request-progress-bar" style="width: {{ item.job.progress }}%"></span>
+                                </span>
+                            {% endif %}
                             <span class="request-when">
                                 Requested {{ item.ago }} by <strong>{{ r.requestedBy.username }}</strong>
                             </span>
@@ -58,6 +77,12 @@
                                 <form method="post" action="{{ path('requests_approve', {id: r.id}) }}">
                                     <input type="hidden" name="_csrf_token" value="{{ csrf_token('approve-request-' ~ r.id) }}">
                                     <button type="submit" class="request-btn request-btn-approve">Approve</button>
+                                </form>
+                            {% endif %}
+                            {% if can_recheck %}
+                                <form method="post" action="{{ path('requests_recheck', {id: r.id}) }}">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token('recheck-request-' ~ r.id) }}">
+                                    <button type="submit" class="request-btn request-btn-recheck" title="Search and download again now">Recheck now</button>
                                 </form>
                             {% endif %}
                             {% if can_delete %}

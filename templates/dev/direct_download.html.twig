@@ -1,0 +1,204 @@
+{% extends 'dev/_layout.html.twig' %}
+
+{% block dev_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Direct-download search URL builder</h2>
+        <p class="panel-sub">
+            Reads your saved Direct Downloads settings, picks the top-priority enabled
+            Anna's Archive mirror, and builds the ISBN-first query for the inputs below.
+            "Generate &amp; fetch" also performs the live request and parses the response.
+            Env <code>{{ environment }}</code>{% if branch %}, branch <code>{{ branch }}</code>{% endif %}.
+        </p>
+    </div>
+
+    <section class="dev-test">
+        <div class="dev-config">
+            <h4>Current config</h4>
+            {% if source_rows is empty %}
+                <p class="form-note">Nothing saved yet — configure mirrors in Settings → Direct Downloads.</p>
+            {% else %}
+                <ul class="dev-config__list">
+                    {% for row in source_rows %}
+                        <li>
+                            <span class="dev-config__state">{{ row.enabled ? '☑' : '☐' }}</span>
+                            <strong>{{ row.label }}</strong>{% if row.searchSource %} <em>(search source)</em>{% endif %}
+                            — {{ row.count }} mirror(s){% if row.first %}, first: <code>{{ row.first }}</code>{% endif %}
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        </div>
+
+        <form method="get" action="{{ path('dev_direct_download') }}" class="settings-form dev-form">
+            <div class="dev-form__grid">
+                <label class="field">
+                    <span>ISBN</span>
+                    <input type="text" name="isbn" value="{{ inputs.isbn }}" placeholder="9781444758979" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>Author</span>
+                    <input type="text" name="author" value="{{ inputs.author }}" placeholder="Pierce Brown" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>Book title</span>
+                    <input type="text" name="title" value="{{ inputs.title }}" placeholder="Red Rising" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>Publisher <em>(optional)</em></span>
+                    <input type="text" name="publisher" value="{{ inputs.publisher }}" placeholder="Del Rey" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>Published year <em>(optional)</em></span>
+                    <input type="text" name="year" value="{{ inputs.year }}" placeholder="2014" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>Language <em>(optional)</em></span>
+                    <input type="text" name="language" value="{{ inputs.language }}" placeholder="en" autocomplete="off">
+                </label>
+            </div>
+            <p class="form-note">ISBN-first: when an ISBN is given it drives the query; otherwise title + author are used. Publisher / year / language only affect scoring (extra categories), not the search.</p>
+            <div class="form-actions">
+                <button type="submit" name="submit" value="1" class="btn btn-primary">Generate URL</button>
+                <button type="submit" name="fetch" value="1" class="btn">Generate &amp; fetch</button>
+            </div>
+            <p class="form-note">After fetching, use <strong>Detail + score</strong> on a row to verify ISBNs and score that single record (one request at a time).</p>
+        </form>
+
+        {% if result is not null %}
+            <div class="dev-result">
+                {% if result.url is null %}
+                    <p class="flash flash-error">
+                        No enabled Anna's Archive mirror configured — add one in Settings → Direct Downloads and enable it.
+                    </p>
+                {% else %}
+                    <h4>Generated query</h4>
+                    <p class="form-note">Mirror: <code>{{ result.mirror }}</code></p>
+                    <pre class="dev-result__url">{{ result.url }}</pre>
+                    <p><a href="{{ result.url }}" target="_blank" rel="noopener noreferrer">Open in new tab ↗</a></p>
+
+                    {% if result.fetch is not null %}
+                        {% set f = result.fetch %}
+                        <h4>Live response</h4>
+                        {% if f.error %}
+                            <p class="flash flash-error">Fetch failed: {{ f.error }}</p>
+                        {% else %}
+                            <p class="form-note">
+                                HTTP {{ f.status }} · {{ f.bytes }} bytes · parsed <strong>{{ f.records|length }}</strong> record(s)
+                                {% if f.records is empty %} — no match, or a challenge/landing page was returned{% endif %}
+                            </p>
+                            {% if f.records is not empty %}
+                                <div class="dev-result__table-wrap">
+                                    <table class="dev-result__table">
+                                        <thead>
+                                            <tr><th>Hash</th><th>Title</th><th>Author</th><th>Format</th><th>Size</th><th>Detail + score</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for r in f.records %}
+                                                <tr>
+                                                    <td><code>{{ r.id|slice(0, 12) }}</code></td>
+                                                    <td>{{ r.title }}</td>
+                                                    <td>{{ r.author ?? '?' }}</td>
+                                                    <td>{{ r.format ?? '?' }}</td>
+                                                    <td>{{ r.size ?? '?' }}</td>
+                                                    <td>
+                                                        {% if result.mirror %}
+                                                            <a href="{{ path('dev_direct_download', {
+                                                                fetch: 1,
+                                                                isbn: inputs.isbn,
+                                                                author: inputs.author,
+                                                                title: inputs.title,
+                                                                publisher: inputs.publisher,
+                                                                year: inputs.year,
+                                                                language: inputs.language,
+                                                                detail: r.id,
+                                                                mirror: result.mirror,
+                                                                rtitle: r.title,
+                                                                rauthor: r.author,
+                                                                rformat: r.format,
+                                                                rpublisher: r.publisher,
+                                                                ryear: r.year,
+                                                                rlanguage: r.language,
+                                                            }) }}#record-detail">Detail + score</a>
+                                                        {% else %}—{% endif %}
+                                                    </td>
+                                                </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            {% endif %}
+                            <details class="dev-result__raw">
+                                <summary>Raw HTML response ({{ f.bytes }} bytes)</summary>
+                                <pre>{{ f.html|slice(0, 20000) }}{% if f.bytes > 20000 %}
+
+… truncated ({{ f.bytes - 20000 }} more bytes){% endif %}</pre>
+                            </details>
+                        {% endif %}
+                    {% endif %}
+                {% endif %}
+            </div>
+        {% endif %}
+
+        {% if detail is not null %}
+            <div class="dev-result" id="record-detail">
+                <h4>Record detail — <code>{{ detail.hash|slice(0, 16) }}</code></h4>
+                <p class="form-note">Mirror: <code>{{ detail.mirror }}</code> · <a href="{{ detail.url }}" target="_blank" rel="noopener noreferrer">Open detail page ↗</a></p>
+                {% if detail.error %}
+                    <p class="flash flash-error">Detail fetch failed: {{ detail.error }}</p>
+                {% else %}
+                    <p class="form-note">HTTP {{ detail.status }}</p>
+                    <p>
+                        <strong>Verified ISBNs:</strong>
+                        {% if detail.isbns is empty %}<em>none parsed</em>
+                        {% else %}{% for i in detail.isbns %}<code>{{ i }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+                    </p>
+                    {% if detail.raw is not empty %}
+                        <table class="dev-result__table">
+                            <thead><tr><th>Label</th><th>Value(s)</th></tr></thead>
+                            <tbody>
+                                {% for label, values in detail.raw %}
+                                    <tr><td>{{ label }}</td><td>{{ values|join(' · ') }}</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p class="form-note">No metadata rows parsed (label/value scan + ISBN fallback found nothing).</p>
+                    {% endif %}
+                    <p class="form-note">Download links found: <strong>{{ detail.links|length }}</strong></p>
+                    {% if detail.links is not empty %}
+                        <ul class="dev-config__list">
+                            {% for link in detail.links %}<li><code>{{ link }}</code></li>{% endfor %}
+                        </ul>
+                    {% endif %}
+
+                    {% if detail.score is defined %}
+                        {% set sc = detail.score %}
+                        {% set qualifies = sc.total >= detail.threshold %}
+                        <h4>Score — <strong>{{ sc.total }}</strong>/100
+                            ({{ qualifies ? '✓ qualifies' : '✗ below threshold' }} {{ detail.threshold }})</h4>
+                        <p class="form-note">
+                            Earned <strong>{{ sc.earned }}</strong> of <strong>{{ sc.maxPossible }}</strong> achievable points
+                            (only categories present in the request count). Threshold is a percentage, so it scales with how many categories were sent.
+                        </p>
+                        <table class="dev-result__table">
+                            <thead><tr><th>Category</th><th>Earned</th><th>Match</th><th>Note</th><th>Request</th><th>Candidate</th></tr></thead>
+                            <tbody>
+                                {% for c in sc.categories %}
+                                    <tr{% if not c.sent %} style="opacity:.5"{% endif %}>
+                                        <td>{{ c.label }}</td>
+                                        <td>{% if c.sent %}{{ c.earned }} / {{ c.weight }}{% else %}— / {{ c.weight }}{% endif %}</td>
+                                        <td>{% if c.sent %}{{ (c.fraction * 100)|round }}%{% else %}—{% endif %}</td>
+                                        <td>{{ c.note }}</td>
+                                        <td>{{ c.planValue ?: '—' }}</td>
+                                        <td>{{ c.candidateValue ?: '—' }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                        <p class="form-note">Greyed rows weren't part of the request, so they didn't count toward the achievable total.</p>
+                    {% endif %}
+                {% endif %}
+            </div>
+        {% endif %}
+    </section>
+{% endblock %}

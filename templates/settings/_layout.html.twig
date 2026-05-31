@@ -11,9 +11,11 @@
 
         <nav class="settings-tabs" aria-label="Settings sections">
             {% set tabs = [
-                { id: 'general',   label: 'General',   route: 'settings_general' },
-                { id: 'grimmory',  label: 'Grimmory',  route: 'settings_grimmory' },
-                { id: 'metadata',  label: 'Metadata',  route: 'settings_metadata' }
+                { id: 'general',          label: 'General',           route: 'settings_general' },
+                { id: 'grimmory',         label: 'Grimmory',          route: 'settings_grimmory' },
+                { id: 'metadata',         label: 'Metadata',          route: 'settings_metadata' },
+                { id: 'direct_download',  label: 'Direct Downloads',  route: 'settings_direct_download' },
+                { id: 'best_match',       label: 'Best Match',        route: 'settings_best_match' }
             ] %}
             {% for tab in tabs %}
                 <a class="settings-tab{% if active_tab == tab.id %} active{% endif %}" href="{{ path(tab.route) }}">{{ tab.label }}</a>

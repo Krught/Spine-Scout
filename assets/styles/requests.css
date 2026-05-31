@@ -136,7 +136,7 @@
 }
 .request-bookauthor {
     font-size: 0.85rem;
-    color: var(--fg-dim);
+    color: #eef2f8;
     margin-top: 0.2rem;
     text-shadow:
         0 0 3px rgba(0, 0, 0, 0.85),
@@ -176,6 +176,7 @@
 .request-status-approved  { background: rgba(99, 102, 241, 0.85); }
 .request-status-rejected  { background: rgba(180, 60, 60, 0.85); }
 .request-status-available { background: rgba(34, 139, 87, 0.9); }
+.request-status-downloaded { background: rgba(45, 166, 184, 0.9); }
 
 .request-actions {
     display: flex;
@@ -207,6 +208,14 @@
     background: rgba(34, 139, 87, 0.15);
     border-color: rgba(34, 139, 87, 0.9);
 }
+.request-btn-recheck {
+    border-color: rgba(74, 123, 208, 0.5);
+    color: #a8c4f0;
+}
+.request-btn-recheck:hover {
+    background: rgba(74, 123, 208, 0.15);
+    border-color: rgba(74, 123, 208, 0.9);
+}
 .request-btn-delete {
     border-color: rgba(180, 60, 60, 0.5);
     color: #f7a4a4;
@@ -214,6 +223,22 @@
 .request-btn-delete:hover {
     background: rgba(180, 60, 60, 0.15);
     border-color: rgba(180, 60, 60, 0.9);
+}
+
+.request-progress {
+    display: inline-block;
+    width: 120px;
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+    vertical-align: middle;
+}
+.request-progress-bar {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, #4a7bd0, #6aa0f0);
+    transition: width 0.4s ease;
 }
 
 @media (max-width: 720px) {

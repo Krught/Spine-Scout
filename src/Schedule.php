@@ -2,9 +2,11 @@
 
 namespace App;
 
+use App\Message\PruneFulfillmentEvents;
 use App\Message\PurgeExpiredSessions;
 use App\Message\RefreshHardcoverTrending;
 use App\Message\RefreshOpenLibraryTrending;
+use App\Message\RetryApprovedSearches;
 use App\Message\SyncGrimmoryLibrary;
 use Symfony\Component\Scheduler\Attribute\AsSchedule;
 use Symfony\Component\Scheduler\RecurringMessage;
@@ -29,6 +31,8 @@ class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::every('1 minute', new RefreshHardcoverTrending()))
             ->add(RecurringMessage::every('1 minute', new RefreshOpenLibraryTrending()))
             ->add(RecurringMessage::every('1 hour', new PurgeExpiredSessions()))
+            ->add(RecurringMessage::every('10 minutes', new PruneFulfillmentEvents()))
+            ->add(RecurringMessage::every('3 hours', new RetryApprovedSearches()))
         ;
     }
 }

@@ -1,0 +1,148 @@
+{% extends 'settings/_layout.html.twig' %}
+
+{% block settings_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Best-match policy</h2>
+        <p class="panel-sub">
+            When a request is approved, Spine Scout searches enabled release sources and ranks the
+            results. The first candidate that passes the quality gates below is queued automatically;
+            manual picking from the request page always bypasses these rules.
+        </p>
+    </div>
+
+    <form method="post" action="{{ path('settings_best_match') }}" class="settings-form" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token('settings_best_match') }}">
+
+        <fieldset class="settings-fieldset">
+            <legend>Format preference</legend>
+            <p class="form-note">
+                Hard filter (top) decides whether a candidate is eligible at all.
+                Priority order (bottom) decides which eligible format wins when multiple qualify.
+            </p>
+
+            <div class="field">
+                <label for="allowedFormats">Allowed formats (comma-separated, blank = allow all)</label>
+                <input id="allowedFormats" name="allowedFormats" type="text"
+                       value="{{ policy.allowedFormats|join(', ') }}"
+                       placeholder="epub, mobi, azw3, pdf">
+            </div>
+
+            <div class="field"
+                 data-controller="orderable-list"
+                 data-orderable-list-input-name-value="formatPriority"
+                 data-orderable-list-initial-value="{{ policy.formatPriority|json_encode }}"
+                 data-orderable-list-suggestions-value="{{ format_suggestions|json_encode }}">
+                <label>Format priority order</label>
+                <ul data-orderable-list-target="list" class="orderable-list" aria-label="Format priority"></ul>
+                <div class="orderable-list-add">
+                    <input type="text" data-orderable-list-target="addInput" placeholder="add a format (e.g. epub)">
+                    <button type="button" data-action="click->orderable-list#add">Add</button>
+                </div>
+                <input type="hidden" name="formatPriority" data-orderable-list-target="hidden">
+                <p class="form-note">Drag to reorder. First format that appears in the results wins.</p>
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Source preference</legend>
+            <div class="field"
+                 data-controller="orderable-list"
+                 data-orderable-list-input-name-value="sourcePriority"
+                 data-orderable-list-initial-value="{{ policy.sourcePriority|json_encode }}"
+                 data-orderable-list-suggestions-value="{{ source_options|map(s => s.id)|json_encode }}">
+                <label>Release source priority</label>
+                {% if source_options is empty %}
+                    <p class="form-note">No release sources added yet.</p>
+                {% else %}
+                    <ul data-orderable-list-target="list" class="orderable-list" aria-label="Source priority"></ul>
+                    <div class="orderable-list-add">
+                        <select data-orderable-list-target="addInput">
+                            <option value="">— add a source —</option>
+                            {% for opt in source_options %}
+                                <option value="{{ opt.id }}">{{ opt.label }}{% if not opt.available %} (unavailable){% endif %}</option>
+                            {% endfor %}
+                        </select>
+                        <button type="button" data-action="click->orderable-list#add">Add</button>
+                    </div>
+                {% endif %}
+                <input type="hidden" name="sourcePriority" data-orderable-list-target="hidden">
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Tie-breakers</legend>
+            <p class="form-note">
+                Applied in order when format / source priority leaves multiple equal candidates.
+            </p>
+            <div class="field"
+                 data-controller="orderable-list"
+                 data-orderable-list-input-name-value="tieBreakers"
+                 data-orderable-list-initial-value="{{ policy.tieBreakers|json_encode }}"
+                 data-orderable-list-suggestions-value="{{ tie_breakers|json_encode }}"
+                 data-orderable-list-fixed-options-value="true">
+                <ul data-orderable-list-target="list" class="orderable-list" aria-label="Tie-breakers"></ul>
+                <div class="orderable-list-add">
+                    <select data-orderable-list-target="addInput">
+                        <option value="">— add a tie-breaker —</option>
+                        {% for tb in tie_breakers %}
+                            <option value="{{ tb }}">{{ tb|replace({'_': ' '})|title }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="button" data-action="click->orderable-list#add">Add</button>
+                </div>
+                <input type="hidden" name="tieBreakers" data-orderable-list-target="hidden">
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Quality gates</legend>
+            <div class="field-row">
+                <div class="field">
+                    <label for="minSizeBytes">Min size (bytes, blank = no gate)</label>
+                    <input id="minSizeBytes" name="minSizeBytes" type="number" min="0"
+                           value="{{ policy.minSizeBytes is null ? '' : policy.minSizeBytes }}">
+                </div>
+                <div class="field">
+                    <label for="maxSizeBytes">Max size (bytes, blank = no gate)</label>
+                    <input id="maxSizeBytes" name="maxSizeBytes" type="number" min="0"
+                           value="{{ policy.maxSizeBytes is null ? '' : policy.maxSizeBytes }}">
+                </div>
+                <div class="field">
+                    <label for="minSeeders">Min seeders (torrents only)</label>
+                    <input id="minSeeders" name="minSeeders" type="number" min="0"
+                           value="{{ policy.minSeeders is null ? '' : policy.minSeeders }}">
+                </div>
+                <div class="field">
+                    <label for="minMatchScore">Min match score (0–100%)</label>
+                    <input id="minMatchScore" name="minMatchScore" type="number" min="0" max="100"
+                           value="{{ policy.minMatchScore }}">
+                    <p class="form-note">Relevance threshold, as a percentage of the points achievable from the categories the request actually has (ISBN, title, author, publisher, year, language — weighted). Because it's a percentage, it scales with how much metadata we can match on. Default 50 — an ISBN match alone won't qualify, but title + author together can.</p>
+                </div>
+            </div>
+            <label class="field-checkbox">
+                <input type="checkbox" name="requireIsbnMatch" value="1" {{ policy.requireIsbnMatch ? 'checked' : '' }}>
+                <span>Require candidate metadata to match a planned ISBN (strict mode)</span>
+            </label>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Language preference</legend>
+            <div class="field"
+                 data-controller="orderable-list"
+                 data-orderable-list-input-name-value="languagePriority"
+                 data-orderable-list-initial-value="{{ policy.languagePriority|json_encode }}"
+                 data-orderable-list-suggestions-value="{{ language_suggestions|json_encode }}">
+                <ul data-orderable-list-target="list" class="orderable-list" aria-label="Language priority"></ul>
+                <div class="orderable-list-add">
+                    <input type="text" data-orderable-list-target="addInput" placeholder="ISO code (e.g. en)" maxlength="8">
+                    <button type="button" data-action="click->orderable-list#add">Add</button>
+                </div>
+                <input type="hidden" name="languagePriority" data-orderable-list-target="hidden">
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save policy</button>
+        </div>
+    </form>
+{% endblock %}

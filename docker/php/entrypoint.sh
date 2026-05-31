@@ -8,6 +8,11 @@ COVER_DIR=/var/www/html/book-covers
 mkdir -p "$COVER_DIR"
 chown -R www-data:www-data "$COVER_DIR" 2>/dev/null || true
 
+# the worker (www-data) moves finished downloads here
+LIBRARY_DIR=/var/www/html/library
+mkdir -p "$LIBRARY_DIR"
+chown www-data:www-data "$LIBRARY_DIR" 2>/dev/null || true
+
 # Wait for the database to be reachable before doing anything else.
 if [[ -n "${DATABASE_URL:-}" ]]; then
     echo "[spinescout] waiting for database..."

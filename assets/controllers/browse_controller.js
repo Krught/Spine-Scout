@@ -335,11 +335,12 @@ export default class extends Controller {
             check.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
             cover.appendChild(check);
         } else if (item.request_status) {
-            const labels = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
+            const labels = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected', downloaded: 'Downloaded' };
             const icons = {
                 pending: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
                 approved: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M7 10v9h-3v-9h3zm3 9c-.55 0-1-.45-1-1v-8.4l3.6-6.6c.32-.58 1.04-.79 1.62-.46.42.23.66.69.61 1.16l-.49 4.3h5.16c1.1 0 2 .9 2 2 0 .27-.06.53-.16.78l-2.55 6.78c-.29.78-1.04 1.3-1.88 1.3h-6.91z" fill="currentColor"/></svg>',
                 rejected: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>',
+                downloaded: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M12 4v9m0 0l-3.5-3.5M12 13l3.5-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 18h14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>',
             };
             if (icons[item.request_status]) {
                 const badge = document.createElement('span');

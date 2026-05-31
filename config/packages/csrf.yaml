@@ -9,3 +9,5 @@ framework:
             - submit
             - authenticate
             - logout
+            - settings_best_match
+            - settings_direct_download

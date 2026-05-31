@@ -7,7 +7,10 @@ namespace App\MessageHandler;
 use App\Entity\Integration;
 use App\Integration\Grimmory\GrimmoryException;
 use App\Integration\Grimmory\GrimmoryLibrarySync;
+use App\Download\FulfillmentLog;
 use App\Message\SyncGrimmoryLibrary;
+use App\Repository\BookRepository;
+use App\Repository\BookRequestRepository;
 use App\Repository\IntegrationRepository;
 use App\Service\CoverCache;
 use Psr\Log\LoggerInterface;
@@ -20,6 +23,9 @@ final class SyncGrimmoryLibraryHandler
         private readonly IntegrationRepository $integrations,
         private readonly GrimmoryLibrarySync $sync,
         private readonly CoverCache $covers,
+        private readonly BookRepository $books,
+        private readonly BookRequestRepository $requests,
+        private readonly FulfillmentLog $fulfillmentLog,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -45,6 +51,17 @@ final class SyncGrimmoryLibraryHandler
         if ($result->newExternalIds !== []) {
             $summary = $this->covers->warmAll([], $result->newExternalIds);
             $this->logger->info('Grimmory cover prewarm complete', $summary);
+        }
+
+        // Close out any approved request whose book just landed in the library
+        // (e.g. a download we delivered to the watch folder got imported).
+        $flipped = $this->requests->markAvailableForDownloaded(
+            $this->books->downloadedIsbns(),
+            $this->books->downloadedTitleAuthorKeys(),
+        );
+        if ($flipped > 0) {
+            $this->fulfillmentLog->info(sprintf('%d request(s) now available after library import', $flipped));
+            $this->logger->info('Marked requests available after sync', ['count' => $flipped]);
         }
     }
 

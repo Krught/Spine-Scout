@@ -109,6 +109,11 @@ body.book-modal-open { overflow: hidden; }
     color: #ffffff;
     cursor: default;
 }
+.book-modal-action.is-downloaded {
+    background: rgb(45, 166, 184);
+    color: #ffffff;
+    cursor: default;
+}
 .book-modal-search {
     width: 180px;
     padding: 0.45rem 0.9rem;

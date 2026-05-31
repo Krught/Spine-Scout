@@ -24,11 +24,35 @@ services:
     App\:
         resource: '../src/'
 
+    # Download plugin tags. ReleaseSourceInterface (e.g. DirectHttpSource) and
+    # DownloadClientInterface (e.g. HttpDownloadClient) implementations are
+    # auto-discovered via these tags.
+    _instanceof:
+        App\Search\Source\ReleaseSourceInterface:
+            tags: ['app.release_source']
+        App\Download\Client\DownloadClientInterface:
+            tags: ['app.download_client']
+        App\Download\Bypass\BypasserInterface:
+            tags: ['app.download_bypasser']
+
     App\Service\CoverCache:
         arguments:
             # In-container path; the host location is configured via
             # SPINESCOUT_COVER_CACHE_DIR in .env and bind-mounted here by compose.
             $cacheDir: '%kernel.project_dir%/book-covers'
+
+    # In-progress downloads stage in a container-internal scratch dir under var/
+    # (never bind-mounted or host-exposed) before being moved to the operator's
+    # configured output folder.
+    App\Download\Client\HttpDownloadClient:
+        arguments:
+            $stagingDir: '%kernel.project_dir%/var/downloads'
+
+    # Dev-tools gate: scalar args can't be autowired.
+    App\Dev\DevTools:
+        arguments:
+            $environment: '%kernel.environment%'
+            $projectDir: '%kernel.project_dir%'
 
     # Reuse Doctrine's PDO connection so sessions share the app DB pool instead
     # of opening a second connection. LOCK_TRANSACTIONAL (1) prevents lost

@@ -1,0 +1,48 @@
+{# Inner fragment polled live by the activity-poll Stimulus controller. #}
+<div class="dev-activity">
+    <div class="dev-activity__col">
+        <h4>Download jobs</h4>
+        {% if jobs is empty %}
+            <p class="form-note">No download jobs yet. Approve a request to kick one off.</p>
+        {% else %}
+            <table class="dev-result__table">
+                <thead>
+                    <tr><th>Book</th><th>Status</th><th>Progress</th><th>Format</th><th>Updated</th></tr>
+                </thead>
+                <tbody>
+                    {% for job in jobs %}
+                        <tr>
+                            <td>{{ job.bookRequest ? job.bookRequest.book.title : job.sourceId|slice(0, 12) }}</td>
+                            <td><span class="dev-job-status dev-job-status-{{ job.status }}">{{ job.status }}</span>
+                                {% if job.status == 'error' and job.statusMessage %}<br><small class="dev-job-error">{{ job.statusMessage }}</small>{% endif %}
+                            </td>
+                            <td>
+                                <span class="request-progress"><span class="request-progress-bar" style="width: {{ job.progress }}%"></span></span>
+                                {{ job.progress }}%
+                            </td>
+                            <td>{{ job.format ?? '?' }}</td>
+                            <td>{{ job.updatedAt|date('H:i:s') }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% endif %}
+    </div>
+
+    <div class="dev-activity__col">
+        <h4>Activity log</h4>
+        {% if events is empty %}
+            <p class="form-note">No activity yet.</p>
+        {% else %}
+            <ul class="dev-log">
+                {% for e in events %}
+                    <li class="dev-log__line dev-log__line-{{ e.level }}">
+                        <span class="dev-log__time">{{ e.createdAt|date('H:i:s') }}</span>
+                        {% if e.subject %}<span class="dev-log__subject">{{ e.subject }}</span>{% endif %}
+                        <span class="dev-log__msg">{{ e.message }}</span>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    </div>
+</div>

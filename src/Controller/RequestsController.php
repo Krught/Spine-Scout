@@ -10,9 +10,12 @@ use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
 use App\Service\BookMetadataService;
+use App\Message\DispatchReleaseSearch;
+use App\Repository\DownloadJobRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -31,9 +34,17 @@ final class RequestsController extends AbstractController
     }
 
     #[Route('/requests', name: 'requests', methods: ['GET'])]
-    public function index(BookRequestRepository $requests, BookMetadataService $metadata): Response
+    public function index(BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata): Response
     {
         $rows = $requests->findAllForList();
+
+        $ids = [];
+        foreach ($rows as $r) {
+            if ($r->getId() !== null) {
+                $ids[] = $r->getId();
+            }
+        }
+        $latestJobs = $jobs->latestByRequestIds($ids);
 
         $now = new \DateTimeImmutable();
         $items = [];
@@ -42,6 +53,7 @@ final class RequestsController extends AbstractController
                 'entity'    => $r,
                 'ago'       => self::humanAgo($now, $r->getCreatedAt()),
                 'cover_url' => $metadata->ensureCoverProxyUrl($r->getBook()),
+                'job'       => $latestJobs[$r->getId()] ?? null,
             ];
         }
 
@@ -130,7 +142,7 @@ final class RequestsController extends AbstractController
 
     #[Route('/requests/{id}/approve', name: 'requests_approve', methods: ['POST'], requirements: ['id' => '\d+'])]
     #[IsGranted('ROLE_ADMIN')]
-    public function approve(int $id, Request $request, BookRequestRepository $requests, EntityManagerInterface $em): Response
+    public function approve(int $id, Request $request, BookRequestRepository $requests, EntityManagerInterface $em, MessageBusInterface $bus): Response
     {
         $entity = $requests->find($id);
         if ($entity === null) {
@@ -142,6 +154,31 @@ final class RequestsController extends AbstractController
 
         $entity->setStatus(BookRequest::STATUS_APPROVED);
         $em->flush();
+
+        // Kick off the async fulfillment loop: search → best match → download.
+        $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
+
+        return $this->redirectToRoute('requests');
+    }
+
+    #[Route('/requests/{id}/recheck', name: 'requests_recheck', methods: ['POST'], requirements: ['id' => '\d+'])]
+    #[IsGranted('ROLE_ADMIN')]
+    public function recheck(int $id, Request $request, BookRequestRepository $requests, MessageBusInterface $bus): Response
+    {
+        $entity = $requests->find($id);
+        if ($entity === null) {
+            throw $this->createNotFoundException();
+        }
+        if (!$this->isCsrfTokenValid('recheck-request-' . $id, (string) $request->request->get('_csrf_token'))) {
+            throw new AccessDeniedHttpException('Invalid CSRF token.');
+        }
+
+        // Only approved requests are in the fulfillment pipeline. The handler is
+        // idempotent, so this is a no-op if a download is already in flight.
+        if ($entity->getStatus() === BookRequest::STATUS_APPROVED) {
+            $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
+            $this->addFlash('success', 'Re-checking for a release…');
+        }
 
         return $this->redirectToRoute('requests');
     }

@@ -1,0 +1,161 @@
+{% extends 'settings/_layout.html.twig' %}
+
+{% block settings_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Direct downloads</h2>
+        <p class="panel-sub">
+            Paste the mirror URLs for each source below — Spine Scout never ships default mirrors,
+            so every URL here comes from you. When a request is approved, the search runs against
+            your Anna's Archive mirrors, and downloads are resolved by trying the enabled sources in
+            the priority order you set. A source with no mirrors stays locked until you add at least
+            one URL.
+        </p>
+    </div>
+
+    {% if integration.id is not null %}
+        <div class="status-pill {{ integration.enabled ? 'status-pill-on' : 'status-pill-off' }}">
+            <span class="dot"></span>
+            {{ integration.enabled ? 'Enabled' : 'Disabled' }}
+            {% if integration.lastError %}
+                · <span class="status-error">Last error: {{ integration.lastError }}</span>
+            {% endif %}
+        </div>
+    {% endif %}
+
+    <form method="post" action="{{ path('settings_direct_download') }}" class="settings-form" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token('settings_direct_download') }}">
+
+        <fieldset class="settings-fieldset">
+            <legend>Integration</legend>
+            <label class="field-checkbox">
+                <input type="checkbox" name="enabled" value="1" {{ integration.enabled ? 'checked' : '' }}>
+                <span>Enable direct-download release source</span>
+            </label>
+            <label class="field-checkbox">
+                <input type="checkbox" name="fastDownloadEnabled" value="1" {{ fast_download_enabled ? 'checked' : '' }}>
+                <span>Include fast-partner download links</span>
+            </label>
+            <p class="form-note">
+                Fast-partner servers require a paid Anna's Archive membership. Off by default — when
+                enabled, fast-download links are collected alongside the slow-partner and external links.
+            </p>
+        </fieldset>
+
+        <fieldset class="settings-fieldset"
+                  data-controller="bypass-mode">
+            <legend>Cloudflare bypass</legend>
+            <p class="form-note">
+                Slow-partner download pages are sometimes behind a Cloudflare challenge that returns
+                <code>403</code> to a plain fetch. Choose how to get past it — the resolved page only
+                yields the partner link; the file itself is downloaded directly.
+            </p>
+            <div class="field">
+                <label for="bypassMode">Bypass mode</label>
+                <select id="bypassMode" name="bypassMode"
+                        data-bypass-mode-target="mode"
+                        data-action="bypass-mode#toggle">
+                    <option value="none" {{ bypass_mode == 'none' ? 'selected' : '' }}>None — fail over instead</option>
+                    <option value="external" {{ bypass_mode == 'external' ? 'selected' : '' }}>FlareSolverr — drive a real browser</option>
+                </select>
+                <p class="form-note">
+                    <strong>FlareSolverr</strong> drives a real browser through the challenge. The compose
+                    stack bundles one (reachable in-stack at <code>http://flaresolverr:8191</code>), so the
+                    address below is pre-filled and works out of the box; point it elsewhere to use your own.
+                </p>
+            </div>
+            <div class="field" data-bypass-mode-target="flaresolverr"
+                 {{ bypass_mode == 'external' ? '' : 'hidden' }}>
+                <label for="bypassFlaresolverrUrl">FlareSolverr address</label>
+                <input type="text" id="bypassFlaresolverrUrl" name="bypassFlaresolverrUrl"
+                       value="{{ bypass_flaresolverr_url }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="http://flaresolverr:8191">
+                <p class="form-note">
+                    Host:port (or full URL) of your FlareSolverr. The <code>/v1</code> endpoint is added
+                    automatically; a bare host:port assumes <code>http://</code>.
+                </p>
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Source priority</legend>
+            <p class="form-note">
+                Drag to reorder. Downloads are resolved by trying enabled sources top-down.
+                Untick a source to filter it out without losing its mirror URLs.
+            </p>
+            <div class="field"
+                 data-controller="orderable-list"
+                 data-orderable-list-input-name-value="indexerPriority"
+                 data-orderable-list-initial-value="{{ priority_rows|json_encode }}"
+                 data-orderable-list-labels-value="{{ source_labels|json_encode }}"
+                 data-orderable-list-fixed-options-value="true"
+                 data-orderable-list-mode-value="rows">
+                <ul data-orderable-list-target="list" class="orderable-list" aria-label="Source priority"></ul>
+                <input type="hidden" name="indexerPriority" data-orderable-list-target="hidden">
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Mirror URLs</legend>
+            <p class="form-note">
+                Type a URL and press <kbd>Tab</kbd> (or <kbd>Enter</kbd>) to add it. Remove one with
+                its <span aria-hidden="true">×</span> or by pressing <kbd>Backspace</kbd> in the empty
+                field. URLs are normalized on save: default scheme https, trailing slash stripped,
+                duplicates removed.
+            </p>
+            {% for section in mirror_sections %}
+                <div class="mirror-section">
+                    <label class="mirror-section__label" for="mirror_input_{{ section.id }}">{{ section.label }}</label>
+                    <p class="form-note mirror-section__help">{{ section.help }}</p>
+                    <div class="token-input"
+                         data-controller="mirror-tokens"
+                         data-mirror-tokens-initial-value="{{ section.urls|json_encode }}"
+                         data-action="click->mirror-tokens#focusInput">
+                        <span class="token-input__chips" data-mirror-tokens-target="chips"></span>
+                        <input type="text"
+                               class="token-input__field"
+                               id="mirror_input_{{ section.id }}"
+                               data-mirror-tokens-target="input"
+                               data-action="keydown->mirror-tokens#onKeydown blur->mirror-tokens#onBlur"
+                               spellcheck="false"
+                               autocapitalize="off"
+                               autocomplete="off"
+                               placeholder="https://your-mirror.example/">
+                        <input type="hidden" name="mirrors[{{ section.id }}]" data-mirror-tokens-target="hidden">
+                    </div>
+                </div>
+            {% endfor %}
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Output</legend>
+            <div class="field">
+                <label for="outputDirectory">Output / watch folder</label>
+                <input type="text" id="outputDirectory" name="outputDirectory" value="{{ output_directory }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="/library/import">
+                <p class="form-note">
+                    Absolute path a finished download is moved into — point this at the folder your
+                    library (e.g. Komga) watches, so the book is imported and the request flips to
+                    Available. The worker container must have this path mounted and writable.
+                </p>
+            </div>
+            <div class="field">
+                <label for="filenameTemplate">Filename template</label>
+                <input type="text" id="filenameTemplate" name="filenameTemplate" value="{{ filename_template }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="{{ '{Author} - {Title} ({Year})' }}">
+                <p class="form-note">
+                    Tokens: <code>{{ '{Author}' }}</code>, <code>{{ '{Title}' }}</code>,
+                    <code>{{ '{Year}' }}</code>, <code>{{ '{ISBN}' }}</code>, <code>{{ '{Format}' }}</code>.
+                    The file extension is appended automatically. Empty tokens and any surrounding empty
+                    brackets are cleaned up.
+                </p>
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save settings</button>
+        </div>
+    </form>
+{% endblock %}

@@ -14,9 +14,11 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\HasLifecycleCallbacks]
 class Integration
 {
-    public const KIND_GRIMMORY    = 'grimmory';
-    public const KIND_HARDCOVER   = 'hardcover';
-    public const KIND_OPENLIBRARY = 'openlibrary';
+    public const KIND_GRIMMORY        = 'grimmory';
+    public const KIND_HARDCOVER       = 'hardcover';
+    public const KIND_OPENLIBRARY     = 'openlibrary';
+    public const KIND_DIRECT_DOWNLOAD = 'direct_download';
+    public const KIND_BEST_MATCH      = 'best_match';
 
     public const AUTH_API_KEY = 'api_key';
     public const AUTH_BASIC   = 'basic';

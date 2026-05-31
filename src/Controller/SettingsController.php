@@ -14,10 +14,17 @@ use App\Message\PurgeStaleBooks;
 use App\Message\RefreshHardcoverTrending;
 use App\Message\RefreshOpenLibraryTrending;
 use App\Message\SyncGrimmoryLibrary;
+use App\Mirror\MirrorList;
+use App\Mirror\MirrorListNormalizer;
 use App\Repository\BookRepository;
 use App\Repository\BookSectionEntryRepository;
 use App\Repository\IntegrationRepository;
+use App\Search\BestMatch\BestMatchPolicy;
+use App\Search\DirectDownload\DirectDownloadConfig;
+use App\Search\DirectDownload\DirectDownloadSource;
+use App\Search\Source\ReleaseSourceInterface;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -309,5 +316,216 @@ final class SettingsController extends AbstractController
         ];
 
         $integration->setCredentials(array_filter($next, static fn ($v) => $v !== null && $v !== ''));
+    }
+
+    #[Route('/best-match', name: 'best_match')]
+    public function bestMatch(
+        Request $request,
+        IntegrationRepository $integrations,
+        EntityManagerInterface $em,
+        #[AutowireIterator('app.release_source')] iterable $releaseSources,
+    ): Response {
+        $sourceOptions = $this->releaseSourceOptions($releaseSources);
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isCsrfTokenValid('settings_best_match', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+                return $this->redirectToRoute('settings_best_match');
+            }
+
+            $policy = BestMatchPolicy::fromArray($this->buildPolicyFromRequest($request));
+            $integrations->saveBestMatchPolicy($policy, $em);
+            $em->flush();
+
+            $this->addFlash('success', 'Best-match policy saved.');
+            return $this->redirectToRoute('settings_best_match');
+        }
+
+        $policy = $integrations->getBestMatchPolicy();
+        return $this->render('settings/best_match.html.twig', [
+            'active_tab'        => 'best_match',
+            'policy'            => $policy,
+            'source_options'    => $sourceOptions,
+            'format_suggestions' => ['epub', 'mobi', 'azw3', 'azw', 'pdf', 'cbz', 'cbr', 'fb2', 'djvu', 'txt'],
+            'language_suggestions' => ['en', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ja', 'zh'],
+            'tie_breakers' => BestMatchPolicy::TIE_BREAKERS,
+        ]);
+    }
+
+    #[Route('/direct-download', name: 'direct_download')]
+    public function directDownload(
+        Request $request,
+        IntegrationRepository $integrations,
+        EntityManagerInterface $em,
+        MirrorListNormalizer $normalizer,
+    ): Response {
+        if ($request->isMethod('POST')) {
+            if (!$this->isCsrfTokenValid('settings_direct_download', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+                return $this->redirectToRoute('settings_direct_download');
+            }
+
+            $enabled = $request->request->getBoolean('enabled');
+
+            // Priority: keep only the fixed, known source ids, in posted order;
+            // then backfill any missing so all sources persist.
+            $priority = [];
+            $seen = [];
+            foreach ((array) $this->decodeJsonField($request, 'indexerPriority') as $row) {
+                $id = is_array($row) ? ($row['id'] ?? null) : null;
+                if (!is_string($id) || DirectDownloadSource::tryFromId($id) === null || isset($seen[$id])) {
+                    continue;
+                }
+                $seen[$id] = true;
+                $priority[] = ['id' => $id, 'enabled' => (bool) ($row['enabled'] ?? true)];
+            }
+            foreach (DirectDownloadSource::ids() as $id) {
+                if (!isset($seen[$id])) {
+                    $priority[] = ['id' => $id, 'enabled' => false];
+                }
+            }
+
+            // Mirrors: one free-text blob per source (newline/tab/comma separated).
+            $blobs = $request->request->all('mirrors');
+            $mirrors = [];
+            foreach (DirectDownloadSource::ids() as $id) {
+                $blob = is_string($blobs[$id] ?? null) ? $blobs[$id] : '';
+                $mirrors[$id] = $normalizer->normalizeBlob($blob);
+            }
+
+            $config = DirectDownloadConfig::fromArray(
+                [
+                    'indexerPriority'     => $priority,
+                    'mirrors'             => $mirrors,
+                    'fastDownloadEnabled' => $request->request->getBoolean('fastDownloadEnabled'),
+                    'outputDirectory'     => (string) $request->request->get('outputDirectory', ''),
+                    'filenameTemplate'    => (string) $request->request->get('filenameTemplate', ''),
+                    'bypassMode'          => (string) $request->request->get('bypassMode', DirectDownloadConfig::BYPASS_EXTERNAL),
+                    'bypassFlaresolverrUrl' => (string) $request->request->get('bypassFlaresolverrUrl', ''),
+                ],
+                $normalizer,
+            );
+            $integrations->saveDirectDownloadConfig($config, $enabled, $em);
+            $em->flush();
+
+            $this->addFlash('success', 'Direct-download settings saved.');
+            return $this->redirectToRoute('settings_direct_download');
+        }
+
+        $integration = $integrations->getOrCreate(Integration::KIND_DIRECT_DOWNLOAD);
+        $config = $integrations->getDirectDownloadConfig();
+
+        // Ordered view with all sources present: stored priority first, then any
+        // not-yet-configured sources in default order. Sources absent from stored
+        // config default to enabled so a fresh install just needs URLs pasted in.
+        $enabledById = [];
+        foreach ($config->indexerPriority as $row) {
+            $enabledById[$row['id']] = $row['enabled'];
+        }
+
+        $orderedIds = [];
+        foreach ($config->indexerPriority as $row) {
+            if (DirectDownloadSource::tryFromId($row['id']) !== null && !in_array($row['id'], $orderedIds, true)) {
+                $orderedIds[] = $row['id'];
+            }
+        }
+        foreach (DirectDownloadSource::ids() as $id) {
+            if (!in_array($id, $orderedIds, true)) {
+                $orderedIds[] = $id;
+            }
+        }
+
+        $priorityRows = [];
+        $sourceLabels = [];
+        $mirrorSections = [];
+        foreach ($orderedIds as $id) {
+            $source = DirectDownloadSource::from($id);
+            $priorityRows[] = ['id' => $id, 'enabled' => $enabledById[$id] ?? true];
+            $sourceLabels[$id] = $source->label();
+            $mirrorSections[] = [
+                'id'    => $id,
+                'label' => $source->label(),
+                'help'  => $source->help(),
+                'urls'  => $config->mirrorsFor($id)->toArray(),
+            ];
+        }
+
+        return $this->render('settings/direct_download.html.twig', [
+            'active_tab'            => 'direct_download',
+            'integration'          => $integration,
+            'priority_rows'        => $priorityRows,
+            'source_labels'        => $sourceLabels,
+            'mirror_sections'      => $mirrorSections,
+            'fast_download_enabled' => $config->fastDownloadEnabled,
+            'output_directory'      => $config->outputDirectory,
+            'filename_template'     => $config->filenameTemplate,
+            'bypass_mode'           => $config->bypassMode,
+            'bypass_flaresolverr_url' => $config->bypassFlaresolverrUrl,
+        ]);
+    }
+
+    /**
+     * @param iterable<ReleaseSourceInterface> $sources
+     * @return list<array{id: string, label: string, available: bool, reason: string|null}>
+     */
+    private function releaseSourceOptions(iterable $sources): array
+    {
+        $out = [];
+        foreach ($sources as $source) {
+            $out[] = [
+                'id'        => $source->getName(),
+                'label'     => $source->getDisplayName(),
+                'available' => $source->isAvailable(),
+                'reason'    => $source->getUnavailableReason(),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Decode a hidden form field that the orderable_list Stimulus controller
+     * serializes as JSON. Returns null on missing/invalid input so the caller
+     * can default sensibly.
+     */
+    private function decodeJsonField(Request $request, string $key): mixed
+    {
+        $raw = $request->request->get($key);
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+        try {
+            return json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildPolicyFromRequest(Request $request): array
+    {
+        $req = $request->request;
+        return [
+            'allowedFormats'   => $this->splitCsv((string) $req->get('allowedFormats', '')),
+            'formatPriority'   => $this->decodeJsonField($request, 'formatPriority') ?? [],
+            'sourcePriority'   => $this->decodeJsonField($request, 'sourcePriority') ?? [],
+            'tieBreakers'      => $this->decodeJsonField($request, 'tieBreakers') ?? [],
+            'minSizeBytes'     => $req->get('minSizeBytes') === '' ? null : $req->get('minSizeBytes'),
+            'maxSizeBytes'     => $req->get('maxSizeBytes') === '' ? null : $req->get('maxSizeBytes'),
+            'minSeeders'       => $req->get('minSeeders') === '' ? null : $req->get('minSeeders'),
+            'requireIsbnMatch' => $req->getBoolean('requireIsbnMatch'),
+            'languagePriority' => $this->decodeJsonField($request, 'languagePriority') ?? [],
+            'minMatchScore'    => $req->get('minMatchScore') === '' ? null : $req->get('minMatchScore'),
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function splitCsv(string $raw): array
+    {
+        $parts = array_map('trim', explode(',', $raw));
+        return array_values(array_filter($parts, static fn (string $v) => $v !== ''));
     }
 }

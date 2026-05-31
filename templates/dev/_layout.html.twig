@@ -1,0 +1,32 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Development - Spine Scout{% endblock %}
+
+{% block body %}
+    <div class="settings">
+        <header class="settings-header">
+            <h1>Development</h1>
+            <p>Manual test harnesses for in-progress features. Not available in production.</p>
+        </header>
+
+        <nav class="settings-tabs" aria-label="Development tools">
+            {% set tabs = [
+                { id: 'direct_download', label: 'Direct Download Probe', route: 'dev_direct_download' },
+                { id: 'downloads', label: 'Downloads Activity', route: 'dev_downloads' }
+            ] %}
+            {% for tab in tabs %}
+                <a class="settings-tab{% if active_tab == tab.id %} active{% endif %}" href="{{ path(tab.route) }}">{{ tab.label }}</a>
+            {% endfor %}
+        </nav>
+
+        {% for label, messages in app.flashes %}
+            {% for msg in messages %}
+                <div class="flash flash-{{ label }}">{{ msg }}</div>
+            {% endfor %}
+        {% endfor %}
+
+        <div class="settings-panel">
+            {% block dev_body %}{% endblock %}
+        </div>
+    </div>
+{% endblock %}
