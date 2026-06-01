@@ -8,10 +8,18 @@ use App\Download\Client\DownloadClientInterface;
 use App\Download\FileMover;
 use App\Download\FilenameTemplate;
 use App\Download\FulfillmentLog;
+use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Progress\FulfillmentDownloadProgressReporter;
+use App\Entity\Book;
 use App\Entity\DownloadJob;
 use App\Message\ProcessDownloadJob;
+use App\Repository\BookRepository;
+use App\Search\DirectDownload\DirectDownloadCascade;
+use App\Search\DirectDownload\DirectDownloadSource;
+use App\Search\DirectDownload\DownloadAttempt;
 use App\Search\SearchSettingsProvider;
+use App\Search\Source\ReleaseCandidate;
+use App\Search\Source\ReleaseSearchPlan;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -19,11 +27,17 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 /**
- * Drives one DownloadJob to completion: claim it under a row lock (so duplicate
- * delivery / parallel workers don't double-process), fetch the file trying each
- * candidate link in order, move it into the configured output folder, and keep
- * the job + request delivery status in sync. On total failure the job is marked
- * errored and the request stays APPROVED for a manual retry.
+ * Drives one DownloadJob to completion by walking the direct-download cascade:
+ * for each enabled source (priority order) it takes the top-3 qualifying items
+ * and tries to download each against every one of that source's mirrors —
+ * source 1 / mirror 1 / (item1,2,3), then mirror 2, … then source 2, etc. The
+ * FIRST link that streams a file wins; the job is stamped with that source/item,
+ * the file is moved into the output folder, and the request flips to delivered.
+ *
+ * The cascade is a lazy generator, so once a download succeeds, later sources are
+ * never searched. On total failure the job is marked errored and the request
+ * stays APPROVED — RetryApprovedSearches re-runs the whole cascade at the next
+ * check (every 3h).
  */
 #[AsMessageHandler]
 final class ProcessDownloadJobHandler
@@ -35,9 +49,11 @@ final class ProcessDownloadJobHandler
         private readonly EntityManagerInterface $em,
         #[AutowireIterator('app.download_client')]
         private readonly iterable $downloadClients,
+        private readonly DirectDownloadCascade $cascade,
         private readonly SearchSettingsProvider $settings,
         private readonly FileMover $mover,
         private readonly FilenameTemplate $filenames,
+        private readonly EbookMetadataInjector $metadataInjector,
         private readonly FulfillmentLog $log,
         private readonly LoggerInterface $logger,
     ) {
@@ -50,54 +66,51 @@ final class ProcessDownloadJobHandler
             return;
         }
 
-        $links = $job->getCandidateLinks();
-        if ($links === [] && $job->getDownloadUrl() !== null) {
-            $links = [$job->getDownloadUrl()];
-        }
-        if ($links === []) {
-            $this->fail($job, 'No download links available.');
-
-            return;
-        }
-
-        $client = $this->clientFor($job->getProtocol());
-        if ($client === null) {
-            $this->fail($job, "No download client for protocol '{$job->getProtocol()}'.");
+        $request = $job->getBookRequest();
+        if ($request === null) {
+            $this->fail($job, 'Download job has no associated request.');
 
             return;
         }
 
         $subject = $this->baseName($job);
-        $this->log->info(sprintf('Downloading via %d link(s)…', \count($links)), $subject);
+        $plan = $this->planFor($request->getBook());
 
         $staged = null;
-        $lastError = 'unknown error';
-        foreach ($links as $i => $url) {
-            // Per-link reporter: the client and bypassers emit their stages
-            // (opening the browser, clearing the challenge, finding the partner
-            // link, streaming the file) into the activity monitor under this
-            // "Link i/N" prefix, so a failure shows exactly where it stopped.
-            $progress = new FulfillmentDownloadProgressReporter($this->log, $subject, sprintf('Link %d/%d', $i + 1, \count($links)));
-            try {
-                $downloadId = $client->addDownload($url, $subject, ['progress' => $progress]);
-                $status = $client->getStatus($downloadId);
-                if ($status->isComplete() && $status->filePath !== null) {
-                    $staged = $status->filePath;
-                    break;
-                }
-                $lastError = $status->message ?? 'download did not complete';
-            } catch (\Throwable $e) {
-                $lastError = $e->getMessage();
-                $this->log->warn(sprintf('Link %d/%d failed: %s', $i + 1, \count($links), $lastError), $subject);
-                $this->logger->warning('Download link failed', ['job' => $job->getId(), 'url' => $url, 'error' => $lastError]);
+        $picked = null;
+        $lastError = 'no source/mirror/item produced a downloadable file';
+        $attemptNo = 0;
+
+        foreach ($this->cascade->attempts($plan, $subject) as $attempt) {
+            ++$attemptNo;
+            $client = $this->clientFor($attempt->item->protocol ?? ReleaseCandidate::PROTOCOL_HTTP);
+            if ($client === null) {
+                $lastError = "No download client for protocol '" . ($attempt->item->protocol ?? '?') . "'.";
+                continue;
+            }
+
+            $label = $this->attemptLabel($attempt, $attemptNo);
+            $staged = $this->tryLinks($client, $attempt->links, $subject, $label, $lastError);
+            if ($staged !== null) {
+                $picked = $attempt;
+                break;
             }
         }
 
-        if ($staged === null) {
-            $this->fail($job, "All download links failed: {$lastError}");
+        if ($staged === null || $picked === null) {
+            $this->fail($job, 'All sources/mirrors/items failed: ' . $lastError);
 
             return;
         }
+
+        // Stamp the job with the winning attempt before finalising.
+        $job->setSource($picked->sourceId)
+            ->setSourceId($picked->item->sourceId)
+            ->setProtocol($picked->item->protocol ?? ReleaseCandidate::PROTOCOL_HTTP)
+            ->setFormat($picked->item->format)
+            ->setSizeBytes($picked->item->sizeBytes)
+            ->setCandidateLinks($picked->links)
+            ->setDownloadUrl($picked->links[0] ?? null);
 
         $config = $this->settings->getDirectDownloadConfig();
         if (trim($config->outputDirectory) === '') {
@@ -108,6 +121,13 @@ final class ProcessDownloadJobHandler
         }
 
         $filename = $this->filenames->render($config->filenameTemplate, $this->tokens($job), $job->getFormat());
+
+        // Best-effort: rewrite the staged file's embedded metadata with our stored
+        // values before it lands in the library. Never throws; skips when disabled
+        // or for non-EPUB formats.
+        if ($this->metadataInjector->inject($staged, $request->getBook(), $job->getFormat())) {
+            $this->log->info('Rewrote embedded metadata from SpineSCOUT', $subject);
+        }
 
         try {
             $finalPath = $this->mover->move($staged, $config->outputDirectory, $filename);
@@ -126,7 +146,68 @@ final class ProcessDownloadJobHandler
         $this->em->flush();
 
         $this->log->info('Downloaded → ' . basename($finalPath) . ' (awaiting library import)', $subject);
-        $this->logger->info('Download complete', ['job' => $job->getId(), 'path' => $finalPath]);
+        $this->logger->info('Download complete', ['job' => $job->getId(), 'path' => $finalPath, 'source' => $picked->sourceId]);
+    }
+
+    /**
+     * Try each link of one attempt in order; return the staged file path on the
+     * first that completes, or null. Updates $lastError for the caller's failure
+     * message. Never throws.
+     *
+     * @param list<string> $links
+     */
+    private function tryLinks(DownloadClientInterface $client, array $links, string $subject, string $label, string &$lastError): ?string
+    {
+        foreach ($links as $i => $url) {
+            $progress = new FulfillmentDownloadProgressReporter($this->log, $subject, sprintf('%s · link %d/%d', $label, $i + 1, \count($links)));
+            try {
+                $downloadId = $client->addDownload($url, $subject, ['progress' => $progress]);
+                $status = $client->getStatus($downloadId);
+                if ($status->isComplete() && $status->filePath !== null) {
+                    return $status->filePath;
+                }
+                $lastError = $status->message ?? 'download did not complete';
+            } catch (\Throwable $e) {
+                $lastError = $e->getMessage();
+                $this->log->warn(sprintf('%s failed: %s', $label, $lastError), $subject);
+                $this->logger->warning('Download attempt failed', ['url' => $url, 'error' => $lastError]);
+            }
+        }
+
+        return null;
+    }
+
+    /** Human label for the activity monitor: "Anna's Archive · mirror.host · attempt N". */
+    private function attemptLabel(DownloadAttempt $attempt, int $attemptNo): string
+    {
+        $source = DirectDownloadSource::tryFromId($attempt->sourceId)?->label() ?? $attempt->sourceId;
+        $host = (string) (parse_url($attempt->mirror, PHP_URL_HOST) ?: $attempt->mirror);
+
+        return sprintf('%s · %s · attempt %d', $source, $host, $attemptNo);
+    }
+
+    private function planFor(Book $book): ReleaseSearchPlan
+    {
+        // Build a deduped list<string> of ISBNs. NB: do NOT key an array by the
+        // ISBN and array_keys() it — PHP coerces numeric-string keys to ints, and
+        // ReleaseSearchPlan::isbnCandidates must stay strings (rawurlencode() etc.
+        // reject ints).
+        $isbns = [];
+        $seen = [];
+        foreach ([$book->getIsbn(), ...$book->getIsbns()] as $raw) {
+            $normalized = BookRepository::normalizeIsbn($raw);
+            if ($normalized !== null && !isset($seen[$normalized])) {
+                $seen[$normalized] = true;
+                $isbns[] = $normalized;
+            }
+        }
+
+        return new ReleaseSearchPlan(
+            book: $book,
+            isbnCandidates: $isbns,
+            author: (string) $book->getAuthor(),
+            titleVariants: [$book->getTitle()],
+        );
     }
 
     /**

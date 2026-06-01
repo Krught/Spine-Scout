@@ -181,4 +181,35 @@ final class DirectDownloadConfig
         }
         return false;
     }
+
+    /**
+     * Return a copy with one indexer's enabled flag set, preserving order. If the
+     * id isn't in the priority list yet it is appended. The original is untouched
+     * — used by the dev probe to apply an ephemeral, never-persisted override.
+     */
+    public function withIndexerEnabled(string $kind, bool $enabled): self
+    {
+        $priority = [];
+        $found = false;
+        foreach ($this->indexerPriority as $row) {
+            if ($row['id'] === $kind) {
+                $row['enabled'] = $enabled;
+                $found = true;
+            }
+            $priority[] = $row;
+        }
+        if (!$found) {
+            $priority[] = ['id' => $kind, 'enabled' => $enabled];
+        }
+
+        return new self(
+            $priority,
+            $this->mirrors,
+            $this->fastDownloadEnabled,
+            $this->outputDirectory,
+            $this->filenameTemplate,
+            $this->bypassMode,
+            $this->bypassFlaresolverrUrl,
+        );
+    }
 }

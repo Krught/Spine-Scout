@@ -31,7 +31,7 @@
                     {% set status = r.status %}
                     {% set is_owner = app.user and app.user.id == r.requestedBy.id %}
                     {% set can_approve = is_granted('ROLE_ADMIN') and status == 'pending' %}
-                    {% set can_recheck = is_granted('ROLE_ADMIN') and status == 'approved' and (r.deliveryStatus is null or r.deliveryStatus in ['error', 'cancelled']) %}
+                    {% set can_recheck = is_granted('ROLE_ADMIN') and status == 'approved' and (r.deliveryStatus is null or r.deliveryStatus in ['error', 'cancelled'] or item.stalled) %}
                     {% set can_delete = is_granted('ROLE_ADMIN') or is_owner %}
                     {% set _dur = random(900, 3600) %}
                     <li class="request-row" data-controller="cover-palette" data-cover-palette-target-value=".request-cover"
@@ -62,7 +62,9 @@
                             {% else %}
                                 <span class="request-status request-status-{{ status }}">{{ r.statusLabel }}</span>
                             {% endif %}
-                            {% if status == 'approved' and item.job and ds in ['downloading', 'resolving'] %}
+                            {% if status == 'approved' and item.stalled %}
+                                <span class="request-status request-status-error" title="The worker stopped before finishing — recheck to retry.">Stalled</span>
+                            {% elseif status == 'approved' and item.job and ds in ['downloading', 'resolving'] %}
                                 <span class="request-progress" aria-label="Download progress">
                                     <span class="request-progress-bar" style="width: {{ item.job.progress }}%"></span>
                                 </span>

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Entity\Book;
 use App\Entity\Integration;
 use App\Repository\IntegrationRepository;
 use Psr\Log\LoggerInterface;
@@ -19,7 +20,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * the contents will be re-fetched on demand from the upstream source recorded
  * in each entry's .meta sidecar.
  */
-final class CoverCache
+final class CoverCache implements BookCoverProvider
 {
     private const KIND_REMOTE = 'remote';
     private const KIND_KOMGA  = 'komga';
@@ -97,6 +98,87 @@ final class CoverCache
             $this->warmKomga($id) ? $warmed++ : $failed++;
         }
         return ['queued' => $queued, 'warmed' => $warmed, 'skipped' => $skipped, 'failed' => $failed];
+    }
+
+    /**
+     * Fetch a book's cover in its ORIGINAL raster form (not the webp the proxy
+     * serves) for embedding into a downloaded file. Reuses the same remote/Komga
+     * upstream resolution as the proxy. Images already in an e-reader-friendly
+     * format (JPEG/PNG/GIF) pass through untouched; anything else is transcoded to
+     * JPEG. Returns null on any failure — the cover step is optional for callers.
+     *
+     * @return array{0: string, 1: string}|null [raw image bytes, mime type]
+     */
+    public function originalCoverForBook(Book $book): ?array
+    {
+        $meta = $this->metaForBook($book);
+        if ($meta === null) {
+            return null;
+        }
+        try {
+            [$url, $auth] = $this->resolveUpstream($meta);
+            if ($url === null) {
+                return null;
+            }
+            $options = ['timeout' => 30];
+            if ($auth !== null) {
+                $options['auth_basic'] = $auth;
+            }
+            $response = $this->httpClient->request('GET', $url, $options);
+            if ($response->getStatusCode() !== 200) {
+                return null;
+            }
+            $body = $response->getContent(false);
+            if ($body === '') {
+                return null;
+            }
+        } catch (TransportException | HttpExceptionInterface) {
+            return null;
+        }
+
+        return $this->toEmbeddableImage($body);
+    }
+
+    /** @return array{kind: string, url?: string, id?: string}|null */
+    private function metaForBook(Book $book): ?array
+    {
+        $url = $book->getCoverUrl();
+        if (is_string($url) && $url !== '') {
+            return ['kind' => self::KIND_REMOTE, 'url' => $url];
+        }
+        if ($book->getSource() === Book::SOURCE_GRIMMORY && $book->getExternalId() !== '') {
+            return ['kind' => self::KIND_KOMGA, 'id' => $book->getExternalId()];
+        }
+        return null;
+    }
+
+    /** @return array{0: string, 1: string}|null */
+    private function toEmbeddableImage(string $bytes): ?array
+    {
+        $info = @getimagesizefromstring($bytes);
+        $mime = is_array($info) ? ($info['mime'] ?? null) : null;
+        if (in_array($mime, ['image/jpeg', 'image/png', 'image/gif'], true)) {
+            return [$bytes, $mime];
+        }
+        $jpeg = $this->encodeJpeg($bytes);
+        return $jpeg === null ? null : [$jpeg, 'image/jpeg'];
+    }
+
+    private function encodeJpeg(string $bytes): ?string
+    {
+        $im = @imagecreatefromstring($bytes);
+        if ($im === false) {
+            return null;
+        }
+        try {
+            imagepalettetotruecolor($im);
+            ob_start();
+            $ok = imagejpeg($im, null, 90);
+            $out = ob_get_clean();
+            return ($ok && is_string($out) && $out !== '') ? $out : null;
+        } finally {
+            imagedestroy($im);
+        }
     }
 
     /** @param array{kind: string, url?: string, id?: string} $meta */

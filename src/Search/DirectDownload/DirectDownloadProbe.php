@@ -6,26 +6,31 @@ namespace App\Search\DirectDownload;
 
 use App\Entity\Book;
 use App\Repository\IntegrationRepository;
-use App\Search\Source\DirectHttpProtocol\AAStyleHttpProtocol;
+use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
-use Symfony\Contracts\HttpClient\HttpClientInterface;
+use App\Search\Source\ReleaseSourceInterface;
+use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 
 /**
- * Manual-probe helper for the direct-download search path: build the search URL
- * for a given ISBN / author / title from the operator's CURRENT saved settings,
- * and optionally fetch + parse the raw response.
+ * Manual-probe helper for the direct-download search path, shared by the
+ * `spinescout:dd:probe` console command and the Settings → Development page.
  *
- * This is the shared implementation behind both the `spinescout:dd:probe`
- * console command and the Settings → Development page. It does, by hand, what
- * the not-yet-built DirectHttpSource engine will do automatically on approval:
- * read DirectDownloadConfig -> pick the search mirror -> build URL -> (fetch).
+ * Multi-source: builds each enabled source's search URL from the operator's saved
+ * settings — optionally with EPHEMERAL enable/disable overrides applied for one
+ * run only (never persisted) — and runs the search so the operator can compare
+ * what every source returns side by side. Unlike the automatic workflow (a
+ * failover cascade that stops at the first qualifying source), the probe runs
+ * every enabled source.
  */
 final class DirectDownloadProbe
 {
+    /**
+     * @param iterable<ReleaseSourceInterface> $sources
+     */
     public function __construct(
         private readonly IntegrationRepository $integrations,
-        private readonly AAStyleHttpProtocol $protocol,
-        private readonly HttpClientInterface $httpClient,
+        #[AutowireIterator('app.release_source')]
+        private readonly iterable $sources,
     ) {
     }
 
@@ -50,7 +55,7 @@ final class DirectDownloadProbe
         if ($isbn !== '') {
             $book->setIsbns([$isbn]);
         }
-        if (trim((string) $author) !== '') {
+        if ($author !== '') {
             $book->setAuthor($author);
         }
         if (trim((string) $publisher) !== '') {
@@ -72,55 +77,146 @@ final class DirectDownloadProbe
     }
 
     /**
-     * Resolve the search mirror (top-priority enabled Anna's Archive mirror —
-     * the only search-capable source) and build the query URL.
+     * The saved config with ephemeral enable/disable overrides applied. $enabledIds
+     * is the set of source ids enabled for this run; any known source absent from
+     * it is disabled. Null returns the saved config unchanged. Never persisted.
      *
-     * @return array{mirror: string|null, url: string|null}
+     * @param list<string>|null $enabledIds
      */
-    public function searchUrl(ReleaseSearchPlan $plan): array
+    public function effectiveConfig(?array $enabledIds): DirectDownloadConfig
     {
         $config = $this->config();
-        $aa = DirectDownloadSource::AnnasArchive->value;
-        $mirrors = $config->mirrorsFor($aa)->toArray();
-
-        if ($mirrors === [] || !$config->isIndexerEnabled($aa)) {
-            return ['mirror' => null, 'url' => null];
+        if ($enabledIds === null) {
+            return $config;
         }
 
-        $base = $mirrors[0];
+        $set = array_fill_keys($enabledIds, true);
+        foreach (DirectDownloadSource::ids() as $id) {
+            $config = $config->withIndexerEnabled($id, isset($set[$id]));
+        }
 
-        return ['mirror' => $base, 'url' => $this->protocol->buildSearchUrl($base, $plan)];
+        return $config;
     }
 
     /**
-     * GET a search URL and parse it. Never throws — transport/parse failures are
-     * returned as a structured result so callers can render them.
+     * Run every enabled source for $plan under $config, returning one report per
+     * source in priority order: the search descriptor (mirror + URL, or the reason
+     * it was skipped) and the normalized records it found. Disabled sources are
+     * omitted; enabled-but-unconfigured ones are reported with a reason.
      *
-     * @return array{status: int, bytes: int, records: list<\App\Search\Source\DirectHttpProtocol\AAStyleResult>, html: string, error: string|null}
+     * @return list<array{search: SourceSearch, records: list<array<string, string|null>>}>
      */
-    public function fetch(string $url): array
+    public function run(ReleaseSearchPlan $plan, DirectDownloadConfig $config): array
     {
-        try {
-            $response = $this->httpClient->request('GET', $url, [
-                'timeout' => 30,
-                'max_redirects' => 5,
-                'headers' => [
-                    'User-Agent' => 'Mozilla/5.0 (compatible; SpineScout/1.0)',
-                    'Accept' => 'text/html',
-                ],
-            ]);
-            $status = $response->getStatusCode();
-            $html = $response->getContent(false);
-        } catch (\Throwable $e) {
-            return ['status' => 0, 'bytes' => 0, 'records' => [], 'html' => '', 'error' => $e->getMessage()];
+        $byId = $this->sourcesById();
+
+        $out = [];
+        foreach ($config->indexerPriority as $row) {
+            if (!($row['enabled'] ?? false)) {
+                continue;
+            }
+            $id = $row['id'];
+            $label = DirectDownloadSource::tryFromId($id)?->label() ?? $id;
+            $source = $byId[$id] ?? null;
+
+            if ($source === null) {
+                $out[] = ['search' => new SourceSearch($id, $label, null, null, false, 'No adapter for this source.'), 'records' => []];
+                continue;
+            }
+            if ($config->mirrorsFor($id)->toArray() === []) {
+                $out[] = ['search' => new SourceSearch($id, $label, null, null, false, 'No mirrors configured for this source.'), 'records' => []];
+                continue;
+            }
+
+            ['mirror' => $mirror, 'url' => $url] = $source->searchPlanUrl($plan, $config);
+            $records = array_map(
+                static fn (ReleaseCandidate $c): array => self::normalize($c),
+                $source->search($plan, $config),
+            );
+
+            $out[] = ['search' => new SourceSearch($id, $label, $mirror, $url, true), 'records' => $records];
         }
 
+        return $out;
+    }
+
+    /**
+     * The search descriptor for every enabled source under $config, WITHOUT
+     * performing any request (the "Generate URLs" path).
+     *
+     * @return list<SourceSearch>
+     */
+    public function plannedSearches(ReleaseSearchPlan $plan, DirectDownloadConfig $config): array
+    {
+        $byId = $this->sourcesById();
+
+        $out = [];
+        foreach ($config->indexerPriority as $row) {
+            if (!($row['enabled'] ?? false)) {
+                continue;
+            }
+            $id = $row['id'];
+            $label = DirectDownloadSource::tryFromId($id)?->label() ?? $id;
+            $source = $byId[$id] ?? null;
+
+            if ($source === null) {
+                $out[] = new SourceSearch($id, $label, null, null, false, 'No adapter for this source.');
+                continue;
+            }
+            if ($config->mirrorsFor($id)->toArray() === []) {
+                $out[] = new SourceSearch($id, $label, null, null, false, 'No mirrors configured for this source.');
+                continue;
+            }
+
+            ['mirror' => $mirror, 'url' => $url] = $source->searchPlanUrl($plan, $config);
+            $out[] = new SourceSearch($id, $label, $mirror, $url, true);
+        }
+
+        return $out;
+    }
+
+    /** Resolve one record's detail (ISBNs + download links) for the named source. */
+    public function resolveDetail(string $sourceId, ReleaseCandidate $candidate, DirectDownloadConfig $config): array
+    {
+        $source = $this->sourcesById()[$sourceId] ?? null;
+        if ($source === null) {
+            return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No adapter for this source.'];
+        }
+
+        return $source->resolveDetail($candidate, $config);
+    }
+
+    /** @return array<string, ReleaseSourceInterface> */
+    private function sourcesById(): array
+    {
+        $byId = [];
+        foreach ($this->sources as $source) {
+            $byId[$source->sourceId()] = $source;
+        }
+
+        return $byId;
+    }
+
+    /**
+     * Flatten a candidate to the source-agnostic shape the probe table renders.
+     *
+     * @return array<string, string|null>
+     */
+    private static function normalize(ReleaseCandidate $candidate): array
+    {
+        $size = $candidate->extra['size'] ?? null;
+
         return [
-            'status'  => $status,
-            'bytes'   => strlen($html),
-            'records' => $this->protocol->parseSearchResults($html),
-            'html'    => $html,
-            'error'   => null,
+            'id'        => $candidate->sourceId,
+            'title'     => $candidate->title,
+            'author'    => $candidate->author,
+            'format'    => $candidate->format,
+            'language'  => $candidate->language,
+            'publisher' => $candidate->publisher,
+            'year'      => $candidate->year,
+            'size'      => is_string($size) ? $size : null,
+            'mirror'    => is_string($candidate->extra['mirror'] ?? null) ? $candidate->extra['mirror'] : null,
+            'infoUrl'   => $candidate->infoUrl,
         ];
     }
 }

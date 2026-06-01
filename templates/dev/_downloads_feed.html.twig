@@ -1,7 +1,8 @@
-{# Inner fragment polled live by the activity-poll Stimulus controller. #}
+{# Inner fragment polled live by the activity-poll Stimulus controller. The two
+   panes are shown one at a time by the dev-tabs controller (sub-tabs live in the
+   parent template, outside this polled fragment, so they survive each swap). #}
 <div class="dev-activity">
-    <div class="dev-activity__col">
-        <h4>Download jobs</h4>
+    <div class="dev-activity__pane" data-pane="jobs">
         {% if jobs is empty %}
             <p class="form-note">No download jobs yet. Approve a request to kick one off.</p>
         {% else %}
@@ -29,8 +30,7 @@
         {% endif %}
     </div>
 
-    <div class="dev-activity__col">
-        <h4>Activity log</h4>
+    <div class="dev-activity__pane" data-pane="log">
         {% if events is empty %}
             <p class="form-note">No activity yet.</p>
         {% else %}

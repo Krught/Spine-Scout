@@ -221,6 +221,37 @@ final class BestMatchSelectorTest extends TestCase
         self::assertSame([BestMatchPolicy::TIE_LARGEST_SIZE], $reloaded->tieBreakers);
     }
 
+    public function testRankReturnsFullOrderingAndPickIsItsHead(): void
+    {
+        $candidates = [
+            $this->candidate('pdf-big',    format: 'pdf',  sizeBytes: 50_000_000),
+            $this->candidate('epub-small', format: 'epub', sizeBytes: 500_000),
+            $this->candidate('epub-big',   format: 'epub', sizeBytes: 9_000_000),
+        ];
+        $policy = new BestMatchPolicy(
+            formatPriority: ['epub', 'pdf'],
+            tieBreakers: [BestMatchPolicy::TIE_LARGEST_SIZE],
+        );
+
+        $ranked = $this->selector->rank($candidates, $policy);
+
+        // epub bucket first (largest epub, then smaller epub), then pdf.
+        self::assertSame(['epub-big', 'epub-small', 'pdf-big'], array_map(static fn ($c) => $c->sourceId, $ranked));
+        // pick() is exactly rank()[0].
+        self::assertSame($ranked[0]->sourceId, $this->selector->pick($candidates, $policy)?->sourceId);
+    }
+
+    public function testRankDropsGatedCandidates(): void
+    {
+        $candidates = [
+            $this->candidate('pdf', format: 'pdf'),
+            $this->candidate('epub', format: 'epub'),
+        ];
+        $ranked = $this->selector->rank($candidates, new BestMatchPolicy(allowedFormats: ['epub']));
+
+        self::assertSame(['epub'], array_map(static fn ($c) => $c->sourceId, $ranked));
+    }
+
     private function candidate(
         string $sourceId,
         string $source = 'test',

@@ -36,8 +36,9 @@ final class DirectDownloadProbeCommand extends Command
         $this->addArgument('isbn', InputArgument::OPTIONAL, 'ISBN to search for.', '');
         $this->addOption('author', null, InputOption::VALUE_REQUIRED, 'Author (used when no ISBN).', '');
         $this->addOption('title', null, InputOption::VALUE_REQUIRED, 'Title (used when no ISBN).', '');
-        $this->addOption('fetch', null, InputOption::VALUE_NONE, 'Actually GET the URL and parse results (outbound request to your mirror).');
-        $this->addOption('score', null, InputOption::VALUE_NONE, 'Fetch, verify ISBNs per record, score every candidate, and show the best-match pick.');
+        $this->addOption('source', null, InputOption::VALUE_REQUIRED, 'Limit to one source id (annas_archive, libgen, zlibrary, welib).', '');
+        $this->addOption('fetch', null, InputOption::VALUE_NONE, 'Actually run each source search and parse results (outbound requests to your mirrors).');
+        $this->addOption('score', null, InputOption::VALUE_NONE, 'Search every source in failover order, score candidates, and show the best-match pick.');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -71,50 +72,51 @@ final class DirectDownloadProbeCommand extends Command
             return $this->renderScored($plan, $output);
         }
 
-        ['mirror' => $mirror, 'url' => $url] = $this->probe->searchUrl($plan);
-
-        if ($url === null) {
-            $output->writeln('');
-            $output->writeln('<error>No enabled Anna\'s Archive mirror configured — cannot build a search URL.</error>');
-            $output->writeln('Add one in Settings → Direct downloads and enable the source.');
-
-            return Command::FAILURE;
-        }
-
-        $output->writeln('');
-        $output->writeln(sprintf('<info>Search URL (mirror: %s):</info>', $mirror));
-        $output->writeln('  ' . $url);
+        // --source limits the run to one source by enabling only it (ephemeral).
+        $only = trim((string) $input->getOption('source'));
+        $effective = $only !== '' ? $this->probe->effectiveConfig([$only]) : $this->probe->effectiveConfig(null);
 
         if (!$input->getOption('fetch')) {
             $output->writeln('');
-            $output->writeln('<comment>Pass --fetch to GET this URL and parse results.</comment>');
+            $output->writeln('<info>Generated search URLs:</info>');
+            $searches = $this->probe->plannedSearches($plan, $effective);
+            if ($searches === []) {
+                $output->writeln('  (no enabled source with mirrors)');
+            }
+            foreach ($searches as $s) {
+                $output->writeln(sprintf('  <comment>%s</comment>', $s->label));
+                $output->writeln($s->available && $s->url !== null ? '    ' . $s->url : '    (' . ($s->reason ?? 'unavailable') . ')');
+            }
+            $output->writeln('');
+            $output->writeln('<comment>Pass --fetch to run each search and parse results.</comment>');
 
             return Command::SUCCESS;
         }
 
         $output->writeln('');
         $output->writeln('<info>Fetching…</info>');
-        $result = $this->probe->fetch($url);
-
-        if ($result['error'] !== null) {
-            $output->writeln(sprintf('<error>Fetch failed: %s</error>', $result['error']));
-
-            return Command::FAILURE;
+        $runs = $this->probe->run($plan, $effective);
+        if ($runs === []) {
+            $output->writeln('  (no enabled source ran)');
         }
-
-        $output->writeln(sprintf('HTTP %d, %d bytes, parsed %d record(s).', $result['status'], $result['bytes'], count($result['records'])));
-        if ($result['records'] === []) {
-            $output->writeln('<comment>No records — no match, or the mirror returned a challenge/landing page.</comment>');
-        }
-        foreach ($result['records'] as $r) {
-            $output->writeln(sprintf(
-                '  %s | %s | %s | %s | %s',
-                substr($r->id, 0, 16),
-                $r->title,
-                $r->author ?? '?',
-                $r->format ?? '?',
-                $r->size ?? '?',
-            ));
+        foreach ($runs as $run) {
+            $s = $run['search'];
+            $output->writeln('');
+            if (!$s->available) {
+                $output->writeln(sprintf('<comment>%s</comment> — %s', $s->label, $s->reason ?? 'unavailable'));
+                continue;
+            }
+            $output->writeln(sprintf('<comment>%s</comment> (mirror: %s) — parsed %d record(s)', $s->label, $s->mirror, count($run['records'])));
+            foreach ($run['records'] as $r) {
+                $output->writeln(sprintf(
+                    '  %s | %s | %s | %s | %s',
+                    substr((string) $r['id'], 0, 16),
+                    $r['title'],
+                    $r['author'] ?? '?',
+                    $r['format'] ?? '?',
+                    $r['size'] ?? '?',
+                ));
+            }
         }
 
         return Command::SUCCESS;
@@ -133,8 +135,9 @@ final class DirectDownloadProbeCommand extends Command
         }
 
         $output->writeln(sprintf(
-            'Mirror: %s | threshold %d | %d of %d candidate(s) qualify.',
-            $result->mirror ?? '—',
+            'Picked source: %s | mirror: %s | threshold %d | %d of %d candidate(s) qualify.',
+            $result->pickedSource ?? '—',
+            $result->firstMirror() ?? '—',
             $result->threshold,
             $result->qualifyingCount(),
             $result->totalCount(),

@@ -22,9 +22,7 @@ use App\Repository\IntegrationRepository;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\DirectDownload\DirectDownloadSource;
-use App\Search\Source\ReleaseSourceInterface;
 use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -43,10 +41,32 @@ final class SettingsController extends AbstractController
     }
 
     #[Route('/general', name: 'general')]
-    public function general(): Response
-    {
+    public function general(
+        Request $request,
+        IntegrationRepository $repository,
+        EntityManagerInterface $em,
+    ): Response {
+        $app = $repository->getOrCreate(Integration::KIND_APP);
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isCsrfTokenValid('settings_general', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+                return $this->redirectToRoute('settings_general');
+            }
+
+            $app->setOverwriteMetadataEnabled($request->request->getBoolean('overwrite_metadata'));
+            $app->setAuthType(Integration::AUTH_NONE);
+            $app->setEnabled(true);
+            $this->persistOrTouch($em, $app);
+            $em->flush();
+
+            $this->addFlash('success', 'General settings saved.');
+            return $this->redirectToRoute('settings_general');
+        }
+
         return $this->render('settings/general.html.twig', [
             'active_tab' => 'general',
+            'overwrite_metadata' => $app->isOverwriteMetadataEnabled(),
         ]);
     }
 
@@ -323,10 +343,7 @@ final class SettingsController extends AbstractController
         Request $request,
         IntegrationRepository $integrations,
         EntityManagerInterface $em,
-        #[AutowireIterator('app.release_source')] iterable $releaseSources,
     ): Response {
-        $sourceOptions = $this->releaseSourceOptions($releaseSources);
-
         if ($request->isMethod('POST')) {
             if (!$this->isCsrfTokenValid('settings_best_match', (string) $request->request->get('_token'))) {
                 $this->addFlash('error', 'Invalid CSRF token.');
@@ -345,7 +362,6 @@ final class SettingsController extends AbstractController
         return $this->render('settings/best_match.html.twig', [
             'active_tab'        => 'best_match',
             'policy'            => $policy,
-            'source_options'    => $sourceOptions,
             'format_suggestions' => ['epub', 'mobi', 'azw3', 'azw', 'pdf', 'cbz', 'cbr', 'fb2', 'djvu', 'txt'],
             'language_suggestions' => ['en', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ja', 'zh'],
             'tie_breakers' => BestMatchPolicy::TIE_BREAKERS,
@@ -465,24 +481,6 @@ final class SettingsController extends AbstractController
     }
 
     /**
-     * @param iterable<ReleaseSourceInterface> $sources
-     * @return list<array{id: string, label: string, available: bool, reason: string|null}>
-     */
-    private function releaseSourceOptions(iterable $sources): array
-    {
-        $out = [];
-        foreach ($sources as $source) {
-            $out[] = [
-                'id'        => $source->getName(),
-                'label'     => $source->getDisplayName(),
-                'available' => $source->isAvailable(),
-                'reason'    => $source->getUnavailableReason(),
-            ];
-        }
-        return $out;
-    }
-
-    /**
      * Decode a hidden form field that the orderable_list Stimulus controller
      * serializes as JSON. Returns null on missing/invalid input so the caller
      * can default sensibly.
@@ -509,7 +507,6 @@ final class SettingsController extends AbstractController
         return [
             'allowedFormats'   => $this->splitCsv((string) $req->get('allowedFormats', '')),
             'formatPriority'   => $this->decodeJsonField($request, 'formatPriority') ?? [],
-            'sourcePriority'   => $this->decodeJsonField($request, 'sourcePriority') ?? [],
             'tieBreakers'      => $this->decodeJsonField($request, 'tieBreakers') ?? [],
             'minSizeBytes'     => $req->get('minSizeBytes') === '' ? null : $req->get('minSizeBytes'),
             'maxSizeBytes'     => $req->get('maxSizeBytes') === '' ? null : $req->get('maxSizeBytes'),

@@ -2,38 +2,39 @@
 
 {% block dev_body %}
     <div class="panel-header">
-        <h2 class="panel-title">Direct-download search URL builder</h2>
-        <p class="panel-sub">
-            Reads your saved Direct Downloads settings, picks the top-priority enabled
-            Anna's Archive mirror, and builds the ISBN-first query for the inputs below.
-            "Generate &amp; fetch" also performs the live request and parses the response.
-            Env <code>{{ environment }}</code>{% if branch %}, branch <code>{{ branch }}</code>{% endif %}.
-        </p>
+        <h2 class="panel-title">Direct-download search probe</h2>
     </div>
 
     <section class="dev-test">
-        <div class="dev-config">
-            <h4>Current config</h4>
-            {% if source_rows is empty %}
-                <p class="form-note">Nothing saved yet — configure mirrors in Settings → Direct Downloads.</p>
-            {% else %}
-                <ul class="dev-config__list">
-                    {% for row in source_rows %}
-                        <li>
-                            <span class="dev-config__state">{{ row.enabled ? '☑' : '☐' }}</span>
-                            <strong>{{ row.label }}</strong>{% if row.searchSource %} <em>(search source)</em>{% endif %}
-                            — {{ row.count }} mirror(s){% if row.first %}, first: <code>{{ row.first }}</code>{% endif %}
-                        </li>
-                    {% endfor %}
-                </ul>
-            {% endif %}
-        </div>
-
         <form method="get" action="{{ path('dev_direct_download') }}" class="settings-form dev-form">
+            <input type="hidden" name="sources_submitted" value="1">
+
+            <div class="dev-config">
+                <h4>Sources for this run</h4>
+                {% if source_rows is empty %}
+                    <p class="form-note">Nothing saved yet — configure mirrors in Settings → Direct Downloads.</p>
+                {% else %}
+                    <ul class="dev-config__list">
+                        {% for row in source_rows %}
+                            <li>
+                                <label class="field field--inline">
+                                    <input type="checkbox" name="enabled[]" value="{{ row.id }}"{{ row.enabled ? ' checked' : '' }}{{ row.count == 0 ? ' disabled' : '' }}>
+                                    <strong>{{ row.label }}</strong>
+                                    — {{ row.count }} mirror(s){% if row.first %}, first: <code>{{ row.first }}</code>{% endif %}
+                                    {% if not row.saved_enabled %}<em>(disabled in saved settings)</em>{% endif %}
+                                    {% if row.count == 0 %}<em>(no mirrors — add some in Settings)</em>{% endif %}
+                                </label>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                    <p class="form-note">Checked = run this source now. Unchecking only affects this probe run; saved settings are untouched.</p>
+                {% endif %}
+            </div>
+
             <div class="dev-form__grid">
                 <label class="field">
                     <span>ISBN</span>
-                    <input type="text" name="isbn" value="{{ inputs.isbn }}" placeholder="9781444758979" autocomplete="off">
+                    <input type="text" name="isbn" value="{{ inputs.isbn }}" placeholder="9780345539786" autocomplete="off">
                 </label>
                 <label class="field">
                     <span>Author</span>
@@ -58,42 +59,56 @@
             </div>
             <p class="form-note">ISBN-first: when an ISBN is given it drives the query; otherwise title + author are used. Publisher / year / language only affect scoring (extra categories), not the search.</p>
             <div class="form-actions">
-                <button type="submit" name="submit" value="1" class="btn btn-primary">Generate URL</button>
+                <button type="submit" name="submit" value="1" class="btn btn-primary">Generate URLs</button>
                 <button type="submit" name="fetch" value="1" class="btn">Generate &amp; fetch</button>
             </div>
             <p class="form-note">After fetching, use <strong>Detail + score</strong> on a row to verify ISBNs and score that single record (one request at a time).</p>
         </form>
 
-        {% if result is not null %}
+        {% if searches is not empty %}
             <div class="dev-result">
-                {% if result.url is null %}
-                    <p class="flash flash-error">
-                        No enabled Anna's Archive mirror configured — add one in Settings → Direct Downloads and enable it.
-                    </p>
-                {% else %}
-                    <h4>Generated query</h4>
-                    <p class="form-note">Mirror: <code>{{ result.mirror }}</code></p>
-                    <pre class="dev-result__url">{{ result.url }}</pre>
-                    <p><a href="{{ result.url }}" target="_blank" rel="noopener noreferrer">Open in new tab ↗</a></p>
-
-                    {% if result.fetch is not null %}
-                        {% set f = result.fetch %}
-                        <h4>Live response</h4>
-                        {% if f.error %}
-                            <p class="flash flash-error">Fetch failed: {{ f.error }}</p>
+                <h4>Generated queries</h4>
+                {% for s in searches %}
+                    <div class="dev-result__source">
+                        <h5>{{ s.label }}</h5>
+                        {% if s.available and s.url %}
+                            <p class="form-note">Mirror: <code>{{ s.mirror }}</code></p>
+                            <pre class="dev-result__url">{{ s.url }}</pre>
+                            <p><a href="{{ s.url }}" target="_blank" rel="noopener noreferrer">Open in new tab ↗</a></p>
                         {% else %}
+                            <p class="flash flash-error">{{ s.reason ?? 'No usable mirror.' }}</p>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+
+        {% if runs is not null %}
+            <div class="dev-result">
+                <h4>Live results</h4>
+                {% if runs is empty %}
+                    <p class="form-note">No enabled source ran — enable a source above and add mirrors in Settings.</p>
+                {% endif %}
+                {% for run in runs %}
+                    {% set s = run.search %}
+                    <div class="dev-result__source">
+                        <h5>{{ s.label }}</h5>
+                        {% if not s.available %}
+                            <p class="flash flash-error">{{ s.reason ?? 'Source unavailable.' }}</p>
+                        {% else %}
+                            <p class="form-note">Mirror: <code>{{ s.mirror }}</code>{% if s.url %} · <a href="{{ s.url }}" target="_blank" rel="noopener noreferrer">query ↗</a>{% endif %}</p>
                             <p class="form-note">
-                                HTTP {{ f.status }} · {{ f.bytes }} bytes · parsed <strong>{{ f.records|length }}</strong> record(s)
-                                {% if f.records is empty %} — no match, or a challenge/landing page was returned{% endif %}
+                                Parsed <strong>{{ run.records|length }}</strong> record(s)
+                                {% if run.records is empty %} — no match, or a challenge/landing page was returned{% endif %}
                             </p>
-                            {% if f.records is not empty %}
+                            {% if run.records is not empty %}
                                 <div class="dev-result__table-wrap">
                                     <table class="dev-result__table">
                                         <thead>
-                                            <tr><th>Hash</th><th>Title</th><th>Author</th><th>Format</th><th>Size</th><th>Detail + score</th></tr>
+                                            <tr><th>Id</th><th>Title</th><th>Author</th><th>Format</th><th>Size</th><th>Detail + score</th></tr>
                                         </thead>
                                         <tbody>
-                                            {% for r in f.records %}
+                                            {% for r in run.records %}
                                                 <tr>
                                                     <td><code>{{ r.id|slice(0, 12) }}</code></td>
                                                     <td>{{ r.title }}</td>
@@ -101,9 +116,9 @@
                                                     <td>{{ r.format ?? '?' }}</td>
                                                     <td>{{ r.size ?? '?' }}</td>
                                                     <td>
-                                                        {% if result.mirror %}
+                                                        {% if r.mirror %}
                                                             <a href="{{ path('dev_direct_download', {
-                                                                fetch: 1,
+                                                                submit: 1,
                                                                 isbn: inputs.isbn,
                                                                 author: inputs.author,
                                                                 title: inputs.title,
@@ -111,7 +126,9 @@
                                                                 year: inputs.year,
                                                                 language: inputs.language,
                                                                 detail: r.id,
-                                                                mirror: result.mirror,
+                                                                mirror: r.mirror,
+                                                                source: s.sourceId,
+                                                                info: r.infoUrl,
                                                                 rtitle: r.title,
                                                                 rauthor: r.author,
                                                                 rformat: r.format,
@@ -127,26 +144,19 @@
                                     </table>
                                 </div>
                             {% endif %}
-                            <details class="dev-result__raw">
-                                <summary>Raw HTML response ({{ f.bytes }} bytes)</summary>
-                                <pre>{{ f.html|slice(0, 20000) }}{% if f.bytes > 20000 %}
-
-… truncated ({{ f.bytes - 20000 }} more bytes){% endif %}</pre>
-                            </details>
                         {% endif %}
-                    {% endif %}
-                {% endif %}
+                    </div>
+                {% endfor %}
             </div>
         {% endif %}
 
         {% if detail is not null %}
             <div class="dev-result" id="record-detail">
-                <h4>Record detail — <code>{{ detail.hash|slice(0, 16) }}</code></h4>
-                <p class="form-note">Mirror: <code>{{ detail.mirror }}</code> · <a href="{{ detail.url }}" target="_blank" rel="noopener noreferrer">Open detail page ↗</a></p>
+                <h4>Record detail — {{ detail.source }} · <code>{{ detail.hash|slice(0, 16) }}</code></h4>
+                <p class="form-note">Mirror: <code>{{ detail.mirror }}</code></p>
                 {% if detail.error %}
                     <p class="flash flash-error">Detail fetch failed: {{ detail.error }}</p>
                 {% else %}
-                    <p class="form-note">HTTP {{ detail.status }}</p>
                     <p>
                         <strong>Verified ISBNs:</strong>
                         {% if detail.isbns is empty %}<em>none parsed</em>
@@ -161,14 +171,34 @@
                                 {% endfor %}
                             </tbody>
                         </table>
-                    {% else %}
-                        <p class="form-note">No metadata rows parsed (label/value scan + ISBN fallback found nothing).</p>
                     {% endif %}
                     <p class="form-note">Download links found: <strong>{{ detail.links|length }}</strong></p>
                     {% if detail.links is not empty %}
                         <ul class="dev-config__list">
                             {% for link in detail.links %}<li><code>{{ link }}</code></li>{% endfor %}
                         </ul>
+
+                        <div class="dev-dl-test"
+                             data-controller="download-test"
+                             data-download-test-url-value="{{ path('dev_direct_download_test') }}"
+                             data-download-test-token-value="{{ csrf_token('dev_dd_download_test') }}"
+                             data-download-test-links-value="{{ detail.links|json_encode }}">
+                            <div class="form-actions">
+                                <button type="button" class="btn btn-primary"
+                                        data-download-test-target="button"
+                                        data-action="download-test#run">
+                                    Test download all links
+                                </button>
+                            </div>
+                            <p class="form-note">
+                                Runs the <strong>real</strong> download workflow against <strong>every</strong>
+                                link above (same code path as fulfillment: hand the link to the bypasser,
+                                resolve the returned partner link, then download from there). Each step is
+                                shown per link. Files are written to a temp directory, measured, then
+                                deleted — nothing is kept.
+                            </p>
+                            <div class="dev-dl-test__results" data-download-test-target="results" hidden></div>
+                        </div>
                     {% endif %}
 
                     {% if detail.score is defined %}

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Search\Source\DirectHttp;
 
+use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\SearchSettingsProvider;
 use App\Search\Source\DirectHttpProtocol\AAStyleHttpProtocol;
@@ -55,6 +56,11 @@ final class DirectHttpSource implements ReleaseSourceInterface
         return self::NAME;
     }
 
+    public function sourceId(): string
+    {
+        return DirectDownloadSource::AnnasArchive->value;
+    }
+
     public function getDisplayName(): string
     {
         return 'Direct download (HTTP)';
@@ -91,23 +97,34 @@ final class DirectHttpSource implements ReleaseSourceInterface
      *
      * @return list<ReleaseCandidate>
      */
-    public function search(ReleaseSearchPlan $plan): array
+    public function search(ReleaseSearchPlan $plan, ?DirectDownloadConfig $config = null): array
     {
-        foreach ($this->searchMirrors() as $base) {
-            $url = $this->protocol->buildSearchUrl($base, $plan);
-            $response = $this->request($url);
-            if ($response['error'] !== null || $response['html'] === '') {
-                continue;
+        foreach ($this->searchMirrors($config) as $base) {
+            $candidates = $this->searchVia($base, $plan, $config);
+            if ($candidates !== []) {
+                return $candidates;
             }
-            $records = $this->protocol->parseSearchResults($response['html']);
-            if ($records === []) {
-                continue;
-            }
-
-            return array_map(fn (AAStyleResult $r): ReleaseCandidate => $this->toCandidate($base, $r), $records);
         }
 
         return [];
+    }
+
+    public function searchVia(string $mirror, ReleaseSearchPlan $plan, ?DirectDownloadConfig $config = null): array
+    {
+        $response = $this->request($this->protocol->buildSearchUrl($mirror, $plan));
+        if ($response['error'] !== null || $response['html'] === '') {
+            return [];
+        }
+
+        return array_map(
+            fn (AAStyleResult $r): ReleaseCandidate => $this->toCandidate($mirror, $r),
+            $this->protocol->parseSearchResults($response['html']),
+        );
+    }
+
+    public function searchUrlFor(string $mirror, ReleaseSearchPlan $plan): string
+    {
+        return $this->protocol->buildSearchUrl($mirror, $plan);
     }
 
     /**
@@ -118,15 +135,44 @@ final class DirectHttpSource implements ReleaseSourceInterface
      *
      * @return array{mirror: string|null, url: string|null}
      */
-    public function searchUrl(ReleaseSearchPlan $plan): array
+    public function searchUrl(ReleaseSearchPlan $plan, ?DirectDownloadConfig $config = null): array
     {
-        $mirrors = $this->searchMirrors();
+        $mirrors = $this->searchMirrors($config);
         if ($mirrors === []) {
             return ['mirror' => null, 'url' => null];
         }
         $base = $mirrors[0];
 
-        return ['mirror' => $base, 'url' => $this->protocol->buildSearchUrl($base, $plan)];
+        return ['mirror' => $base, 'url' => $this->searchUrlFor($base, $plan)];
+    }
+
+    public function searchPlanUrl(ReleaseSearchPlan $plan, ?DirectDownloadConfig $config = null): array
+    {
+        return $this->searchUrl($plan, $config);
+    }
+
+    /**
+     * Interface entry point: resolve a candidate's detail from the mirror it was
+     * found on. Delegates to fetchRecordDetail() (the existing AA per-record
+     * lookup) and drops the probe-only url/status fields.
+     *
+     * @return array{isbns: list<string>, raw: array<string, list<string>>, links: list<string>, error: string|null}
+     */
+    public function resolveDetail(ReleaseCandidate $candidate, ?DirectDownloadConfig $config = null): array
+    {
+        $mirror = $candidate->extra['mirror'] ?? null;
+        if (!is_string($mirror) || $mirror === '') {
+            return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve detail page.'];
+        }
+
+        $detail = $this->fetchRecordDetail($mirror, $candidate->sourceId, $config);
+
+        return ['isbns' => $detail['isbns'], 'raw' => $detail['raw'], 'links' => $detail['links'], 'error' => $detail['error']];
+    }
+
+    public function linksVia(ReleaseCandidate $item, string $mirror, ?DirectDownloadConfig $config = null): array
+    {
+        return $this->fetchRecordDetail($mirror, $item->sourceId, $config)['links'];
     }
 
     /**
@@ -144,7 +190,7 @@ final class DirectHttpSource implements ReleaseSourceInterface
      *     links: list<string>,
      * }
      */
-    public function fetchRecordDetail(string $baseUrl, string $hash): array
+    public function fetchRecordDetail(string $baseUrl, string $hash, ?DirectDownloadConfig $config = null): array
     {
         $url = $this->protocol->buildDownloadsUrl($baseUrl, $hash);
         $response = $this->request($url);
@@ -154,7 +200,7 @@ final class DirectHttpSource implements ReleaseSourceInterface
         }
 
         $meta = $this->protocol->parseRecordMetadata($response['html']);
-        $includeFast = $this->settings->getDirectDownloadConfig()->fastDownloadEnabled;
+        $includeFast = ($config ?? $this->settings->getDirectDownloadConfig())->fastDownloadEnabled;
 
         return [
             'url'    => $url,
@@ -172,9 +218,9 @@ final class DirectHttpSource implements ReleaseSourceInterface
      *
      * @return list<string>
      */
-    private function searchMirrors(): array
+    private function searchMirrors(?DirectDownloadConfig $config = null): array
     {
-        $config = $this->settings->getDirectDownloadConfig();
+        $config ??= $this->settings->getDirectDownloadConfig();
         $aa = DirectDownloadSource::AnnasArchive->value;
         if (!$config->isIndexerEnabled($aa)) {
             return [];

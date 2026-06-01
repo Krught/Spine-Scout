@@ -224,6 +224,82 @@ final class HttpDownloadClientTest extends TestCase
         self::assertSame('unknown', $client->getStatus('nope')->state);
     }
 
+    public function testProbeDownloadReturnsBytesAndPreviewAndKeepsNoFile(): void
+    {
+        $tmpBefore = $this->tempProbeFiles();
+        $client = new HttpDownloadClient(new MockHttpClient(new MockResponse('EPUBBYTES')), $this->staging, new AAStyleHttpProtocol(), $this->resolver());
+
+        $result = $client->probeDownload('https://mirror.test/file.epub');
+
+        self::assertSame(9, $result['bytes']);
+        // The head preview lets an operator eyeball what actually came back.
+        self::assertSame('EPUBBYTES', $result['preview']);
+        // The test must not stage or keep anything, and must clean up its temp file.
+        self::assertFalse(is_dir($this->staging), 'probe must not create the staging dir');
+        self::assertSame($tmpBefore, $this->tempProbeFiles(), 'probe must delete its temp file');
+    }
+
+    public function testProbeDownloadPreviewIsTruncatedAndSanitised(): void
+    {
+        // A wait/landing HTML page served in place of the file: the head preview
+        // makes that obvious even when the byte size looks plausible. Non-printable
+        // bytes collapse so the preview stays a JSON-safe one-liner.
+        $body = "<!DOCTYPE html>\n<html><body>please wait\x00\x01" . str_repeat('x', 200);
+        $client = new HttpDownloadClient(new MockHttpClient(new MockResponse($body)), $this->staging, new AAStyleHttpProtocol(), $this->resolver());
+
+        $preview = $client->probeDownload('https://mirror.test/file.epub')['preview'];
+
+        self::assertSame(100, mb_strlen($preview), 'preview is capped at the first 100 chars');
+        self::assertStringStartsWith('<!DOCTYPE html> <html><body>please wait··', $preview);
+    }
+
+    public function testProbeDownloadSizeRunsTheSameBypassWorkflowAsRealDownload(): void
+    {
+        // The whole point: the link test runs the production fetch path. A
+        // challenged slow_download endpoint must be resolved via the bypasser,
+        // the partner link parsed, and only the partner file fetched — and the
+        // captured trail proves it.
+        $requests = [];
+        $http = new MockHttpClient(function (string $method, string $url) use (&$requests): MockResponse {
+            $requests[] = $url;
+
+            return new MockResponse('REALFILE', ['response_headers' => ['content-type' => 'application/pdf']]);
+        });
+        $bypasser = $this->bypasser(DirectDownloadConfig::BYPASS_EXTERNAL, '<a href="http://9.9.9.9:6060/d/x.pdf">download</a>');
+        $client = new HttpDownloadClient($http, $this->staging, new AAStyleHttpProtocol(), $this->resolver($bypasser, DirectDownloadConfig::BYPASS_EXTERNAL));
+        $progress = $this->captureProgress();
+
+        $bytes = $client->probeDownload('https://annas-archive.gl/slow_download/7e5bdba3/0/1', ['progress' => $progress])['bytes'];
+
+        self::assertSame(8, $bytes);
+        self::assertSame(['http://9.9.9.9:6060/d/x.pdf'], $requests, 'challenged endpoint must be bypassed, not fetched directly');
+        self::assertContains('Found the real download link (http://9.9.9.9:6060/d/x.pdf); fetching the file', $progress->steps);
+        self::assertContains('Downloading the file…', $progress->steps);
+    }
+
+    public function testProbeDownloadSizeRejectsChallengeBody(): void
+    {
+        $challenge = "(function(){new Image().src='https://check.ddos-guard.net/set/id/24wof5lpqNFWFi75';})()";
+        $client = new HttpDownloadClient(
+            new MockHttpClient(new MockResponse($challenge, ['response_headers' => ['content-type' => 'text/plain']])),
+            $this->staging,
+            new AAStyleHttpProtocol(),
+            $this->resolver(),
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $client->probeDownload('https://annas-archive.gl/slow_download/abc/0/1');
+    }
+
+    /** @return list<string> currently-present probe temp files, to detect leaks. */
+    private function tempProbeFiles(): array
+    {
+        $files = glob(sys_get_temp_dir() . '/sdl-dlprobe-*') ?: [];
+        sort($files);
+
+        return $files;
+    }
+
     // --- helpers ----------------------------------------------------------
 
     /** A BypassResolver wired with an optional fake bypasser and a fixed mode. */

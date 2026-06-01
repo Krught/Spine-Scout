@@ -12,10 +12,10 @@ use App\Search\Source\ReleaseCandidate;
  *
  * Algorithm:
  *   1. Apply hard gates (allowed formats, min/max size, min seeders, ISBN match).
- *   2. Bucket survivors by best (lowest-index) language-priority hit; keep best bucket.
- *   3. Bucket by best format-priority hit; keep best bucket.
- *   4. Bucket by best source-priority hit; keep best bucket.
- *   5. Sort survivors by the configured tie-breaker chain. Return [0].
+ *   2. Order survivors by language-priority, then format-priority, then
+ *      source-priority (lowest-index hit first), then the configured tie-breaker
+ *      chain, stable on original order.
+ *   3. pick() returns [0]; rank() returns the whole ordered list.
  *
  * No I/O, no side effects. Safe to call from anywhere. Unit-tested at
  * tests/Search/BestMatch/BestMatchSelectorTest.php.
@@ -33,28 +33,51 @@ final class BestMatchSelector
         BestMatchPolicy $policy,
         array $isbnMatches = [],
     ): ?ReleaseCandidate {
-        if ($candidates === []) {
-            return null;
-        }
+        return $this->rank($candidates, $policy, $isbnMatches)[0] ?? null;
+    }
 
-        $surviving = [];
+    /**
+     * Like pick(), but returns ALL gate-passing candidates in best-match order
+     * (best first) instead of just the winner — used to take the top-N items per
+     * source for the download cascade. pick() === rank()[0].
+     *
+     * @param list<ReleaseCandidate> $candidates
+     * @param array<int, bool>       $isbnMatches See pick().
+     * @return list<ReleaseCandidate>
+     */
+    public function rank(
+        array $candidates,
+        BestMatchPolicy $policy,
+        array $isbnMatches = [],
+    ): array {
+        // Gate, carrying the original index so the sort is stable and the
+        // language/format/source ranks can be precomputed once per candidate.
+        $rows = [];
         foreach ($candidates as $i => $c) {
             if (!$this->passesGates($c, $policy, $isbnMatches[$i] ?? false)) {
                 continue;
             }
-            $surviving[] = $c;
+            $rows[] = [
+                'index'  => $i,
+                'c'      => $c,
+                'lang'   => $this->priorityRank($c->language, $policy->languagePriority),
+                'format' => $this->priorityRank($c->format,   $policy->formatPriority),
+                'source' => $this->priorityRank($c->source,   $policy->sourcePriority),
+            ];
         }
-        if ($surviving === []) {
-            return null;
+        if ($rows === []) {
+            return [];
         }
 
-        $surviving = $this->bestBucket($surviving, fn (ReleaseCandidate $c) => $this->priorityRank($c->language, $policy->languagePriority));
-        $surviving = $this->bestBucket($surviving, fn (ReleaseCandidate $c) => $this->priorityRank($c->format,   $policy->formatPriority));
-        $surviving = $this->bestBucket($surviving, fn (ReleaseCandidate $c) => $this->priorityRank($c->source,   $policy->sourcePriority));
+        usort($rows, function (array $a, array $b) use ($policy): int {
+            return $a['lang'] <=> $b['lang']
+                ?: $a['format'] <=> $b['format']
+                ?: $a['source'] <=> $b['source']
+                ?: $this->compareTieBreakers($a['c'], $b['c'], $policy->tieBreakers)
+                ?: $a['index'] <=> $b['index'];
+        });
 
-        usort($surviving, fn (ReleaseCandidate $a, ReleaseCandidate $b) => $this->compareTieBreakers($a, $b, $policy->tieBreakers));
-
-        return $surviving[0];
+        return array_map(static fn (array $row): ReleaseCandidate => $row['c'], $rows);
     }
 
     private function passesGates(ReleaseCandidate $c, BestMatchPolicy $policy, bool $isbnMatched): bool
@@ -79,39 +102,6 @@ final class BestMatchSelector
             return false;
         }
         return true;
-    }
-
-    /**
-     * Keep only the candidates whose rank (per $rankFn) is the lowest seen.
-     * Candidates with rank PHP_INT_MAX (no match in the priority list) survive only
-     * when *every* candidate has no match — that way an empty priority list is a
-     * no-op rather than a filter.
-     *
-     * @param list<ReleaseCandidate>             $candidates
-     * @param callable(ReleaseCandidate): int    $rankFn
-     * @return list<ReleaseCandidate>
-     */
-    private function bestBucket(array $candidates, callable $rankFn): array
-    {
-        if ($candidates === []) {
-            return $candidates;
-        }
-        $bestRank = PHP_INT_MAX;
-        $ranks = [];
-        foreach ($candidates as $i => $c) {
-            $r = $rankFn($c);
-            $ranks[$i] = $r;
-            if ($r < $bestRank) {
-                $bestRank = $r;
-            }
-        }
-        $out = [];
-        foreach ($candidates as $i => $c) {
-            if ($ranks[$i] === $bestRank) {
-                $out[] = $c;
-            }
-        }
-        return $out;
     }
 
     /**

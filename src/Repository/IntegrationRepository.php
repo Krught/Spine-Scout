@@ -9,6 +9,7 @@ use App\Mirror\MirrorListNormalizer;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\SearchSettingsProvider;
+use App\Service\AppSettingsProvider;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
@@ -16,7 +17,7 @@ use Doctrine\Persistence\ManagerRegistry;
 /**
  * @extends ServiceEntityRepository<Integration>
  */
-final class IntegrationRepository extends ServiceEntityRepository implements SearchSettingsProvider
+final class IntegrationRepository extends ServiceEntityRepository implements SearchSettingsProvider, AppSettingsProvider
 {
     public function __construct(
         ManagerRegistry $registry,
@@ -33,6 +34,13 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
     public function getOrCreate(string $kind): Integration
     {
         return $this->findByKind($kind) ?? new Integration($kind);
+    }
+
+    // -- app (General tab) ------------------------------------------------------
+
+    public function isMetadataOverwriteEnabled(): bool
+    {
+        return $this->getOrCreate(Integration::KIND_APP)->isOverwriteMetadataEnabled();
     }
 
     // -- best_match -------------------------------------------------------------

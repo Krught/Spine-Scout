@@ -3,20 +3,21 @@
 {% block dev_body %}
     <div class="panel-header">
         <h2 class="panel-title">Downloads activity</h2>
-        <p class="panel-sub">
-            Live view of the request → search → download → import loop. Updates every few seconds.
-            Approve a request on the Requests page to watch it flow through here.
-            Env <code>{{ environment }}</code>{% if branch %}, branch <code>{{ branch }}</code>{% endif %}.
-        </p>
     </div>
 
-    <section class="dev-test"
-             data-controller="activity-poll"
+    <section class="dev-test dev-tabs dev-tabs--jobs"
+             data-controller="activity-poll dev-tabs"
              data-activity-poll-url-value="{{ path('dev_downloads_feed') }}"
              data-activity-poll-interval-value="3000">
-        <p class="form-note">
-            <span class="dev-live-dot" aria-hidden="true"></span> Live — polling every 3s.
-        </p>
+        <div class="dev-subtabs" role="tablist" aria-label="Downloads view">
+            <button type="button" class="dev-subtab" role="tab" data-pane="jobs"
+                    data-dev-tabs-target="tab" data-action="dev-tabs#show">Download jobs</button>
+            <button type="button" class="dev-subtab" role="tab" data-pane="log"
+                    data-dev-tabs-target="tab" data-action="dev-tabs#show">Activity log</button>
+            <span class="dev-subtabs__live">
+                <span class="dev-live-dot" aria-hidden="true"></span> Live — polling every 3s
+            </span>
+        </div>
         <div data-activity-poll-target="content">
             {{ include('dev/_downloads_feed.html.twig') }}
         </div>

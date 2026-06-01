@@ -72,4 +72,37 @@ final class DirectDownloadConfigTest extends TestCase
         $config = DirectDownloadConfig::fromArray(['filenameTemplate' => '   '], new MirrorListNormalizer());
         self::assertSame(DirectDownloadConfig::DEFAULT_FILENAME_TEMPLATE, $config->filenameTemplate);
     }
+
+    public function testWithIndexerEnabledFlipsOnlyTheTargetRowAndPreservesOrder(): void
+    {
+        $config = DirectDownloadConfig::fromArray([
+            'indexerPriority' => [
+                ['id' => 'annas_archive', 'enabled' => true],
+                ['id' => 'libgen', 'enabled' => true],
+            ],
+            'mirrors' => [],
+        ], new MirrorListNormalizer());
+
+        $updated = $config->withIndexerEnabled('libgen', false);
+
+        // Original untouched (immutability).
+        self::assertTrue($config->isIndexerEnabled('libgen'));
+        // Copy has the flag flipped, others unchanged, order preserved.
+        self::assertFalse($updated->isIndexerEnabled('libgen'));
+        self::assertTrue($updated->isIndexerEnabled('annas_archive'));
+        self::assertSame(['annas_archive', 'libgen'], array_map(static fn ($r) => $r['id'], $updated->indexerPriority));
+    }
+
+    public function testWithIndexerEnabledAppendsAbsentId(): void
+    {
+        $config = DirectDownloadConfig::fromArray([
+            'indexerPriority' => [['id' => 'annas_archive', 'enabled' => true]],
+            'mirrors' => [],
+        ], new MirrorListNormalizer());
+
+        $updated = $config->withIndexerEnabled('zlibrary', true);
+
+        self::assertTrue($updated->isIndexerEnabled('zlibrary'));
+        self::assertSame(['annas_archive', 'zlibrary'], array_map(static fn ($r) => $r['id'], $updated->indexerPriority));
+    }
 }

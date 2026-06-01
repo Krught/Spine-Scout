@@ -1,6 +1,27 @@
 {% extends 'settings/_layout.html.twig' %}
 
 {% block settings_body %}
-    <h2 class="panel-title">General</h2>
-    <p class="panel-empty">General settings will land here: instance name, default request quotas, notification preferences.</p>
+    <div class="panel-header">
+        <h2 class="panel-title">General</h2>
+        <p class="panel-sub">
+            Instance-wide preferences. More general settings (instance name, request
+            quotas, notifications) will land here over time.
+        </p>
+    </div>
+
+    <form method="post" action="{{ path('settings_general') }}" class="settings-form" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token('settings_general') }}">
+
+        <fieldset class="settings-fieldset">
+            <legend>Metadata</legend>
+            <label class="field-checkbox">
+                <input type="checkbox" name="overwrite_metadata" value="1" {{ overwrite_metadata ? 'checked' : '' }}>
+                <span>Overwrite metadata with SpineSCOUT info</span>
+            </label>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save settings</button>
+        </div>
+    </form>
 {% endblock %}

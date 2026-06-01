@@ -48,6 +48,7 @@ final class HttpDownloadClient implements DownloadClientInterface
     private const MAX_REDIRECTS = 5;
     private const MAX_RESOLVE_HOPS = 1; // interstitial -> partner file, no further
     private const SNIFF_BYTES = 4096;   // head kept to detect a challenge served as the "file"
+    private const PROBE_PREVIEW_BYTES = 100; // head shown in the dev link test to eyeball what got fetched
     private const BYPASS_RESOLVE_ATTEMPTS = 2;     // re-resolve once if the link isn't ready
     private const BYPASS_RETRY_DELAY_SECONDS = 6;  // wait for the AA waitlist countdown to elapse
     private const HEADERS = [
@@ -110,26 +111,7 @@ final class HttpDownloadClient implements DownloadClientInterface
         $partPath = $this->stagingDir . '/' . $id . '.part';
         $finalPath = $this->stagingDir . '/' . $id;
 
-        $handle = @fopen($partPath, 'wb');
-        if ($handle === false) {
-            throw new \RuntimeException("Could not open staging file for writing: {$partPath}");
-        }
-
-        try {
-            $this->fetchTo($url, $handle, null, 0, $progress);
-        } catch (\Throwable $e) {
-            fclose($handle);
-            @unlink($partPath);
-            throw new \RuntimeException('Download failed: ' . $e->getMessage(), 0, $e);
-        }
-
-        fclose($handle);
-
-        $bytes = filesize($partPath);
-        if ($bytes === false || $bytes === 0) {
-            @unlink($partPath);
-            throw new \RuntimeException("Download produced an empty file from {$url}");
-        }
+        $bytes = $this->fetchToPath($url, $partPath, $progress);
 
         if (!@rename($partPath, $finalPath)) {
             @unlink($partPath);
@@ -145,6 +127,79 @@ final class HttpDownloadClient implements DownloadClientInterface
         );
 
         return $id;
+    }
+
+    /**
+     * Download $url to a throwaway temp file solely to inspect whether the link
+     * yields a real file, returning its byte size AND a short printable preview
+     * of the head bytes. Reuses the exact same fetch path as a real download
+     * (bypass-first for challenged endpoints, one interstitial hop, anti-bot
+     * challenge rejection) but stages to the system temp dir and DELETES the file
+     * before returning — nothing is kept. Powers the dev direct-download link
+     * test: the byte size alone can't tell a real file from a wait/landing page
+     * served in its place (e.g. WeLib's ~90s countdown HTML), but the head
+     * preview makes it obvious — a real EPUB/PDF starts "PK…"/"%PDF" while an
+     * interstitial reads "<!DOCTYPE html>…". Throws on any failure, as addDownload().
+     *
+     * @param array<string, mixed> $options
+     *
+     * @return array{bytes: int, preview: string}
+     */
+    public function probeDownload(string $url, array $options = []): array
+    {
+        $progress = ($options['progress'] ?? null) instanceof DownloadProgressReporter
+            ? $options['progress']
+            : new NullDownloadProgressReporter();
+
+        $tmpPath = @tempnam(sys_get_temp_dir(), 'sdl-dlprobe-');
+        if ($tmpPath === false) {
+            throw new \RuntimeException('Could not create a temp file for the download test.');
+        }
+
+        try {
+            $bytes = $this->fetchToPath($url, $tmpPath, $progress);
+            $preview = $this->previewHead($tmpPath);
+        } finally {
+            @unlink($tmpPath); // test only — never keep the downloaded file
+        }
+
+        $progress->step(sprintf('File downloaded (%s)', $this->humanBytes($bytes)));
+
+        return ['bytes' => $bytes, 'preview' => $preview];
+    }
+
+    /**
+     * Run the full download workflow for $url into the file at $path, returning
+     * its byte size. This is the shared core of addDownload() (real fulfillment)
+     * and probeDownloadSize() (the dev link test), so both execute byte-for-byte
+     * the same fetch path — bypass-first resolution, the interstitial→partner
+     * hop, anti-bot challenge rejection, streaming. Throws and removes a partial
+     * file on any failure or an empty result.
+     */
+    private function fetchToPath(string $url, string $path, DownloadProgressReporter $progress): int
+    {
+        $handle = @fopen($path, 'wb');
+        if ($handle === false) {
+            throw new \RuntimeException("Could not open file for writing: {$path}");
+        }
+
+        try {
+            $this->fetchTo($url, $handle, null, 0, $progress);
+        } catch (\Throwable $e) {
+            fclose($handle);
+            @unlink($path);
+            throw new \RuntimeException('Download failed: ' . $e->getMessage(), 0, $e);
+        }
+
+        fclose($handle);
+
+        $bytes = filesize($path);
+        if ($bytes === false || $bytes === 0) {
+            @unlink($path);
+            throw new \RuntimeException("Download produced an empty file from {$url}");
+        }
+
+        return $bytes;
     }
 
     /**
@@ -237,6 +292,27 @@ final class HttpDownloadClient implements DownloadClientInterface
         if (ChallengePage::looksLikeChallenge($head)) {
             throw new \RuntimeException("Anti-bot challenge returned instead of a file from {$url}");
         }
+    }
+
+    /**
+     * The first PROBE_PREVIEW_BYTES of the fetched file, rendered as a printable
+     * one-liner so it is safe to JSON-encode and eyeball regardless of whether
+     * the bytes are a real file ("PK…" for an EPUB/ZIP, "%PDF" for a PDF) or an
+     * HTML wait/landing page served in its place. Non-printable bytes collapse to
+     * a space (whitespace) or "·" (everything else); empty file → empty string.
+     */
+    private function previewHead(string $path): string
+    {
+        $raw = @file_get_contents($path, false, null, 0, self::PROBE_PREVIEW_BYTES);
+        if ($raw === false || $raw === '') {
+            return '';
+        }
+
+        return (string) preg_replace_callback(
+            '/[^\x20-\x7e]/',
+            static fn (array $m): string => ctype_space($m[0]) ? ' ' : '·',
+            $raw,
+        );
     }
 
     private function humanBytes(int $bytes): string

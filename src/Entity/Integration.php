@@ -19,6 +19,8 @@ class Integration
     public const KIND_OPENLIBRARY     = 'openlibrary';
     public const KIND_DIRECT_DOWNLOAD = 'direct_download';
     public const KIND_BEST_MATCH      = 'best_match';
+    /** Singleton row holding app-wide ("General" tab) preferences in its options blob. */
+    public const KIND_APP             = 'app';
 
     public const AUTH_API_KEY = 'api_key';
     public const AUTH_BASIC   = 'basic';
@@ -220,6 +222,24 @@ class Integration
         } else {
             $options['hardcover_genre_count'] = $count;
         }
+        $this->options = $options;
+        return $this;
+    }
+
+    /**
+     * App-wide toggle (KIND_APP row): rewrite a downloaded ebook's embedded metadata
+     * with SpineSCOUT's stored values before it lands in the library. Defaults to true
+     * so a fresh install / missing row behaves as "enabled".
+     */
+    public function isOverwriteMetadataEnabled(): bool
+    {
+        return (bool) ($this->options['overwrite_metadata'] ?? true);
+    }
+
+    public function setOverwriteMetadataEnabled(bool $on): self
+    {
+        $options = $this->options;
+        $options['overwrite_metadata'] = $on;
         $this->options = $options;
         return $this;
     }

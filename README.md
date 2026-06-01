@@ -18,13 +18,13 @@ It is designed to plug into:
 
 Spine Scout is early-access and being built in phases. The table below lists only what is **not yet done** - anything not listed here is considered implemented and working.
 
-| Area | Status | Notes |
-|--|--|--|
-| Adding / managing additional users | Partial | Admin user is created via first-run wizard; multi-user management UI not yet built |
-| Production Docker image | Partial | Dev compose works; published prod image not yet shipped |
-| Requesting books | Partial| "Request this book" flow + approval queue not yet built |
-| Downloading / fulfillment | Not Implemented | Native source + download-client framework planned |
-| External list importers (Goodreads, RSS, CSV) | Not Implemented | Planned |
+| Area | Status          | Notes                                                                              |
+|--|-----------------|------------------------------------------------------------------------------------|
+| Adding / managing additional users | Partial         | Admin user is created via first-run wizard; multi-user management UI not yet built |
+| Production Docker image | Partial         | Dev compose works; published prod image not yet shipped                            |
+| Requesting books | Partial         | No automatic approval process yet                                                  |
+| Downloading / fulfillment | Partial         | Basics Implemented, initial testing positive                                       |
+| External list importers (Goodreads, RSS, CSV) | Not Implemented | Planned                                                                            |
 
 ## 📸 Screenshots
 

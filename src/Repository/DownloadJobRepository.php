@@ -19,9 +19,76 @@ final class DownloadJobRepository extends ServiceEntityRepository
         parent::__construct($registry, DownloadJob::class);
     }
 
+    /** A job idle in an in-flight state longer than this is treated as orphaned. */
+    public const STALE_AFTER_SECONDS = 1800;
+
     public function findLatestForRequest(BookRequest $request): ?DownloadJob
     {
         return $this->findOneBy(['bookRequest' => $request], ['createdAt' => 'DESC']);
+    }
+
+    /**
+     * Reclaim orphaned jobs: a worker that dies/restarts mid-download leaves a job
+     * stuck in an in-flight state (queued/resolving/downloading) forever — it
+     * blocks both the retry scheduler and hasActiveJobForRequest(). Any in-flight
+     * job not touched for $olderThanSeconds is marked errored (and its request's
+     * delivery status mirrored) so it becomes retryable again.
+     *
+     * @return list<DownloadJob> the jobs that were reclaimed
+     */
+    public function reclaimStale(int $olderThanSeconds = self::STALE_AFTER_SECONDS): array
+    {
+        $cutoff = (new \DateTimeImmutable())->modify("-{$olderThanSeconds} seconds");
+
+        /** @var list<DownloadJob> $jobs */
+        $jobs = $this->createQueryBuilder('j')
+            ->where('j.status IN (:active)')
+            ->andWhere('j.updatedAt < :cutoff')
+            ->setParameter('active', DownloadJob::ACTIVE_STATUSES)
+            ->setParameter('cutoff', $cutoff)
+            ->getQuery()
+            ->getResult();
+
+        foreach ($jobs as $job) {
+            $job->setStatus(DownloadJob::STATUS_ERROR)
+                ->setStatusMessage('Stalled — the worker stopped before finishing; reclaimed for retry.');
+            $job->getBookRequest()?->setDeliveryStatus(DownloadJob::STATUS_ERROR);
+        }
+        if ($jobs !== []) {
+            $this->getEntityManager()->flush();
+        }
+
+        return $jobs;
+    }
+
+    /**
+     * Force-cancel every in-flight job for one request (regardless of age) — used
+     * when an admin clicks "Recheck now" so a fresh search/download can start
+     * without the old job blocking it.
+     *
+     * @return int number of jobs cancelled
+     */
+    public function cancelActiveForRequest(BookRequest $request): int
+    {
+        /** @var list<DownloadJob> $jobs */
+        $jobs = $this->createQueryBuilder('j')
+            ->where('j.bookRequest = :request')
+            ->andWhere('j.status IN (:active)')
+            ->setParameter('request', $request)
+            ->setParameter('active', DownloadJob::ACTIVE_STATUSES)
+            ->getQuery()
+            ->getResult();
+
+        foreach ($jobs as $job) {
+            $job->setStatus(DownloadJob::STATUS_CANCELLED)
+                ->setStatusMessage('Cancelled by re-check.');
+        }
+        if ($jobs !== []) {
+            $request->setDeliveryStatus(DownloadJob::STATUS_CANCELLED);
+            $this->getEntityManager()->flush();
+        }
+
+        return \count($jobs);
     }
 
     /**

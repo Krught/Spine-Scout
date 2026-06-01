@@ -6,6 +6,7 @@ namespace App\Controller;
 
 use App\Entity\Book;
 use App\Entity\BookRequest;
+use App\Entity\DownloadJob;
 use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
@@ -47,13 +48,21 @@ final class RequestsController extends AbstractController
         $latestJobs = $jobs->latestByRequestIds($ids);
 
         $now = new \DateTimeImmutable();
+        $staleBefore = $now->modify('-' . DownloadJobRepository::STALE_AFTER_SECONDS . ' seconds');
         $items = [];
         foreach ($rows as $r) {
+            $job = $latestJobs[$r->getId()] ?? null;
+            // A job idle in an in-flight state past the stale window is orphaned
+            // (worker died mid-download) — surface a re-check so it's recoverable.
+            $stalled = $job !== null
+                && in_array($job->getStatus(), DownloadJob::ACTIVE_STATUSES, true)
+                && $job->getUpdatedAt() < $staleBefore;
             $items[] = [
                 'entity'    => $r,
                 'ago'       => self::humanAgo($now, $r->getCreatedAt()),
                 'cover_url' => $metadata->ensureCoverProxyUrl($r->getBook()),
-                'job'       => $latestJobs[$r->getId()] ?? null,
+                'job'       => $job,
+                'stalled'   => $stalled,
             ];
         }
 
@@ -163,7 +172,7 @@ final class RequestsController extends AbstractController
 
     #[Route('/requests/{id}/recheck', name: 'requests_recheck', methods: ['POST'], requirements: ['id' => '\d+'])]
     #[IsGranted('ROLE_ADMIN')]
-    public function recheck(int $id, Request $request, BookRequestRepository $requests, MessageBusInterface $bus): Response
+    public function recheck(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, MessageBusInterface $bus): Response
     {
         $entity = $requests->find($id);
         if ($entity === null) {
@@ -173,9 +182,11 @@ final class RequestsController extends AbstractController
             throw new AccessDeniedHttpException('Invalid CSRF token.');
         }
 
-        // Only approved requests are in the fulfillment pipeline. The handler is
-        // idempotent, so this is a no-op if a download is already in flight.
+        // Only approved requests are in the fulfillment pipeline. Cancel any
+        // in-flight job first (it may be an orphaned/stalled one) so the dispatch —
+        // idempotent via hasActiveJobForRequest() — can start a fresh attempt.
         if ($entity->getStatus() === BookRequest::STATUS_APPROVED) {
+            $jobs->cancelActiveForRequest($entity);
             $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
             $this->addFlash('success', 'Re-checking for a release…');
         }

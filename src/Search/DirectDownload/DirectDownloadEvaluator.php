@@ -6,31 +6,37 @@ namespace App\Search\DirectDownload;
 
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\BestMatch\BestMatchSelector;
-use App\Search\Match\MatchScorer;
 use App\Search\SearchSettingsProvider;
-use App\Search\Source\DirectHttp\DirectHttpSource;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
+use App\Search\Source\ReleaseSourceInterface;
+use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 
 /**
- * The "parse + score + select" pipeline the operator asked for, and the seam
- * the fulfillment handler reuses.
+ * The "search + score + select" pipeline the operator asked for, and the seam the
+ * fulfillment handler reuses.
  *
- * For a search plan it: runs DirectHttpSource (get + mirror cascade), verifies
- * each candidate's ISBNs against its detail page, scores every candidate with
- * MatchScorer, keeps the ones at/above the policy's minMatchScore threshold, and
- * asks BestMatchSelector to make the final format/source-priority + tie-break
- * pick over that qualifying subset.
+ * It is a FAILOVER CASCADE across the enabled sources in the operator's
+ * indexerPriority order: it tries the highest-priority enabled+available source
+ * first, runs that one source's pipeline (search → verify each candidate's ISBNs
+ * against its detail page → score with MatchScorer → keep the ones at/above the
+ * policy threshold → BestMatchSelector picks). The FIRST source that yields a
+ * qualifying pick wins and the cascade stops. Only when a source produces no
+ * qualifying match do we fall over to the next source.
  *
- * Returns a fully-populated EvaluationResult (every candidate, its score, the
- * raw detail values, the pick) so callers can both act on the pick and show
- * their working.
+ * Returns a fully-populated EvaluationResult: the per-source searches that were
+ * considered (in order), every scored candidate from the winning/last source, and
+ * the pick — so callers can both act on the pick and show their working.
  */
 final class DirectDownloadEvaluator
 {
+    /**
+     * @param iterable<ReleaseSourceInterface> $sources
+     */
     public function __construct(
-        private readonly DirectHttpSource $source,
-        private readonly MatchScorer $scorer,
+        #[AutowireIterator('app.release_source')]
+        private readonly iterable $sources,
+        private readonly ReleaseSourceScorer $scorer,
         private readonly BestMatchSelector $selector,
         private readonly SearchSettingsProvider $settings,
     ) {
@@ -38,53 +44,79 @@ final class DirectDownloadEvaluator
 
     public function evaluate(ReleaseSearchPlan $plan): EvaluationResult
     {
-        $reason = $this->source->getUnavailableReason();
-        if ($reason !== null) {
-            return EvaluationResult::unavailable($reason);
-        }
-
-        ['mirror' => $mirror, 'url' => $url] = $this->source->searchUrl($plan);
-
+        $config = $this->settings->getDirectDownloadConfig();
         $policy = $this->settings->getBestMatchPolicy();
         $threshold = $policy->minMatchScore;
 
-        $scored = [];
-        foreach ($this->source->search($plan) as $candidate) {
-            $base = $this->mirrorFor($candidate, $mirror);
-            $detail = $base !== null
-                ? $this->source->fetchRecordDetail($base, $candidate->sourceId)
-                : ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve detail page.'];
+        $byId = $this->sourcesById();
 
-            $enriched = $candidate->withIsbns($detail['isbns']);
-            $score = $this->scorer->score($enriched, $plan);
+        $searches = [];
+        $consideredAny = false;
+        $fallbackScored = [];
+        $fallbackSource = null;
 
-            $scored[] = new ScoredCandidate(
-                candidate: $enriched,
-                score: $score,
-                qualifies: $score->qualifies($threshold),
-                detailRaw: $detail['raw'],
-                detailLinks: $detail['links'],
-                detailError: $detail['error'],
+        // Walk the operator's priority order; only enabled rows are cascade members.
+        foreach ($config->indexerPriority as $row) {
+            if (!($row['enabled'] ?? false)) {
+                continue;
+            }
+            $id = $row['id'];
+            $source = $byId[$id] ?? null;
+            $label = DirectDownloadSource::tryFromId($id)?->label() ?? $id;
+
+            if ($source === null) {
+                $searches[] = new SourceSearch($id, $label, null, null, false, 'No adapter for this source.');
+                continue;
+            }
+
+            $reason = $source->getUnavailableReason();
+            if ($reason !== null) {
+                $searches[] = new SourceSearch($id, $label, null, null, false, $reason);
+                continue;
+            }
+
+            $consideredAny = true;
+            ['mirror' => $mirror, 'url' => $url] = $source->searchPlanUrl($plan);
+            $searches[] = new SourceSearch($id, $label, $mirror, $url, true);
+
+            $scored = $this->scorer->score($source, $plan, $threshold, $config);
+            $pick = $this->pick($scored, $policy);
+
+            if ($pick !== null) {
+                // First qualifying source wins — stop the cascade.
+                return new EvaluationResult(
+                    searches: $searches,
+                    unavailableReason: null,
+                    threshold: $threshold,
+                    scored: $scored,
+                    pick: $pick,
+                    pickedSource: $id,
+                );
+            }
+
+            // No qualifying match here; remember the first source that at least
+            // returned candidates so the result can explain what was looked at.
+            if ($fallbackScored === [] && $scored !== []) {
+                $fallbackScored = $scored;
+                $fallbackSource = $id;
+            }
+        }
+
+        if (!$consideredAny) {
+            return EvaluationResult::unavailable(
+                $searches === []
+                    ? 'Enable at least one direct-download source with mirrors in Settings → Direct downloads.'
+                    : 'No enabled direct-download source is available — check mirrors in Settings → Direct downloads.',
             );
         }
 
-        // Sort by total score, descending; stable for equal scores (PHP usort is
-        // not stable, so carry the original index as the tiebreaker).
-        $indexed = array_map(static fn (int $i, ScoredCandidate $s): array => [$i, $s], array_keys($scored), $scored);
-        usort($indexed, static function (array $a, array $b): int {
-            return $b[1]->score->total <=> $a[1]->score->total ?: $a[0] <=> $b[0];
-        });
-        $scored = array_map(static fn (array $pair): ScoredCandidate => $pair[1], $indexed);
-
-        $pick = $this->pick($scored, $policy);
-
         return new EvaluationResult(
-            mirror: $mirror,
-            url: $url,
+            searches: $searches,
             unavailableReason: null,
             threshold: $threshold,
-            scored: $scored,
-            pick: $pick,
+            scored: $fallbackScored,
+            pick: null,
+            pickedSource: $fallbackSource,
         );
     }
 
@@ -109,10 +141,19 @@ final class DirectDownloadEvaluator
         return $candidates === [] ? null : $this->selector->pick($candidates, $policy, $isbnMatches);
     }
 
-    private function mirrorFor(ReleaseCandidate $candidate, ?string $fallback): ?string
+    /**
+     * Index the tagged sources by their DirectDownloadSource id so the cascade can
+     * resolve each priority row to its adapter.
+     *
+     * @return array<string, ReleaseSourceInterface>
+     */
+    private function sourcesById(): array
     {
-        $mirror = $candidate->extra['mirror'] ?? null;
+        $byId = [];
+        foreach ($this->sources as $source) {
+            $byId[$source->sourceId()] = $source;
+        }
 
-        return is_string($mirror) && $mirror !== '' ? $mirror : $fallback;
+        return $byId;
     }
 }

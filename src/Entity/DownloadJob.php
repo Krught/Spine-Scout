@@ -39,6 +39,13 @@ class DownloadJob
         self::STATUS_CANCELLED,
     ];
 
+    /** In-flight (non-terminal) states — a job here is being worked or waiting. */
+    public const ACTIVE_STATUSES = [
+        self::STATUS_QUEUED,
+        self::STATUS_RESOLVING,
+        self::STATUS_DOWNLOADING,
+    ];
+
     public const TERMINAL_STATUSES = [
         self::STATUS_COMPLETE,
         self::STATUS_ERROR,
@@ -127,8 +134,11 @@ class DownloadJob
     public function setBookRequest(?BookRequest $request): self { $this->bookRequest = $request; return $this; }
 
     public function getSource(): string { return $this->source; }
+    public function setSource(string $source): self { $this->source = $source; return $this; }
     public function getSourceId(): string { return $this->sourceId; }
+    public function setSourceId(string $sourceId): self { $this->sourceId = $sourceId; return $this; }
     public function getProtocol(): string { return $this->protocol; }
+    public function setProtocol(string $protocol): self { $this->protocol = $protocol; return $this; }
 
     public function getDownloadUrl(): ?string { return $this->downloadUrl; }
     public function setDownloadUrl(?string $url): self { $this->downloadUrl = $url; return $this; }

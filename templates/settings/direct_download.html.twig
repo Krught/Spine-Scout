@@ -3,13 +3,6 @@
 {% block settings_body %}
     <div class="panel-header">
         <h2 class="panel-title">Direct downloads</h2>
-        <p class="panel-sub">
-            Paste the mirror URLs for each source below — Spine Scout never ships default mirrors,
-            so every URL here comes from you. When a request is approved, the search runs against
-            your Anna's Archive mirrors, and downloads are resolved by trying the enabled sources in
-            the priority order you set. A source with no mirrors stays locked until you add at least
-            one URL.
-        </p>
     </div>
 
     {% if integration.id is not null %}
@@ -44,11 +37,6 @@
         <fieldset class="settings-fieldset"
                   data-controller="bypass-mode">
             <legend>Cloudflare bypass</legend>
-            <p class="form-note">
-                Slow-partner download pages are sometimes behind a Cloudflare challenge that returns
-                <code>403</code> to a plain fetch. Choose how to get past it — the resolved page only
-                yields the partner link; the file itself is downloaded directly.
-            </p>
             <div class="field">
                 <label for="bypassMode">Bypass mode</label>
                 <select id="bypassMode" name="bypassMode"
@@ -57,11 +45,6 @@
                     <option value="none" {{ bypass_mode == 'none' ? 'selected' : '' }}>None — fail over instead</option>
                     <option value="external" {{ bypass_mode == 'external' ? 'selected' : '' }}>FlareSolverr — drive a real browser</option>
                 </select>
-                <p class="form-note">
-                    <strong>FlareSolverr</strong> drives a real browser through the challenge. The compose
-                    stack bundles one (reachable in-stack at <code>http://flaresolverr:8191</code>), so the
-                    address below is pre-filled and works out of the box; point it elsewhere to use your own.
-                </p>
             </div>
             <div class="field" data-bypass-mode-target="flaresolverr"
                  {{ bypass_mode == 'external' ? '' : 'hidden' }}>
@@ -70,10 +53,6 @@
                        value="{{ bypass_flaresolverr_url }}"
                        spellcheck="false" autocapitalize="off" autocomplete="off"
                        placeholder="http://flaresolverr:8191">
-                <p class="form-note">
-                    Host:port (or full URL) of your FlareSolverr. The <code>/v1</code> endpoint is added
-                    automatically; a bare host:port assumes <code>http://</code>.
-                </p>
             </div>
         </fieldset>
 

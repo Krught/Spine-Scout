@@ -548,15 +548,92 @@
     word-break: break-all;
 }
 
-/* --- Dev: downloads activity / live log ------------------------------- */
-.dev-activity {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.25rem;
-    align-items: start;
+/* --- Dev: direct-download link test ----------------------------------- */
+/* Per-link result + the real workflow trail the download client reported
+   (handed to bypasser → cleared challenge → found partner link → streamed). */
+.dev-dl-test {
+    margin-top: 1rem;
 }
-@media (max-width: 900px) {
-    .dev-activity { grid-template-columns: 1fr; }
+.dev-dl-test__results {
+    margin-top: 0.75rem;
+}
+.dev-dl-test__item {
+    margin: 0.6rem 0;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+}
+.dev-dl-test__item code {
+    word-break: break-all;
+}
+.dev-dl-test__ok {
+    color: var(--success, #2e7d32);
+    font-weight: 600;
+}
+.dev-dl-test__fail {
+    color: var(--danger, #c62828);
+    font-weight: 600;
+}
+.dev-dl-test__preview {
+    margin: 0.3rem 0 0;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-subtle, rgba(0, 0, 0, 0.04));
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--fg-muted);
+}
+.dev-dl-test__steps {
+    margin: 0.4rem 0 0;
+    padding-left: 1.25rem;
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+}
+.dev-dl-test__steps li {
+    margin: 0.15rem 0;
+    word-break: break-all;
+}
+.dev-dl-test__steps li.dev-dl-test__warn {
+    color: var(--danger, #c62828);
+}
+
+/* --- Dev: downloads activity / live log ------------------------------- */
+/* Sub-tabs: switch between the jobs pane and the activity-log pane. The active
+   pane is driven by a class on the polling root (.dev-tabs--jobs / --log), set by
+   the dev-tabs controller, so it persists across the live content swaps. */
+.dev-subtabs {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.dev-subtab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #8a93a5;
+    padding: 0.45rem 0.75rem;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+.dev-subtab:hover { color: var(--fg); }
+.dev-subtab.is-active {
+    color: var(--fg);
+    border-bottom-color: #6aa0f0;
+}
+.dev-subtabs__live {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: #7c8aa0;
+}
+.dev-tabs--jobs .dev-activity__pane[data-pane="log"],
+.dev-tabs--log .dev-activity__pane[data-pane="jobs"] {
+    display: none;
 }
 .dev-live-dot {
     display: inline-block;

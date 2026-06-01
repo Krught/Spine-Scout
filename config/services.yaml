@@ -10,8 +10,8 @@ parameters:
     # Installed app version. Bump on release. The "latest deployed" value below
     # is what the sidebar status badge compares against; for now both are set
     # by hand, so the badge always reports up-to-date.
-    app.version: '0.0.3'
-    app.latest_version: '0.0.3'
+    app.version: '0.0.4'
+    app.latest_version: '0.0.4'
 
 services:
     # default configuration for services in *this* file

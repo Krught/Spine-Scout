@@ -44,32 +44,6 @@
         </fieldset>
 
         <fieldset class="settings-fieldset">
-            <legend>Source preference</legend>
-            <div class="field"
-                 data-controller="orderable-list"
-                 data-orderable-list-input-name-value="sourcePriority"
-                 data-orderable-list-initial-value="{{ policy.sourcePriority|json_encode }}"
-                 data-orderable-list-suggestions-value="{{ source_options|map(s => s.id)|json_encode }}">
-                <label>Release source priority</label>
-                {% if source_options is empty %}
-                    <p class="form-note">No release sources added yet.</p>
-                {% else %}
-                    <ul data-orderable-list-target="list" class="orderable-list" aria-label="Source priority"></ul>
-                    <div class="orderable-list-add">
-                        <select data-orderable-list-target="addInput">
-                            <option value="">— add a source —</option>
-                            {% for opt in source_options %}
-                                <option value="{{ opt.id }}">{{ opt.label }}{% if not opt.available %} (unavailable){% endif %}</option>
-                            {% endfor %}
-                        </select>
-                        <button type="button" data-action="click->orderable-list#add">Add</button>
-                    </div>
-                {% endif %}
-                <input type="hidden" name="sourcePriority" data-orderable-list-target="hidden">
-            </div>
-        </fieldset>
-
-        <fieldset class="settings-fieldset">
             <legend>Tie-breakers</legend>
             <p class="form-note">
                 Applied in order when format / source priority leaves multiple equal candidates.
