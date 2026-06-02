@@ -55,6 +55,7 @@ final class SettingsController extends AbstractController
             }
 
             $app->setOverwriteMetadataEnabled($request->request->getBoolean('overwrite_metadata'));
+            $app->setAutoApproveRequestsEnabled($request->request->getBoolean('auto_approve_requests'));
             $app->setAuthType(Integration::AUTH_NONE);
             $app->setEnabled(true);
             $this->persistOrTouch($em, $app);
@@ -67,6 +68,7 @@ final class SettingsController extends AbstractController
         return $this->render('settings/general.html.twig', [
             'active_tab' => 'general',
             'overwrite_metadata' => $app->isOverwriteMetadataEnabled(),
+            'auto_approve_requests' => $app->isAutoApproveRequestsEnabled(),
         ]);
     }
 
@@ -102,7 +104,7 @@ final class SettingsController extends AbstractController
             }
             $em->flush();
 
-            $this->addFlash('success', 'Grimmory settings saved.');
+            $this->addFlash('success', 'Komga settings saved.');
 
             return $this->redirectToRoute('settings_grimmory');
         }
@@ -141,7 +143,7 @@ final class SettingsController extends AbstractController
 
         $integration = $repository->findByKind(Integration::KIND_GRIMMORY);
         if ($integration === null || !$integration->isEnabled()) {
-            $this->addFlash('error', 'Grimmory integration is not enabled.');
+            $this->addFlash('error', 'Komga integration is not enabled.');
             return $this->redirectToRoute('settings_grimmory');
         }
 

@@ -10,6 +10,7 @@ use App\Entity\DownloadJob;
 use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
+use App\Service\AppSettingsProvider;
 use App\Service\BookMetadataService;
 use App\Message\DispatchReleaseSearch;
 use App\Repository\DownloadJobRepository;
@@ -29,6 +30,22 @@ final class RequestsController extends AbstractController
 {
     /** Long TTL; the proxy URL is deterministic per remote URL so it's safe to keep around. */
     private const COVER_CACHE_TTL = 60 * 60 * 24 * 30;
+
+    /**
+     * The distinct statuses a request shows on this page, in display order, keyed
+     * by the filter key. Drives both the status badge and the status filter bar so
+     * the two never diverge. Note these are *display* statuses: 'downloaded' is the
+     * approved+delivery-complete combination, not a stored status.
+     *
+     * @var array<string, string>
+     */
+    private const STATUS_LABELS = [
+        'available'  => 'In Library',
+        'downloaded' => 'Downloaded',
+        'approved'   => 'Approved',
+        'pending'    => 'Pending',
+        'rejected'   => 'Rejected',
+    ];
 
     public function __construct(private readonly CacheItemPoolInterface $cache)
     {
@@ -62,6 +79,7 @@ final class RequestsController extends AbstractController
             $downloadedAt = $job !== null && $job->getStatus() === DownloadJob::STATUS_COMPLETE
                 ? $job->getUpdatedAt()
                 : null;
+            $statusKey = self::displayStatusKey($r);
             $items[] = [
                 'entity'         => $r,
                 'ago'            => self::humanAgo($now, $r->getCreatedAt()),
@@ -70,12 +88,59 @@ final class RequestsController extends AbstractController
                 'cover_url'      => $metadata->ensureCoverProxyUrl($r->getBook()),
                 'job'            => $job,
                 'stalled'        => $stalled,
+                'status_key'     => $statusKey,
+                'status_label'   => self::STATUS_LABELS[$statusKey] ?? $r->getStatusLabel(),
             ];
         }
 
         return $this->render('requests/index.html.twig', [
-            'items' => $items,
+            'items'   => $items,
+            'filters' => $this->buildFilters($items),
         ]);
+    }
+
+    /**
+     * The display status key for a request — the same derivation the badge uses:
+     * 'available' → In Library, approved + delivery complete → 'downloaded', else
+     * the stored status ('pending' | 'approved' | 'rejected').
+     */
+    private static function displayStatusKey(BookRequest $r): string
+    {
+        if ($r->getStatus() === BookRequest::STATUS_AVAILABLE) {
+            return 'available';
+        }
+        if ($r->getStatus() === BookRequest::STATUS_APPROVED && $r->getDeliveryStatus() === DownloadJob::STATUS_COMPLETE) {
+            return 'downloaded';
+        }
+
+        return $r->getStatus();
+    }
+
+    /**
+     * The filter chips to show: "All" plus one per display status actually present,
+     * in canonical order, each with its count. Empty categories are omitted so the
+     * bar only ever offers filters that match something.
+     *
+     * @param list<array{status_key: string, ...}> $items
+     *
+     * @return list<array{key: string, label: string, count: int}>
+     */
+    private function buildFilters(array $items): array
+    {
+        $counts = [];
+        foreach ($items as $item) {
+            $key = $item['status_key'];
+            $counts[$key] = ($counts[$key] ?? 0) + 1;
+        }
+
+        $filters = [['key' => 'all', 'label' => 'All', 'count' => \count($items)]];
+        foreach (self::STATUS_LABELS as $key => $label) {
+            if (isset($counts[$key])) {
+                $filters[] = ['key' => $key, 'label' => $label, 'count' => $counts[$key]];
+            }
+        }
+
+        return $filters;
     }
 
     private function rememberCover(int $bookId, string $proxyUrl): void
@@ -93,6 +158,8 @@ final class RequestsController extends AbstractController
         BookRepository $books,
         BookMetadataService $metadata,
         EntityManagerInterface $em,
+        AppSettingsProvider $settings,
+        MessageBusInterface $bus,
     ): JsonResponse {
         $payload = json_decode((string) $request->getContent(), true);
         if (!is_array($payload)) {
@@ -145,13 +212,23 @@ final class RequestsController extends AbstractController
         }
 
         $entity = new BookRequest($user, $book);
+        $autoApproved = $settings->isAutoApproveRequestsEnabled();
+        if ($autoApproved) {
+            $entity->setStatus(BookRequest::STATUS_APPROVED);
+        }
         $em->persist($entity);
         $em->flush();
+
+        if ($autoApproved) {
+            // Same async fulfillment loop a manual approve() triggers.
+            $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
+        }
 
         return new JsonResponse([
             'requested' => true,
             'requestId' => $entity->getId(),
             'bookId' => $book->getId(),
+            'status' => $entity->getStatus(),
             'alreadyExisted' => false,
         ]);
     }

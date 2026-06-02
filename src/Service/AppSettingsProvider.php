@@ -14,4 +14,7 @@ interface AppSettingsProvider
 {
     /** Whether downloaded ebooks should have their metadata rewritten from Spine Scout's stored values. */
     public function isMetadataOverwriteEnabled(): bool;
+
+    /** Whether new book requests are auto-approved (skipping the admin queue). */
+    public function isAutoApproveRequestsEnabled(): bool;
 }

@@ -121,7 +121,7 @@
                         <input type="search" placeholder="Search for books, authors, series..."
                                class="search-input"
                                data-search-target="input"
-                               data-action="input->search#onInput keydown.enter->search#submit keydown.escape->search#onInputKeydown">
+                               data-action="keydown.enter->search#submit keydown.escape->search#onInputKeydown">
                         <div class="search-types" role="group" aria-label="Search type">
                             <button type="button"
                                     class="search-type-btn{% if _q_type == 'title' %} is-active{% endif %}"

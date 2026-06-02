@@ -20,6 +20,14 @@
             </label>
         </fieldset>
 
+        <fieldset class="settings-fieldset">
+            <legend>Requests</legend>
+            <label class="field-checkbox">
+                <input type="checkbox" name="auto_approve_requests" value="1" {{ auto_approve_requests ? 'checked' : '' }}>
+                <span>Enable automatic book approval for all requested books</span>
+            </label>
+        </fieldset>
+
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Save settings</button>
         </div>

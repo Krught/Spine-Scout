@@ -43,6 +43,11 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
         return $this->getOrCreate(Integration::KIND_APP)->isOverwriteMetadataEnabled();
     }
 
+    public function isAutoApproveRequestsEnabled(): bool
+    {
+        return $this->getOrCreate(Integration::KIND_APP)->isAutoApproveRequestsEnabled();
+    }
+
     // -- best_match -------------------------------------------------------------
 
     public function getBestMatchPolicy(): BestMatchPolicy

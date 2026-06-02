@@ -238,7 +238,9 @@ final class BookRepository extends ServiceEntityRepository
                 $normalized[$n] = true;
             }
         }
-        $normalizedList = array_keys($normalized);
+        // PHP coerces all-digit array keys (e.g. an ISBN-13 like "9798217190065") to int,
+        // so cast them back to strings before they reach Book::setIsbn()/setIsbns().
+        $normalizedList = array_map('strval', array_keys($normalized));
         if ($normalizedList !== []) {
             $book->setIsbns($normalizedList);
             if ($book->getIsbn() === null) {

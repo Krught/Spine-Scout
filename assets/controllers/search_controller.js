@@ -1,6 +1,5 @@
 import { Controller } from '@hotwired/stimulus';
 
-const IDLE_SUBMIT_MS = 3000;
 const VALID_TYPES = ['title', 'author', 'genre', 'series', 'publisher'];
 const ICON_TYPES = ['title', 'author', 'genre'];
 const STORAGE_KEY = 'spinescout.searchType';
@@ -28,17 +27,6 @@ export default class extends Controller {
         }
         this.typeValue = initialType || 'title';
         this.reflectActiveButton();
-    }
-
-    disconnect() {
-        this.clearTimer();
-    }
-
-    onInput() {
-        this.clearTimer();
-        const value = this.inputTarget.value.trim();
-        if (value === '') return;
-        this.timer = window.setTimeout(() => this.submit(), IDLE_SUBMIT_MS);
     }
 
     toggleMobile(event) {
@@ -80,7 +68,6 @@ export default class extends Controller {
 
     submit(event) {
         if (event) event.preventDefault();
-        this.clearTimer();
         const query = this.inputTarget.value.trim();
         const type = VALID_TYPES.includes(this.typeValue) ? this.typeValue : 'title';
 
@@ -104,12 +91,5 @@ export default class extends Controller {
             btn.classList.toggle('is-active', isActive);
             btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
         });
-    }
-
-    clearTimer() {
-        if (this.timer) {
-            window.clearTimeout(this.timer);
-            this.timer = null;
-        }
     }
 }

@@ -3,7 +3,7 @@
 {% block title %}Requests - Spine Scout{% endblock %}
 
 {% block body %}
-    <section class="requests-section">
+    <section class="requests-section" data-controller="request-search requests-filter">
         <header class="requests-header">
             <h1 class="requests-title">Requests</h1>
         </header>
@@ -17,6 +17,23 @@
         {% if items is empty %}
             <div class="requests-empty">No requests yet.</div>
         {% else %}
+            <div class="requests-filters" role="group" aria-label="Filter requests by status">
+                {% for f in filters %}
+                    <button type="button"
+                            class="requests-filter{{ f.key == 'all' ? ' is-active' : '' }}"
+                            data-requests-filter-target="chip"
+                            data-status-key="{{ f.key }}"
+                            data-action="requests-filter#select"
+                            data-requests-filter-key-param="{{ f.key }}">
+                        {{ f.label }} <span class="requests-filter-count">{{ f.count }}</span>
+                    </button>
+                {% endfor %}
+            </div>
+
+            <div class="requests-empty requests-filter-empty" data-requests-filter-target="empty" hidden>
+                No requests with this status.
+            </div>
+
             <ul class="requests-list">
                 {% set _cover_gradients = [
                     'linear-gradient(135deg,#3a4a6b,#5c6f99)',
@@ -33,8 +50,11 @@
                     {% set can_approve = is_granted('ROLE_ADMIN') and status == 'pending' %}
                     {% set can_recheck = is_granted('ROLE_ADMIN') and status == 'approved' and (r.deliveryStatus is null or r.deliveryStatus in ['error', 'cancelled'] or item.stalled) %}
                     {% set can_delete = is_granted('ROLE_ADMIN') or is_owner %}
+                    {% set is_fulfilled = status == 'available' or (status == 'approved' and r.deliveryStatus == 'complete') %}
+                    {% set can_search = is_granted('ROLE_ADMIN') and not is_fulfilled %}
                     {% set _dur = random(900, 3600) %}
                     <li class="request-row" data-controller="cover-palette" data-cover-palette-target-value=".request-cover"
+                        data-requests-filter-target="row" data-status-key="{{ item.status_key }}"
                         style="--row-fill-duration: {{ _dur }}ms;">
                         <div class="request-left">
                             {% if item.cover_url %}
@@ -55,19 +75,9 @@
 
                         <div class="request-meta">
                             {% set ds = r.deliveryStatus %}
-                            {% if status == 'available' %}
-                                <span class="request-status request-status-available">In Library</span>
-                            {% elseif status == 'approved' and ds == 'complete' %}
-                                <span class="request-status request-status-downloaded">Downloaded</span>
-                            {% else %}
-                                <span class="request-status request-status-{{ status }}">{{ r.statusLabel }}</span>
-                            {% endif %}
+                            <span class="request-status request-status-{{ item.status_key }}">{{ item.status_label }}</span>
                             {% if status == 'approved' and item.stalled %}
                                 <span class="request-status request-status-error" title="The worker stopped before finishing — recheck to retry.">Stalled</span>
-                            {% elseif status == 'approved' and item.job and ds in ['downloading', 'resolving'] %}
-                                <span class="request-progress" aria-label="Download progress">
-                                    <span class="request-progress-bar" style="width: {{ item.job.progress }}%"></span>
-                                </span>
                             {% endif %}
                             <span class="request-when">
                                 Requested {{ item.ago }} by <strong>{{ r.requestedBy.username }}</strong>
@@ -80,6 +90,15 @@
                         </div>
 
                         <div class="request-actions">
+                            {% if can_search %}
+                                <button type="button" class="request-btn request-btn-search"
+                                        data-action="request-search#open"
+                                        data-request-search-book-id-param="{{ r.book.id }}"
+                                        data-request-search-title-param="{{ r.book.title }}"
+                                        data-request-search-author-param="{{ r.book.author ?? '' }}"
+                                        data-request-search-isbn-param="{{ r.book.isbn ?? '' }}"
+                                        title="Manually search sources and download a version">Interactive Search</button>
+                            {% endif %}
                             {% if can_approve %}
                                 <form method="post" action="{{ path('requests_approve', {id: r.id}) }}">
                                     <input type="hidden" name="_csrf_token" value="{{ csrf_token('approve-request-' ~ r.id) }}">
@@ -103,6 +122,15 @@
                     </li>
                 {% endfor %}
             </ul>
+        {% endif %}
+
+        {% if is_granted('ROLE_ADMIN') %}
+            <div class="book-modal request-search-overlay" data-request-search-target="overlay"
+                 data-action="click->request-search#backdropClick" hidden>
+                <div class="book-modal-dialog">
+                    {{ include('_interactive_search.html.twig') }}
+                </div>
+            </div>
         {% endif %}
     </section>
 {% endblock %}

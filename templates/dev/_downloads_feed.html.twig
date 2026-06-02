@@ -8,7 +8,7 @@
         {% else %}
             <table class="dev-result__table">
                 <thead>
-                    <tr><th>Book</th><th>Status</th><th>Progress</th><th>Format</th><th>Updated</th></tr>
+                    <tr><th>Book</th><th>Status</th><th>Format</th><th>Updated</th></tr>
                 </thead>
                 <tbody>
                     {% for job in jobs %}
@@ -16,10 +16,6 @@
                             <td>{{ job.bookRequest ? job.bookRequest.book.title : job.sourceId|slice(0, 12) }}</td>
                             <td><span class="dev-job-status dev-job-status-{{ job.status }}">{{ job.status }}</span>
                                 {% if job.status == 'error' and job.statusMessage %}<br><small class="dev-job-error">{{ job.statusMessage }}</small>{% endif %}
-                            </td>
-                            <td>
-                                <span class="request-progress"><span class="request-progress-bar" style="width: {{ job.progress }}%"></span></span>
-                                {{ job.progress }}%
                             </td>
                             <td>{{ job.format ?? '?' }}</td>
                             <td>{{ job.updatedAt|date('H:i:s') }}</td>

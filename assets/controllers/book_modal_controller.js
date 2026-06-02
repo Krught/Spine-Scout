@@ -164,7 +164,14 @@ export default class extends Controller {
             if (data && typeof data.bookId === 'number') {
                 this.currentBookId = data.bookId;
             }
-            this.setAction(this.seedDownloaded, 'pending');
+            // The server decides the initial status (auto-approval may approve it
+            // instantly); fall back to 'pending' when it isn't reported.
+            const status = data && typeof data.status === 'string' ? data.status : 'pending';
+            this.seedRequestStatus = status;
+            this.setAction(this.seedDownloaded, status);
+            // Reflect the new status on the originating card(s) in the grid behind the
+            // modal so closing it doesn't reveal a stale, un-requested-looking card.
+            this.markStatus(this.currentBookId, status);
         } catch (e) {
             action.disabled = false;
             action.textContent = previousText;
@@ -201,12 +208,13 @@ export default class extends Controller {
         if (bookId !== null) this.currentBookId = bookId;
         this.seedRequestStatus = 'downloaded';
         this.setAction(this.seedDownloaded, 'downloaded');
-        this.markDownloaded(bookId);
+        this.markStatus(bookId, 'downloaded');
     }
 
-    // Add the "Downloaded" badge to the card we opened from and any other card on
-    // the page for the same book (it can appear in several rows/carousels).
-    markDownloaded(bookId) {
+    // Stamp the given request status onto the card we opened from and any other card
+    // on the page for the same book (it can appear in several rows/carousels), so the
+    // grid reflects a "Get"/download without a page reload.
+    markStatus(bookId, status) {
         const cards = new Set();
         if (this.currentCard) cards.add(this.currentCard);
         if (bookId !== null && bookId !== undefined) {
@@ -214,22 +222,26 @@ export default class extends Controller {
                 .querySelectorAll(`.card[data-book-modal-id-param="${bookId}"]`)
                 .forEach((c) => cards.add(c));
         }
-        cards.forEach((card) => this.stampDownloadedBadge(card));
+        cards.forEach((card) => this.stampStatusBadge(card, status));
     }
 
-    stampDownloadedBadge(card) {
-        card.dataset.bookModalRequestStatusParam = 'downloaded';
+    stampStatusBadge(card, status) {
+        if (!STATUS_BADGE_SVG[status]) return;
+        card.dataset.bookModalRequestStatusParam = status;
         const cover = card.querySelector('.card-cover');
         if (!cover) return;
-        // Leave an existing "In Library" check or a Downloaded badge as-is.
-        if (cover.querySelector('.card-check, .card-status-downloaded')) return;
-        // Replace any other request-status badge (pending/approved/rejected).
+        // Leave an existing "In Library" check untouched. 'downloaded' is terminal —
+        // don't let a later pending/approved stamp downgrade it.
+        if (cover.querySelector('.card-check')) return;
+        if (status !== 'downloaded' && cover.querySelector('.card-status-downloaded')) return;
+        // Replace any other request-status badge.
         cover.querySelectorAll('.card-status').forEach((b) => b.remove());
+        const label = STATUS_BADGE_LABEL[status];
         const badge = document.createElement('span');
-        badge.className = 'card-status card-status-downloaded';
-        badge.title = 'Downloaded';
-        badge.setAttribute('aria-label', 'Downloaded');
-        badge.innerHTML = DOWNLOADED_BADGE_SVG;
+        badge.className = `card-status card-status-${status}`;
+        badge.title = label;
+        badge.setAttribute('aria-label', label);
+        badge.innerHTML = STATUS_BADGE_SVG[status];
         cover.appendChild(badge);
     }
 
@@ -340,6 +352,29 @@ const DOWNLOADED_BADGE_SVG =
     '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
     '<path d="M12 4v9m0 0l-3.5-3.5M12 13l3.5-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>' +
     '<path d="M5 18h14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
+
+// Request-status badge glyphs/labels, kept identical to the server-rendered cards in
+// browse_controller.js::buildCard() and templates/home/index.html.twig so a badge
+// stamped in place after a "Get" matches one rendered on the next page load.
+const STATUS_BADGE_SVG = {
+    pending:
+        '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+        '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.5"/>' +
+        '<path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    approved:
+        '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+        '<path d="M7 10v9h-3v-9h3zm3 9c-.55 0-1-.45-1-1v-8.4l3.6-6.6c.32-.58 1.04-.79 1.62-.46.42.23.66.69.61 1.16l-.49 4.3h5.16c1.1 0 2 .9 2 2 0 .27-.06.53-.16.78l-2.55 6.78c-.29.78-1.04 1.3-1.88 1.3h-6.91z" fill="currentColor"/></svg>',
+    rejected:
+        '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+        '<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>',
+    downloaded: DOWNLOADED_BADGE_SVG,
+};
+const STATUS_BADGE_LABEL = {
+    pending: 'Pending',
+    approved: 'Approved',
+    rejected: 'Rejected',
+    downloaded: 'Downloaded',
+};
 
 function escapeHtml(str) {
     return String(str)

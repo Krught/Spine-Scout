@@ -14,7 +14,7 @@
                 </div>
 
                 {% if section.items is empty %}
-                    <p class="row-empty">{{ section.empty_message ?? "No books here yet. They will show up after the first Grimmory sync." }}</p>
+                    <p class="row-empty">{{ section.empty_message ?? "No books here yet. They will show up after the first Komga sync." }}</p>
                 {% elseif section.kind|default('') == 'genre' %}
                 <div class="carousel" data-controller="carousel">
                     <button class="carousel-btn carousel-btn-left" aria-label="Scroll left" data-scroll="-1" data-carousel-target="left" data-action="click->carousel#scroll">‹</button>

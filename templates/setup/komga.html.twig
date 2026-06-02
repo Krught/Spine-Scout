@@ -3,10 +3,11 @@
 {% block title %}Connect Komga - Spine Scout{% endblock %}
 
 {% block setup_step %}
-    <h1 class="setup-title">Connect your Grimmory library</h1>
+    <h1 class="setup-title">Connect your Komga library</h1>
     <p class="setup-lede">
         Spine Scout connects to your library through <strong>Komga</strong>.
         Enter your Komga server URL and account credentials below.
+        Komga-compatible clients such as Grimmory work too.
     </p>
 
     <form method="post" action="{{ path('app_setup_komga') }}" class="setup-form" novalidate>

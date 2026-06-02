@@ -11,7 +11,7 @@ Spine Scout itself does **not** host your library. It orchestrates the surroundi
 
 It is designed to plug into:
 
-- **[Grimmory](https://github.com/grimmory-tools/grimmory)** / Booklore - the library / reader that owns the files
+- **[Komga](https://komga.org/)**-compatible library / reader that owns the files - **[Grimmory](https://github.com/grimmory-tools/grimmory)** is the currently confirmed-working client
 - **[Hardcover](https://hardcover.app/)**, **[Open Library](https://openlibrary.org/)** - metadata providers
 
 ## 📊 Feature Status
@@ -21,9 +21,7 @@ Spine Scout is early-access and being built in phases. The table below lists onl
 | Area | Status          | Notes                                                                              |
 |--|-----------------|------------------------------------------------------------------------------------|
 | Adding / managing additional users | Partial         | Admin user is created via first-run wizard; multi-user management UI not yet built |
-| Production Docker image | Partial         | Dev compose works; published prod image not yet shipped                            |
-| Requesting books | Partial         | No automatic approval process yet                                                  |
-| Downloading / fulfillment | Partial         | Basics Implemented, initial testing positive                                       |
+| Production Docker image | Partial         | Dev compose works; published prod image not yet shipped                            | |
 | External list importers (Goodreads, RSS, CSV) | Not Implemented | Planned                                                                            |
 
 ## 📸 Screenshots
@@ -52,7 +50,7 @@ Spine Scout is early-access and being built in phases. The table below lists onl
 
 - **Unified search** - query metadata providers (Hardcover, Open Library) for rich book discovery
 - **Request workflow** - family and trusted users browse and request books; admins approve and route them to a downloader
-- **Library awareness** - syncs against your Grimmory / Booklore library so users see what's already owned and avoid duplicate requests
+- **Library awareness** - syncs against your Komga-compatible library so users see what's already owned and avoid duplicate requests
 - **Multi-user** - built-in accounts with admin/user roles; per-user request history
 - **Pluggable integrations** - each external system lives behind a clean client boundary so you can mix and match (or extend) the tools you already self-host
 - **Background sync** - Symfony Messenger + Scheduler keep library state and metadata fresh on a configurable cadence
@@ -99,7 +97,7 @@ Spine Scout is early-access and being built in phases. The table below lists onl
 
 Most configuration happens in the **Settings** area of the web UI after first launch. From there you can:
 
-- Connect your **Grimmory / Booklore** library (Komga-compatible REST API)
+- Connect your **Komga**-compatible library via its REST API
 - Add **metadata provider** credentials (Hardcover API key, etc.)
 - Manage users, roles, and per-user request preferences
 - Adjust per-integration sync cadence and trigger manual "Sync now" runs

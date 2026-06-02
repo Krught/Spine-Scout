@@ -244,6 +244,24 @@ class Integration
         return $this;
     }
 
+    /**
+     * App-wide toggle (KIND_APP row): auto-approve every new book request,
+     * skipping the admin approval queue. Defaults to false so existing installs
+     * keep the manual-approval behavior.
+     */
+    public function isAutoApproveRequestsEnabled(): bool
+    {
+        return (bool) ($this->options['auto_approve_requests'] ?? false);
+    }
+
+    public function setAutoApproveRequestsEnabled(bool $on): self
+    {
+        $options = $this->options;
+        $options['auto_approve_requests'] = $on;
+        $this->options = $options;
+        return $this;
+    }
+
     public function getLastSyncAt(): ?\DateTimeImmutable { return $this->lastSyncAt; }
     public function setLastSyncAt(?\DateTimeImmutable $when): self { $this->lastSyncAt = $when; return $this; }
 

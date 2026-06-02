@@ -25,8 +25,8 @@ final class GrimmoryIntegrationType extends AbstractType
             ->add('baseUrl', UrlType::class, [
                 'label' => 'Komga server URL',
                 'required' => true,
-                'attr' => ['placeholder' => 'https://grimmory.local/komga'],
-                'help' => 'Root of your Grimmory (Komga) server (scheme + host + port + optional path). Spine Scout appends /api/v1/... itself.',
+                'attr' => ['placeholder' => 'https://komga.example.com'],
+                'help' => 'Root of your Komga server (scheme + host + port + optional path). Spine Scout appends /api/v1/... itself.',
                 'constraints' => [
                     new Assert\NotBlank(),
                     new Assert\Regex(
@@ -58,7 +58,7 @@ final class GrimmoryIntegrationType extends AbstractType
                 'label' => 'Sync interval (minutes)',
                 'required' => true,
                 'attr' => ['min' => 1, 'max' => 1440],
-                'help' => 'How often Spine Scout polls Grimmory. Default 15.',
+                'help' => 'How often Spine Scout polls Komga. Default 15.',
                 'constraints' => [
                     new Assert\NotBlank(),
                     new Assert\Range(min: 1, max: 1440),

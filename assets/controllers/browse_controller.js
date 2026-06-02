@@ -243,9 +243,14 @@ export default class extends Controller {
             if (requestSort !== this.currentSort() || requestDir !== this.currentDir() || requestQuery !== this.searchQuery) {
                 return;
             }
-            this.appendItems(data.items || []);
-            this.offset = data.next_offset ?? (this.offset + (data.items?.length || 0));
-            this.hasMore = !!data.has_more;
+            const batch = data.items || [];
+            this.appendItems(batch);
+            const prevOffset = this.offset;
+            this.offset = data.next_offset ?? (this.offset + batch.length);
+            // Guard against a server that claims has_more while returning an empty page that
+            // doesn't advance the offset — left unchecked that recurses with no backoff and
+            // hammers the upstream API. An empty, non-advancing page means stop.
+            this.hasMore = !!data.has_more && !(batch.length === 0 && this.offset === prevOffset);
             if (this.hasMore) {
                 this.statusTarget.textContent = '';
             } else if (this.totalRendered === 0) {

@@ -85,15 +85,19 @@ final class BrowseController extends AbstractController
         $slice = array_slice($cards, $offset, $limit);
         $total = count($cards);
         $exhausted = $pool['exhausted'] ?? false;
+        // See search(): on upstream error, never report has_more or the client tight-loops.
+        $errored = $pool['errored'] ?? false;
 
         return new JsonResponse([
             'items' => $slice,
             'next_offset' => $offset + count($slice),
             // For trending: there may be more upstream pages even if we've returned what's loaded.
             // For sorted: we already loaded the full pool, so end-of-pool is end-of-list.
-            'has_more' => $sort === 'trending'
-                ? (!$exhausted || ($offset + count($slice)) < $total)
-                : (($offset + count($slice)) < $total),
+            'has_more' => $errored
+                ? false
+                : ($sort === 'trending'
+                    ? (!$exhausted || ($offset + count($slice)) < $total)
+                    : (($offset + count($slice)) < $total)),
         ]);
     }
 
@@ -135,20 +139,26 @@ final class BrowseController extends AbstractController
         $slice = array_slice($cards, $offset, $limit);
         $total = count($cards);
         $exhausted = $pool['exhausted'] ?? false;
+        // An upstream error (e.g. Hardcover HTTP 429) leaves the pool empty or partial.
+        // Never report has_more in that case — otherwise the client re-requests the same
+        // empty page in a tight loop, which hammers upstream and sustains the rate-limit.
+        $errored = $pool['errored'] ?? false;
 
         return new JsonResponse([
             'items' => $slice,
             'next_offset' => $offset + count($slice),
-            'has_more' => $sort === 'trending'
-                ? (!$exhausted || ($offset + count($slice)) < $total)
-                : (($offset + count($slice)) < $total),
+            'has_more' => $errored
+                ? false
+                : ($sort === 'trending'
+                    ? (!$exhausted || ($offset + count($slice)) < $total)
+                    : (($offset + count($slice)) < $total)),
         ]);
     }
 
     /**
      * Loads (and caches) at least $needed search results, paginating upstream incrementally.
      *
-     * @return array{source: string, books: list<array<string, mixed>>, exhausted: bool}
+     * @return array{source: string, books: list<array<string, mixed>>, exhausted: bool, errored?: bool}
      */
     private function ensureSearchPool(IntegrationRepository $integrations, string $query, string $type, int $needed): array
     {
@@ -161,6 +171,7 @@ final class BrowseController extends AbstractController
         }
 
         $needed = min($needed, self::SEARCH_MAX_ITEMS);
+        $errored = false;
 
         $hardcover = $integrations->findByKind(Integration::KIND_HARDCOVER);
         $hardcoverAvailable = $hardcover !== null && $hardcover->isEnabled() && $hardcover->hasCredentials();
@@ -181,6 +192,7 @@ final class BrowseController extends AbstractController
                 $books = $this->hardcover->searchBooks($hardcover, $query, self::SEARCH_PAGE_SIZE, $page, $type);
             } catch (HardcoverException $e) {
                 $this->logger->warning('Browse: Hardcover search failed', ['q' => $query, 'page' => $page, 'error' => $e->getMessage()]);
+                $errored = true;
                 break;
             }
             foreach ($books as $b) {
@@ -212,6 +224,7 @@ final class BrowseController extends AbstractController
                         $books = $this->openLibrary->searchBooks($query, self::SEARCH_PAGE_SIZE, $page, $type);
                     } catch (OpenLibraryException $e) {
                         $this->logger->warning('Browse: OpenLibrary search failed', ['q' => $query, 'page' => $page, 'error' => $e->getMessage()]);
+                        $errored = true;
                         break;
                     }
                     foreach ($books as $b) {
@@ -230,9 +243,15 @@ final class BrowseController extends AbstractController
             }
         }
 
-        $item->set($pool);
-        $item->expiresAfter(self::CACHE_TTL);
-        $this->cache->save($item);
+        // Don't cache a pool left empty purely by an upstream error — a later retry (after
+        // the rate-limit clears) should fetch fresh rather than serve nothing for the full TTL.
+        if (!($errored && $pool['books'] === [])) {
+            $item->set($pool);
+            $item->expiresAfter(self::CACHE_TTL);
+            $this->cache->save($item);
+        }
+
+        $pool['errored'] = $errored;
 
         return $pool;
     }
@@ -241,7 +260,7 @@ final class BrowseController extends AbstractController
      * Loads (and caches) at least $needed items from the upstream trending feed.
      * Appends pages incrementally so we never re-fetch what's already in the pool.
      *
-     * @return array{source: string, books: list<array<string, mixed>>, exhausted: bool}
+     * @return array{source: string, books: list<array<string, mixed>>, exhausted: bool, errored?: bool}
      */
     private function ensureUpstream(IntegrationRepository $integrations, int $needed): array
     {
@@ -253,6 +272,7 @@ final class BrowseController extends AbstractController
         }
 
         $needed = min($needed, self::UPSTREAM_MAX_ITEMS);
+        $errored = false;
 
         $hardcover = $integrations->findByKind(Integration::KIND_HARDCOVER);
         $hardcoverAvailable = $hardcover !== null && $hardcover->isEnabled() && $hardcover->hasCredentials();
@@ -275,6 +295,7 @@ final class BrowseController extends AbstractController
                 $books = $this->hardcover->fetchTrending($hardcover, self::UPSTREAM_PAGE_SIZE, $offset);
             } catch (HardcoverException $e) {
                 $this->logger->warning('Browse: Hardcover trending fetch failed', ['offset' => $offset, 'error' => $e->getMessage()]);
+                $errored = true;
                 break;
             }
             foreach ($books as $b) {
@@ -306,13 +327,19 @@ final class BrowseController extends AbstractController
                     $pool['exhausted'] = true;
                 } catch (OpenLibraryException $e) {
                     $this->logger->warning('Browse: OpenLibrary trending fetch failed', ['error' => $e->getMessage()]);
+                    $errored = true;
                 }
             }
         }
 
-        $item->set($pool);
-        $item->expiresAfter(self::CACHE_TTL);
-        $this->cache->save($item);
+        // Don't cache a pool left empty purely by an upstream error (see ensureSearchPool).
+        if (!($errored && $pool['books'] === [])) {
+            $item->set($pool);
+            $item->expiresAfter(self::CACHE_TTL);
+            $this->cache->save($item);
+        }
+
+        $pool['errored'] = $errored;
 
         return $pool;
     }
