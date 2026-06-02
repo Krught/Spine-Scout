@@ -159,6 +159,9 @@
 .request-when strong {
     font-weight: 600;
 }
+.request-when-downloaded {
+    opacity: 0.85;
+}
 
 .request-status {
     display: inline-block;

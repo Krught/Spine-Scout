@@ -38,6 +38,18 @@ final class AAStyleHttpProtocol
      */
     public const DEFAULT_FORMATS = ['epub', 'mobi', 'azw3', 'pdf', 'cbz', 'cbr'];
 
+    /**
+     * Cap on how many ISBN candidates are embedded in the search query. A book
+     * with many editions (e.g. "1984") can carry 300+ ISBNs, each expanding to
+     * an ~80-char OR-group that URL-encodes to ~250 chars — a 20KB+ URL. The
+     * query only needs enough ISBNs to *surface* the right record; the full set
+     * still verifies it downstream (MatchScorer::isbnCategory reads
+     * $plan->book->getIsbns() independently, and the record page lists every
+     * ISBN on a match). Candidates are pre-ordered by edition preference
+     * (language/format/popularity), so the first N are the most likely hits.
+     */
+    private const MAX_QUERY_ISBNS = 20;
+
     /** Sentinel string the indexer renders when a query matches nothing. */
     private const NO_RESULTS_MARKER = 'No files found.';
 
@@ -66,9 +78,12 @@ final class AAStyleHttpProtocol
         $keyword = trim($plan->primaryQuery());
 
         if ($plan->hasIsbn()) {
+            // Only the top-N preferred-edition ISBNs go in the query; the full
+            // set still verifies the match client-side. See MAX_QUERY_ISBNS.
+            $queryIsbns = array_slice($plan->isbnCandidates, 0, self::MAX_QUERY_ISBNS);
             $isbnExpr = implode(' || ', array_map(
                 static fn (string $isbn): string => sprintf("('isbn13:%s' || 'isbn10:%s')", $isbn, $isbn),
-                $plan->isbnCandidates,
+                $queryIsbns,
             ));
             $q = trim(sprintf('(%s) %s', $isbnExpr, $keyword));
         } else {

@@ -40,6 +40,25 @@ final class AAStyleHttpProtocolTest extends TestCase
         self::assertStringNotContainsString('termtype_', $url);
     }
 
+    public function testBuildSearchUrlCapsIsbnCandidatesInQuery(): void
+    {
+        // 25 ISBNs in the plan, but only the first 20 are embedded in the query
+        // (the full set still verifies the match downstream). ISBNs are 13-digit
+        // numeric strings so they survive normalisation.
+        $isbns = [];
+        for ($i = 0; $i < 25; ++$i) {
+            $isbns[] = sprintf('978000000%04d', $i);
+        }
+        $plan = $this->plan(isbns: $isbns, title: 'Capped', author: 'Author');
+
+        $url = $this->protocol->buildSearchUrl('https://mirror.invalid', $plan);
+
+        // First and 20th ISBN are present; the 21st is dropped from the query.
+        self::assertStringContainsString(rawurlencode("'isbn13:9780000000000'"), $url);
+        self::assertStringContainsString(rawurlencode("'isbn13:9780000000019'"), $url);
+        self::assertStringNotContainsString(rawurlencode("'isbn13:9780000000020'"), $url);
+    }
+
     public function testBuildSearchUrlFallsBackToTitleAuthorWhenNoIsbn(): void
     {
         $plan = $this->plan(

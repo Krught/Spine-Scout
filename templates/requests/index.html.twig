@@ -72,6 +72,11 @@
                             <span class="request-when">
                                 Requested {{ item.ago }} by <strong>{{ r.requestedBy.username }}</strong>
                             </span>
+                            {% if item.downloaded_ago %}
+                                <span class="request-when request-when-downloaded" title="{{ item.downloaded_at|date('M j, Y g:i A') }}">
+                                    Downloaded {{ item.downloaded_ago }}
+                                </span>
+                            {% endif %}
                         </div>
 
                         <div class="request-actions">

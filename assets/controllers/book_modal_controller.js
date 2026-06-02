@@ -7,11 +7,19 @@ export default class extends Controller {
         this.requestSeq = 0;
         this.currentBookId = null;
         this.currentSeed = null;
+        this.currentIsbn = null;
     }
 
     async open(event) {
         const card = event.currentTarget;
         const params = card.dataset;
+        // Remember the card we opened from so a manual download can stamp its
+        // "Downloaded" badge in place without a page reload.
+        this.currentCard = card;
+
+        // Opening a (new) book always starts on the details view, never a stale
+        // Interactive Search panel left open from a previous book.
+        this.dispatch('close', { prefix: 'book-modal', bubbles: true });
 
         this.titleTarget.textContent = params.bookModalTitleParam || '';
         this.renderAuthor(params.bookModalAuthorParam || '');
@@ -33,6 +41,7 @@ export default class extends Controller {
         // false→true but never the reverse.
         this.seedDownloaded = params.bookModalDownloadedParam === '1';
         this.seedRequestStatus = params.bookModalRequestStatusParam || null;
+        this.currentIsbn = null;
         this.currentBookId = params.bookModalIdParam ? Number(params.bookModalIdParam) : null;
         this.currentSeed = {
             source: params.bookModalSourceParam || null,
@@ -103,7 +112,9 @@ export default class extends Controller {
             action.classList.add('is-get');
             action.disabled = false;
         }
-        this.searchTarget.hidden = downloaded;
+        // Hide Interactive Search once the book is in the library or its file has
+        // already been downloaded ('downloaded' pseudo-status = approved + delivered).
+        this.searchTarget.hidden = downloaded || requestStatus === 'downloaded';
     }
 
     async requestBook(event) {
@@ -162,6 +173,66 @@ export default class extends Controller {
         }
     }
 
+    // Reveal the Interactive Search panel, handing it the current (possibly
+    // upgraded) title/author/ISBN so its query fields seed from what the user is
+    // looking at. The panel (interactive-search controller) listens on @window.
+    openSearch(event) {
+        if (event && event.preventDefault) event.preventDefault();
+        this.dispatch('opensearch', {
+            prefix: 'book-modal',
+            bubbles: true,
+            detail: {
+                bookId: this.currentBookId,
+                title: (this.titleTarget.textContent || '').trim(),
+                author: (this.authorTarget.textContent || '').trim(),
+                isbn: this.currentIsbn || '',
+                source: this.currentSeed ? this.currentSeed.source : null,
+                externalId: this.currentSeed ? this.currentSeed.externalId : null,
+            },
+        });
+    }
+
+    // The panel reports a successful manual download — the file is fetched but not
+    // yet imported, so the book is "Downloaded" (not "In Library"). Reflect it on
+    // the modal action and stamp the originating card(s) so the badge appears
+    // without a page reload.
+    onDownloaded(event) {
+        const bookId = (event && event.detail && event.detail.bookId) || this.currentBookId || null;
+        if (bookId !== null) this.currentBookId = bookId;
+        this.seedRequestStatus = 'downloaded';
+        this.setAction(this.seedDownloaded, 'downloaded');
+        this.markDownloaded(bookId);
+    }
+
+    // Add the "Downloaded" badge to the card we opened from and any other card on
+    // the page for the same book (it can appear in several rows/carousels).
+    markDownloaded(bookId) {
+        const cards = new Set();
+        if (this.currentCard) cards.add(this.currentCard);
+        if (bookId !== null && bookId !== undefined) {
+            document
+                .querySelectorAll(`.card[data-book-modal-id-param="${bookId}"]`)
+                .forEach((c) => cards.add(c));
+        }
+        cards.forEach((card) => this.stampDownloadedBadge(card));
+    }
+
+    stampDownloadedBadge(card) {
+        card.dataset.bookModalRequestStatusParam = 'downloaded';
+        const cover = card.querySelector('.card-cover');
+        if (!cover) return;
+        // Leave an existing "In Library" check or a Downloaded badge as-is.
+        if (cover.querySelector('.card-check, .card-status-downloaded')) return;
+        // Replace any other request-status badge (pending/approved/rejected).
+        cover.querySelectorAll('.card-status').forEach((b) => b.remove());
+        const badge = document.createElement('span');
+        badge.className = 'card-status card-status-downloaded';
+        badge.title = 'Downloaded';
+        badge.setAttribute('aria-label', 'Downloaded');
+        badge.innerHTML = DOWNLOADED_BADGE_SVG;
+        cover.appendChild(badge);
+    }
+
     renderAuthor(raw) {
         const names = String(raw).split(',').map(s => s.trim()).filter(Boolean);
         if (names.length === 0) {
@@ -193,6 +264,9 @@ export default class extends Controller {
 
     close() {
         this.modalTarget.hidden = true;
+        // Collapse the Interactive Search panel too, so it isn't still revealed
+        // (hiding the book body via CSS) the next time a book opens.
+        this.dispatch('close', { prefix: 'book-modal', bubbles: true });
         // Author modal can open a book modal on top — only unlock scroll when no .book-modal remains.
         if (document.querySelector('.book-modal:not([hidden])') === null) {
             document.body.classList.remove('book-modal-open');
@@ -241,7 +315,10 @@ export default class extends Controller {
         }
         if (book.publishedDate) facts.push(['Published', escapeHtml(book.publishedDate)]);
         if (book.language) facts.push(['Language', escapeHtml(book.language)]);
-        if (book.isbn) facts.push(['ISBN', escapeHtml(book.isbn)]);
+        if (book.isbn) {
+            this.currentIsbn = book.isbn;
+            facts.push(['ISBN', escapeHtml(book.isbn)]);
+        }
         this.factsTarget.innerHTML = facts.map(([k, v]) =>
             `<div class="book-modal-fact"><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`
         ).join('');
@@ -257,6 +334,12 @@ export default class extends Controller {
         }
     }
 }
+
+// Same "Downloaded" (download-into-tray) glyph the cards render in browse_controller.
+const DOWNLOADED_BADGE_SVG =
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+    '<path d="M12 4v9m0 0l-3.5-3.5M12 13l3.5-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="M5 18h14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
 
 function escapeHtml(str) {
     return String(str)

@@ -8,6 +8,7 @@ services:
       APP_SECRET: ${APP_SECRET:-ChangeMeInProduction}
       DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-!ChangeMe!}@database:5432/${POSTGRES_DB:-app}?serverVersion=${POSTGRES_VERSION:-16}&charset=utf8
       MESSENGER_TRANSPORT_DSN: doctrine://default?auto_setup=0
+      PHP_FPM_MAX_CHILDREN: ${PHP_FPM_MAX_CHILDREN:-15}
     volumes:
       - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:rw
       - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw

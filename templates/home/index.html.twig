@@ -156,14 +156,14 @@
             </div>
         </div>
 
-        <div class="book-modal" data-book-modal-target="modal" data-action="click->book-modal#backdropClick keydown.esc@window->book-modal#close" hidden>
+        <div class="book-modal" data-book-modal-target="modal" data-action="click->book-modal#backdropClick keydown.esc@window->book-modal#close interactive-search:downloaded@window->book-modal#onDownloaded" hidden>
             <div class="book-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="book-modal-title">
                 <button type="button" class="book-modal-close" aria-label="Close" data-action="click->book-modal#close">×</button>
                 <div class="book-modal-body">
                     <div class="book-modal-cover-wrap">
                         <div class="book-modal-cover" data-book-modal-target="cover"></div>
                         <button type="button" class="book-modal-action" data-book-modal-target="action" data-action="click->book-modal#requestBook" hidden></button>
-                        <button type="button" class="book-modal-search" data-book-modal-target="search" hidden>Interactive Search</button>
+                        <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
                     </div>
                     <div class="book-modal-content">
                         <h2 class="book-modal-title" id="book-modal-title" data-book-modal-target="title"></h2>
@@ -174,6 +174,7 @@
                         <div class="book-modal-description" data-book-modal-target="description"></div>
                     </div>
                 </div>
+                {{ include('_interactive_search.html.twig') }}
             </div>
         </div>
     </div>

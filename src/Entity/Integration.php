@@ -228,7 +228,7 @@ class Integration
 
     /**
      * App-wide toggle (KIND_APP row): rewrite a downloaded ebook's embedded metadata
-     * with SpineSCOUT's stored values before it lands in the library. Defaults to true
+     * with Spine Scout's stored values before it lands in the library. Defaults to true
      * so a fresh install / missing row behaves as "enabled".
      */
     public function isOverwriteMetadataEnabled(): bool

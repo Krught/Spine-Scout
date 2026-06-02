@@ -7,7 +7,7 @@ namespace App\Download\Metadata;
 use App\Entity\Book;
 
 /**
- * Rewrites an EPUB's embedded metadata in place with SpineSCOUT's stored values.
+ * Rewrites an EPUB's embedded metadata in place with Spine Scout's stored values.
  *
  * An EPUB is a ZIP whose package document (the OPF, located via
  * META-INF/container.xml) carries a Dublin Core <metadata> block. We strip the

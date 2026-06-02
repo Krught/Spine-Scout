@@ -57,9 +57,12 @@ final class BookRequestRepository extends ServiceEntityRepository
             ->addSelect('b')
             ->leftJoin('r.book', 'b')
             ->where('r.status = :approved')
+            // `IS NOT NULL` is load-bearing: request-less download jobs exist (e.g. the
+            // download probe), and a single NULL in a `NOT IN (...)` list makes the whole
+            // predicate evaluate to UNKNOWN for every row — silently returning zero retries.
             ->andWhere($this->getEntityManager()->createQueryBuilder()->expr()->notIn(
                 'r.id',
-                'SELECT IDENTITY(j.bookRequest) FROM App\Entity\DownloadJob j WHERE j.status IN (:liveStatuses)',
+                'SELECT IDENTITY(j.bookRequest) FROM App\Entity\DownloadJob j WHERE j.status IN (:liveStatuses) AND j.bookRequest IS NOT NULL',
             ))
             ->setParameter('approved', BookRequest::STATUS_APPROVED)
             ->setParameter('liveStatuses', [

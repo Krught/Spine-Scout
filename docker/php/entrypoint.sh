@@ -13,6 +13,19 @@ LIBRARY_DIR=/var/www/html/library
 mkdir -p "$LIBRARY_DIR"
 chown www-data:www-data "$LIBRARY_DIR" 2>/dev/null || true
 
+# Size the php-fpm pool from the environment. The base image ships upstream's
+# default www.conf (pm.max_children = 5), which is too small for most hosts.
+# php-fpm doesn't expand OS env vars inside pool config, so we render an
+# override file here. Only the app container runs php-fpm (and as root); the
+# worker runs as www-data and skips this.
+if [[ "$(id -u)" == "0" ]]; then
+    cat > /usr/local/etc/php-fpm.d/zz-spinescout-pool.conf <<EOF
+[www]
+pm = dynamic
+pm.max_children = ${PHP_FPM_MAX_CHILDREN:-15}
+EOF
+fi
+
 # Wait for the database to be reachable before doing anything else.
 if [[ -n "${DATABASE_URL:-}" ]]; then
     echo "[spinescout] waiting for database..."

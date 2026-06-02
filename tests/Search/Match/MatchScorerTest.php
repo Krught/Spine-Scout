@@ -51,6 +51,20 @@ final class MatchScorerTest extends TestCase
         self::assertFalse($score->qualifies(50));
     }
 
+    public function testNumericTitleDoesNotCrash(): void
+    {
+        // An all-digits title ("1984") normalises to a numeric string, which PHP
+        // coerces to an int array key inside the scorer — regression guard for the
+        // titlePair() type error that produced.
+        $plan = $this->plan(isbn: '', title: '1984', author: 'George Orwell');
+        $candidate = $this->candidate(title: '1984', author: 'George Orwell');
+
+        $score = $this->scorer->score($candidate, $plan);
+
+        self::assertSame(100, $score->total);
+        self::assertSame('exact', $this->cat($score, 'title')->note);
+    }
+
     public function testTitleAndAuthorQualifyWithoutIsbn(): void
     {
         // ISBN is in the request but the candidate's ISBN doesn't match.

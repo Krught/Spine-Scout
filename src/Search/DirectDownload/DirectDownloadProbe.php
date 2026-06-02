@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Search\DirectDownload;
 
 use App\Entity\Book;
-use App\Repository\IntegrationRepository;
+use App\Search\SearchSettingsProvider;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
 use App\Search\Source\ReleaseSourceInterface;
@@ -28,9 +28,10 @@ final class DirectDownloadProbe
      * @param iterable<ReleaseSourceInterface> $sources
      */
     public function __construct(
-        private readonly IntegrationRepository $integrations,
+        private readonly SearchSettingsProvider $integrations,
         #[AutowireIterator('app.release_source')]
         private readonly iterable $sources,
+        private readonly ReleaseSourceScorer $scorer,
     ) {
     }
 
@@ -184,6 +185,43 @@ final class DirectDownloadProbe
         }
 
         return $source->resolveDetail($candidate, $config);
+    }
+
+    /**
+     * Manual single-source / single-mirror search, fully scored: search exactly
+     * one mirror of one source (no internal failover — the interactive search lets
+     * the user pick the mirror), resolve each candidate's detail and score it
+     * against $plan. Returns the scored candidates sorted best-first, each carrying
+     * its match % (->score->total), qualifies flag, verified ISBNs and the concrete
+     * download links the user's Manual Download will hand to the download client.
+     *
+     * @return list<ScoredCandidate>
+     */
+    public function searchScoredVia(string $sourceId, string $mirror, ReleaseSearchPlan $plan, DirectDownloadConfig $config): array
+    {
+        $source = $this->sourcesById()[$sourceId] ?? null;
+        if ($source === null) {
+            return [];
+        }
+
+        $threshold = $this->integrations->getBestMatchPolicy()->minMatchScore;
+        $candidates = $source->searchVia($mirror, $plan, $config);
+
+        return $this->scorer->scoreCandidates($source, $candidates, $plan, $threshold, $config);
+    }
+
+    /** The qualifying-match threshold (0–100) the saved best-match policy enforces. */
+    public function matchThreshold(): int
+    {
+        return $this->integrations->getBestMatchPolicy()->minMatchScore;
+    }
+
+    /** The exact search URL a source would request for one mirror (pure, no I/O). */
+    public function searchUrlVia(string $sourceId, string $mirror, ReleaseSearchPlan $plan): ?string
+    {
+        $source = $this->sourcesById()[$sourceId] ?? null;
+
+        return $source?->searchUrlFor($mirror, $plan);
     }
 
     /** @return array<string, ReleaseSourceInterface> */

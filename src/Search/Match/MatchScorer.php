@@ -130,7 +130,9 @@ final class MatchScorer
         $best = 0.0;
         $bestNote = 'no match';
         foreach (array_keys($planTitles) as $planTitle) {
-            [$fraction, $note] = $this->titlePair($candidateTitle, $planTitle);
+            // PHP coerces an all-digits array key to int (e.g. a title like
+            // "1984"), so cast back to string before the typed comparison.
+            [$fraction, $note] = $this->titlePair($candidateTitle, (string) $planTitle);
             if ($fraction > $best) {
                 $best = $fraction;
                 $bestNote = $note;

@@ -126,7 +126,7 @@ final class ProcessDownloadJobHandler
         // values before it lands in the library. Never throws; skips when disabled
         // or for non-EPUB formats.
         if ($this->metadataInjector->inject($staged, $request->getBook(), $job->getFormat())) {
-            $this->log->info('Rewrote embedded metadata from SpineSCOUT', $subject);
+            $this->log->info('Rewrote embedded metadata from Spine Scout', $subject);
         }
 
         try {

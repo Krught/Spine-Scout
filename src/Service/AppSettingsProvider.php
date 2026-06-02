@@ -12,6 +12,6 @@ namespace App\Service;
  */
 interface AppSettingsProvider
 {
-    /** Whether downloaded ebooks should have their metadata rewritten from SpineSCOUT's stored values. */
+    /** Whether downloaded ebooks should have their metadata rewritten from Spine Scout's stored values. */
     public function isMetadataOverwriteEnabled(): bool;
 }

@@ -13,7 +13,7 @@ use Psr\Log\NullLogger;
 /**
  * Best-effort post-download step: when the operator has the "overwrite metadata"
  * toggle on (Settings → General, default on), rewrite a freshly downloaded EPUB's
- * embedded metadata with SpineSCOUT's stored values before it is moved into the
+ * embedded metadata with Spine Scout's stored values before it is moved into the
  * library. EPUB-only for now; other formats pass through untouched.
  *
  * Never throws — a metadata hiccup must not lose an otherwise-good download — so

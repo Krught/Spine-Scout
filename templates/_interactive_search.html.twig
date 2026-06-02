@@ -1,0 +1,55 @@
+{#
+   Interactive Search overlay panel. Included inside .book-modal-dialog. Hidden
+   until the book-modal controller dispatches `book-modal:opensearch` with the
+   current book's metadata; closes with the modal. Open to any logged-in user.
+#}
+<section class="ix-panel"
+         data-controller="interactive-search"
+         data-interactive-search-target="panel"
+         data-interactive-search-sources-url-value="{{ path('interactive_search_sources') }}"
+         data-interactive-search-run-url-value="{{ path('interactive_search_run') }}"
+         data-interactive-search-download-url-value="{{ path('interactive_search_download') }}"
+         data-interactive-search-token-value="{{ csrf_token('interactive_search') }}"
+         data-action="book-modal:opensearch@window->interactive-search#seed book-modal:close@window->interactive-search#close keydown.esc->interactive-search#close"
+         hidden>
+    <div class="ix-panel-head">
+        <h3 class="ix-panel-title">Interactive Search</h3>
+        <button type="button" class="ix-panel-close" aria-label="Back to book" data-action="interactive-search#close">×</button>
+    </div>
+
+    <div class="ix-sources" data-interactive-search-target="sources"></div>
+
+    <div class="ix-mirror-row" data-interactive-search-target="mirrorRow" hidden>
+        <span class="ix-mirror-label">Mirror</span>
+        <div class="ix-mirrors" data-interactive-search-target="mirrors"></div>
+    </div>
+
+    <div class="ix-query">
+        <label class="field">
+            <span>Title</span>
+            <input type="text" data-interactive-search-target="title"
+                   data-action="keydown->interactive-search#onQueryKeydown" autocomplete="off">
+        </label>
+        <label class="field">
+            <span>Author</span>
+            <input type="text" data-interactive-search-target="author"
+                   data-action="keydown->interactive-search#onQueryKeydown" autocomplete="off">
+        </label>
+        <label class="field">
+            <span>ISBN</span>
+            <input type="text" data-interactive-search-target="isbn"
+                   data-action="keydown->interactive-search#onQueryKeydown" autocomplete="off">
+        </label>
+    </div>
+
+    <div class="ix-query-actions">
+        <button type="button" class="btn btn-primary ix-search-btn"
+                data-action="interactive-search#rerun"
+                title="Re-run the search with the current title / author / ISBN">Search</button>
+    </div>
+
+    <p class="ix-status" data-interactive-search-target="status">Pick a source above to search.</p>
+    <p class="ix-search-url" data-interactive-search-target="searchUrl"></p>
+
+    <div class="ix-results" data-interactive-search-target="results"></div>
+</section>

@@ -57,12 +57,19 @@ final class RequestsController extends AbstractController
             $stalled = $job !== null
                 && in_array($job->getStatus(), DownloadJob::ACTIVE_STATUSES, true)
                 && $job->getUpdatedAt() < $staleBefore;
+            // A completed job is terminal, so its updatedAt is effectively the
+            // moment the download finished — surface it as "Downloaded … ago".
+            $downloadedAt = $job !== null && $job->getStatus() === DownloadJob::STATUS_COMPLETE
+                ? $job->getUpdatedAt()
+                : null;
             $items[] = [
-                'entity'    => $r,
-                'ago'       => self::humanAgo($now, $r->getCreatedAt()),
-                'cover_url' => $metadata->ensureCoverProxyUrl($r->getBook()),
-                'job'       => $job,
-                'stalled'   => $stalled,
+                'entity'         => $r,
+                'ago'            => self::humanAgo($now, $r->getCreatedAt()),
+                'downloaded_at'  => $downloadedAt,
+                'downloaded_ago' => $downloadedAt !== null ? self::humanAgo($now, $downloadedAt) : null,
+                'cover_url'      => $metadata->ensureCoverProxyUrl($r->getBook()),
+                'job'            => $job,
+                'stalled'        => $stalled,
             ];
         }
 
