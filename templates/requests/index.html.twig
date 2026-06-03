@@ -74,11 +74,7 @@
                         </div>
 
                         <div class="request-meta">
-                            {% set ds = r.deliveryStatus %}
                             <span class="request-status request-status-{{ item.status_key }}">{{ item.status_label }}</span>
-                            {% if status == 'approved' and item.stalled %}
-                                <span class="request-status request-status-error" title="The worker stopped before finishing — recheck to retry.">Stalled</span>
-                            {% endif %}
                             <span class="request-when">
                                 Requested {{ item.ago }} by <strong>{{ r.requestedBy.username }}</strong>
                             </span>
