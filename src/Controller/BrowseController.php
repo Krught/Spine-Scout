@@ -16,6 +16,7 @@ use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
 use App\Repository\IntegrationRepository;
+use App\Service\BookRecommendationService;
 use App\Service\CoverCache;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
@@ -152,6 +153,44 @@ final class BrowseController extends AbstractController
                 : ($sort === 'trending'
                     ? (!$exhausted || ($offset + count($slice)) < $total)
                     : (($offset + count($slice)) < $total)),
+        ]);
+    }
+
+    /**
+     * "More like this": recommendations for a seed book, rendered through the same card UI as
+     * search. The seed is the *opened* book's internal id; {@see BookRecommendationService}
+     * resolves it to a Hardcover slug, computes/serves the list-co-occurrence set, and persists
+     * it. The full set is pre-ranked and already loaded, so pagination is a plain slice.
+     */
+    #[Route('/browse/similar', name: 'browse_similar', methods: ['GET'])]
+    public function similar(Request $request, BookRepository $books, BookRequestRepository $requests, BookRecommendationService $recommendations): JsonResponse
+    {
+        $seedId = $request->query->getInt('seed', 0);
+        $offset = max(0, $request->query->getInt('offset', 0));
+        $limit  = min(self::MAX_LIMIT, max(1, $request->query->getInt('limit', 100)));
+
+        if ($seedId <= 0) {
+            return new JsonResponse(['items' => [], 'next_offset' => 0, 'has_more' => false]);
+        }
+        $seed = $books->find($seedId);
+        if ($seed === null) {
+            return new JsonResponse(['items' => [], 'next_offset' => 0, 'has_more' => false]);
+        }
+
+        $pool = $recommendations->poolFor($seed);
+
+        $libraryIsbns = $books->downloadedIsbns();
+        $libraryKeys  = $books->downloadedTitleAuthorKeys();
+        $statusMaps = $this->statusMaps($requests);
+        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps);
+
+        $slice = array_slice($cards, $offset, $limit);
+        $total = count($cards);
+
+        return new JsonResponse([
+            'items' => $slice,
+            'next_offset' => $offset + count($slice),
+            'has_more' => ($offset + count($slice)) < $total,
         ]);
     }
 

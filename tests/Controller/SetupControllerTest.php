@@ -67,12 +67,25 @@ final class SetupControllerTest extends WebTestCase
             'password_confirm' => 'super-secret-pw',
         ]);
         $this->client->submit($form);
-        self::assertResponseRedirects('/');
+        // Creating the account logs the admin in and advances to the integration steps.
+        self::assertResponseRedirects('/setup/hardcover');
 
         $user = $this->users->findOneByUsername('first-admin');
         self::assertNotNull($user);
         self::assertSame('first-admin', $user->getUsername());
         self::assertContains(User::ROLE_ADMIN, $user->getRoles());
+
+        // Each integration step renders only for the logged-in admin, so reaching them
+        // confirms the new account was authenticated. Skip both to finish the wizard.
+        $crawler = $this->client->followRedirect();
+        self::assertSelectorTextContains('h1', 'Hardcover');
+        $this->client->submit($crawler->selectButton('Skip')->form());
+        self::assertResponseRedirects('/setup/komga');
+
+        $crawler = $this->client->followRedirect();
+        self::assertSelectorTextContains('h1', 'Komga');
+        $this->client->submit($crawler->selectButton('Skip')->form());
+        self::assertResponseRedirects('/');
 
         $this->client->followRedirect();
         self::assertResponseIsSuccessful();

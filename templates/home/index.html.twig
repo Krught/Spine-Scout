@@ -82,10 +82,12 @@
                                      data-book-modal-request-status-param="{{ item.request_status ?? '' }}"
                                      {{ meta_attrs|raw }}{% endif %}>
                                 <div class="card-cover" style="background: {{ ['linear-gradient(135deg,#3a4a6b,#5c6f99)','linear-gradient(135deg,#7a3a5f,#a85b85)','linear-gradient(135deg,#2f5a4e,#508a76)','linear-gradient(135deg,#6b4a2a,#a3754a)','linear-gradient(135deg,#3d3d6b,#6a6ab0)','linear-gradient(135deg,#5a2a3d,#8a4a60)'][loop.index0 % 6] }};">
+                                    {# Title placeholder is always rendered underneath; the cover image sits on
+                                       top and removes itself if it fails to load (e.g. a Komga book with no
+                                       thumbnail), revealing the gradient + title custom missing-cover. #}
+                                    <span class="card-cover-title">{{ item.title|slice(0, 24) }}</span>
                                     {% if item.cover_url is defined and item.cover_url %}
-                                        <img class="card-cover-img" src="{{ item.cover_url }}" alt="{{ item.title }}" loading="lazy">
-                                    {% else %}
-                                        <span class="card-cover-title">{{ item.title|slice(0, 24) }}</span>
+                                        <img class="card-cover-img" src="{{ item.cover_url }}" alt="{{ item.title }}" loading="lazy" onerror="this.remove()">
                                     {% endif %}
                                     {% if item.downloaded ?? false %}
                                         <span class="card-check" title="In your library" aria-label="In your library">
@@ -164,6 +166,7 @@
                         <div class="book-modal-cover" data-book-modal-target="cover"></div>
                         <button type="button" class="book-modal-action" data-book-modal-target="action" data-action="click->book-modal#requestBook" hidden></button>
                         <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        <button type="button" class="book-modal-search book-modal-recommend" data-book-modal-target="recommend" data-action="click->book-modal#moreLikeThis" hidden>More like this</button>
                     </div>
                     <div class="book-modal-content">
                         <h2 class="book-modal-title" id="book-modal-title" data-book-modal-target="title"></h2>

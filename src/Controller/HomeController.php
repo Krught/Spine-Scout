@@ -6,7 +6,9 @@ namespace App\Controller;
 
 use App\Entity\Author;
 use App\Entity\Book;
+use App\Entity\BookRequest;
 use App\Entity\BookSectionEntry;
+use App\Entity\DownloadJob;
 use App\Entity\Integration;
 use App\Entity\User;
 use App\Message\TouchBooksSeen;
@@ -88,6 +90,11 @@ final class HomeController extends AbstractController
 
         $authorsList = $this->popularAuthorsFromHardcover($authors, $hardcover);
 
+        $recentRequests = array_map(
+            fn (BookRequest $r) => $this->requestToCard($r),
+            $requests->findRecent(15),
+        );
+
         $genres = self::BROWSE_GENRES;
 
         $hardcoverEmpty = $hardcover !== null && $hardcover->isEnabled()
@@ -112,7 +119,7 @@ final class HomeController extends AbstractController
                 ['title' => 'Browse by Genre', 'items' => $genres, 'kind' => 'genre'],
                 ['title' => 'Staff Picks', 'items' => $staffPicks, 'empty_message' => $hardcoverEmpty],
                 ['title' => 'Popular Authors', 'items' => $authorsList, 'kind' => 'author', 'empty_message' => $hardcoverEmpty],
-                ['title' => 'Recent Requests', 'items' => [], 'kind' => 'request', 'empty_message' => 'Book requests will appear here once the request flow is available.'],
+                ['title' => 'Recent Requests', 'items' => $recentRequests, 'kind' => 'request', 'empty_message' => 'Book requests will appear here once someone requests a book.'],
             ],
         ]);
     }
@@ -274,6 +281,39 @@ final class HomeController extends AbstractController
             'downloaded' => $downloaded,
             'request_status' => $requestStatus,
             'cover_url' => $this->covers->proxyUrlForKomga($book->getExternalId()),
+            'meta_id' => $book->getId(),
+        ];
+    }
+
+    /**
+     * Card for the "Recent Requests" shelf. Mirrors the display-status derivation
+     * RequestsController uses: AVAILABLE (or the auto-promoted equivalent) renders
+     * as in-library; an approved request whose download completed shows the
+     * "downloaded" badge; otherwise the stored pending/approved/rejected status.
+     *
+     * @return array{title: string, author: ?string, downloaded: bool, request_status: ?string, cover_url: ?string, requester: string, meta_id: ?int}
+     */
+    private function requestToCard(BookRequest $request): array
+    {
+        $book = $request->getBook();
+
+        $downloaded = false;
+        $requestStatus = null;
+        if ($request->getStatus() === BookRequest::STATUS_AVAILABLE) {
+            $downloaded = true;
+        } elseif ($request->getStatus() === BookRequest::STATUS_APPROVED && $request->getDeliveryStatus() === DownloadJob::STATUS_COMPLETE) {
+            $requestStatus = 'downloaded';
+        } else {
+            $requestStatus = $request->getStatus();
+        }
+
+        return [
+            'title' => $book->getTitle(),
+            'author' => $book->getAuthor(),
+            'downloaded' => $downloaded,
+            'request_status' => $requestStatus,
+            'cover_url' => $this->coverProxyFor($book),
+            'requester' => $request->getRequestedBy()->getUsername(),
             'meta_id' => $book->getId(),
         ];
     }

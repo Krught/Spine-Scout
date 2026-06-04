@@ -19,14 +19,25 @@ export default class extends Controller {
         if (!VALID_TYPES.includes(initialType)) {
             initialType = null;
         }
-        if (!initialType) {
-            try {
-                const stored = window.localStorage.getItem(STORAGE_KEY);
-                if (VALID_TYPES.includes(stored)) initialType = stored;
-            } catch (_) { /* localStorage unavailable */ }
+        // A hidden lens (series/publisher) may only be shown while we're actively
+        // viewing that search — i.e. it arrives in the URL alongside a query. A hidden
+        // type with no query, or no URL type at all, falls back to the last remembered
+        // shown lens; hidden lenses are never restored from persistence.
+        if (initialType && !ICON_TYPES.includes(initialType) && !initial) {
+            initialType = null;
         }
-        this.typeValue = initialType || 'title';
+        this.typeValue = initialType || this.storedShownType();
         this.reflectActiveButton();
+    }
+
+    // The last remembered shown lens (title/author/genre), or 'title' by default.
+    // Hidden lenses persisted by older code are ignored here.
+    storedShownType() {
+        try {
+            const stored = window.localStorage.getItem(STORAGE_KEY);
+            if (ICON_TYPES.includes(stored)) return stored;
+        } catch (_) { /* localStorage unavailable */ }
+        return 'title';
     }
 
     toggleMobile(event) {
@@ -69,6 +80,13 @@ export default class extends Controller {
     submit(event) {
         if (event) event.preventDefault();
         const query = this.inputTarget.value.trim();
+
+        // Clearing the box drops any active hidden lens (series/publisher) back to the
+        // last remembered shown lens — a hidden lens is only valid with an active query.
+        if (query === '' && !ICON_TYPES.includes(this.typeValue)) {
+            this.typeValue = this.storedShownType();
+            this.reflectActiveButton();
+        }
         const type = VALID_TYPES.includes(this.typeValue) ? this.typeValue : 'title';
 
         if (this.currentRouteValue === 'browse') {

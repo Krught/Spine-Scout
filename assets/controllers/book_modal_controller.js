@@ -1,7 +1,7 @@
 import { Controller } from '@hotwired/stimulus';
 
 export default class extends Controller {
-    static targets = ['modal', 'cover', 'action', 'search', 'title', 'author', 'status', 'facts', 'genres', 'description'];
+    static targets = ['modal', 'cover', 'action', 'search', 'recommend', 'title', 'author', 'status', 'facts', 'genres', 'description'];
 
     connect() {
         this.requestSeq = 0;
@@ -23,11 +23,12 @@ export default class extends Controller {
 
         this.titleTarget.textContent = params.bookModalTitleParam || '';
         this.renderAuthor(params.bookModalAuthorParam || '');
-        this.factsTarget.innerHTML = '';
-        this.genresTarget.innerHTML = '';
-        this.descriptionTarget.textContent = '';
-        this.statusTarget.textContent = 'Loading…';
-        this.statusTarget.hidden = false;
+        // Fill the metadata area with blurred placeholder text instead of a "Loading…"
+        // line, so the modal looks populated while /books/metadata resolves. render()
+        // (or an error) swaps it for the real content in place.
+        this.statusTarget.textContent = '';
+        this.statusTarget.hidden = true;
+        this.showSkeleton();
         const cover = params.bookModalCoverParam;
         if (cover) {
             this.coverTarget.style.backgroundImage = `url(${JSON.stringify(cover)})`;
@@ -51,6 +52,11 @@ export default class extends Controller {
             author: params.bookModalAuthorParam || '',
             coverUrl: params.bookModalCoverParam || '',
         };
+        // "More like this" stays hidden until metadata resolves and tells us the book is
+        // recommendable (has a resolvable Hardcover record). Reset it for the new book so a
+        // previous book's button doesn't linger.
+        this.recommendSeed = null;
+        if (this.hasRecommendTarget) this.recommendTarget.hidden = true;
         this.setAction(this.seedDownloaded, this.seedRequestStatus);
         this.modalTarget.hidden = false;
         document.body.classList.add('book-modal-open');
@@ -66,7 +72,8 @@ export default class extends Controller {
             if (params.bookModalAuthorParam) query.set('author', params.bookModalAuthorParam);
             if (params.bookModalExternalUrlParam) query.set('externalUrl', params.bookModalExternalUrlParam);
         } else {
-            this.statusTarget.textContent = 'No identifier on this card.';
+            this.clearSkeleton();
+            this.showStatus('No identifier on this card.');
             return;
         }
 
@@ -77,7 +84,8 @@ export default class extends Controller {
             });
             if (seq !== this.requestSeq) return;
             if (!response.ok) {
-                this.statusTarget.textContent = `Couldn't load metadata (HTTP ${response.status}).`;
+                this.clearSkeleton();
+                this.showStatus(`Couldn't load metadata (HTTP ${response.status}).`);
                 return;
             }
             const data = await response.json();
@@ -85,8 +93,37 @@ export default class extends Controller {
             this.render(data.book || {});
         } catch (e) {
             if (seq !== this.requestSeq) return;
-            this.statusTarget.textContent = "Couldn't load metadata.";
+            this.clearSkeleton();
+            this.showStatus("Couldn't load metadata.");
         }
+    }
+
+    showStatus(message) {
+        this.statusTarget.textContent = message;
+        this.statusTarget.hidden = false;
+    }
+
+    // Blurred, fake metadata shown while the real data is fetched. The placeholder
+    // containers carry `book-modal-skel` (blur + pulse); clearSkeleton() strips both
+    // the class and the fake text so render() can drop real content into empty nodes.
+    showSkeleton() {
+        this.factsTarget.innerHTML = SKELETON_FACTS;
+        this.genresTarget.innerHTML = SKELETON_GENRES;
+        this.descriptionTarget.innerHTML = SKELETON_DESCRIPTION;
+        for (const t of [this.factsTarget, this.genresTarget, this.descriptionTarget]) {
+            t.classList.add('book-modal-skel');
+            t.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    clearSkeleton() {
+        for (const t of [this.factsTarget, this.genresTarget, this.descriptionTarget]) {
+            t.classList.remove('book-modal-skel');
+            t.removeAttribute('aria-hidden');
+        }
+        this.factsTarget.innerHTML = '';
+        this.genresTarget.innerHTML = '';
+        this.descriptionTarget.textContent = '';
     }
 
     setAction(downloaded, requestStatus) {
@@ -199,6 +236,18 @@ export default class extends Controller {
         });
     }
 
+    // "More like this": hand the seed book id to /browse, which renders co-occurrence
+    // recommendations through the same grid/infinite-scroll UI as search. Full navigation so
+    // it works whether the modal was opened from the home page or /browse.
+    moreLikeThis(event) {
+        if (event && event.preventDefault) event.preventDefault();
+        if (!this.recommendSeed) return;
+        const params = new URLSearchParams({ like: String(this.recommendSeed) });
+        const title = (this.titleTarget.textContent || '').trim();
+        if (title) params.set('likeTitle', title);
+        window.location.href = `/browse?${params.toString()}`;
+    }
+
     // The panel reports a successful manual download — the file is fetched but not
     // yet imported, so the book is "Downloaded" (not "In Library"). Reflect it on
     // the modal action and stamp the originating card(s) so the badge appears
@@ -265,9 +314,15 @@ export default class extends Controller {
         const rawType = el.dataset.searchType || 'title';
         const type = validTypes.includes(rawType) ? rawType : 'title';
         try {
-            const stored = type;
-            if (stored !== 'title') window.localStorage.setItem('spinescout.searchType', stored);
-            else window.localStorage.removeItem('spinescout.searchType');
+            // Persist only the shown lenses (author/genre) so they're remembered across
+            // navigation. Hidden lenses (series/publisher) are URL-only — they still show
+            // on the resulting /browse page via the ?type param, but must not be stored or
+            // clobber the remembered shown lens. A title search clears the remembered lens.
+            if (type === 'author' || type === 'genre') {
+                window.localStorage.setItem('spinescout.searchType', type);
+            } else if (type === 'title') {
+                window.localStorage.removeItem('spinescout.searchType');
+            }
         } catch (_) { /* ignore */ }
         const params = new URLSearchParams({ q: term });
         if (type !== 'title') params.set('type', type);
@@ -293,6 +348,9 @@ export default class extends Controller {
     }
 
     render(book) {
+        // Drop the blurred placeholders before populating; render only sets genres /
+        // description when present, so without this they'd linger blurred.
+        this.clearSkeleton();
         if (book.title) this.titleTarget.textContent = book.title;
         if (book.author) this.renderAuthor(book.author);
 
@@ -300,6 +358,17 @@ export default class extends Controller {
             this.currentBookId = book.id;
         }
         this.setAction(this.seedDownloaded || !!book.downloaded, book.requestStatus || this.seedRequestStatus || null);
+
+        // Reveal "More like this" only when the server resolved a recommendable seed id.
+        if (this.hasRecommendTarget) {
+            if (typeof book.recommendSeed === 'number' && book.recommendSeed > 0) {
+                this.recommendSeed = book.recommendSeed;
+                this.recommendTarget.hidden = false;
+            } else {
+                this.recommendSeed = null;
+                this.recommendTarget.hidden = true;
+            }
+        }
 
         if (book.fetched === false) {
             this.statusTarget.textContent = "Couldn't reach the metadata provider — try again later.";
@@ -375,6 +444,26 @@ const STATUS_BADGE_LABEL = {
     rejected: 'Rejected',
     downloaded: 'Downloaded',
 };
+
+// Fake, blurred metadata placeholders. The text itself is never read (blurred +
+// aria-hidden via the container); it only needs realistic length/shape so the modal
+// looks like a populated record while /books/metadata loads.
+const SKELETON_FACTS =
+    '<div class="book-modal-fact"><dt>Series</dt><dd>The Silent Horizon #2 of 5</dd></div>' +
+    '<div class="book-modal-fact"><dt>Publisher</dt><dd>Evergreen House</dd></div>' +
+    '<div class="book-modal-fact"><dt>Published</dt><dd>March 2021</dd></div>' +
+    '<div class="book-modal-fact"><dt>Language</dt><dd>English</dd></div>' +
+    '<div class="book-modal-fact"><dt>ISBN</dt><dd>9781234567890</dd></div>';
+
+const SKELETON_GENRES = ['Fantasy', 'Adventure', 'Mythology', 'Coming of Age']
+    .map((g) => `<span class="book-modal-genre">${g}</span>`)
+    .join('');
+
+const SKELETON_DESCRIPTION =
+    'A sweeping tale that follows a reluctant hero across distant lands, weaving together ' +
+    'old secrets and fragile new alliances. As the journey deepens, loyalties are tested ' +
+    'and the true cost of the quest comes sharply into focus, building toward a finale ' +
+    'that readers will not soon forget.';
 
 function escapeHtml(str) {
     return String(str)

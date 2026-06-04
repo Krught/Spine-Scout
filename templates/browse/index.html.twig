@@ -5,7 +5,8 @@
 {% block body %}
     <div data-controller="book-modal browse"
          data-browse-items-url-value="{{ path('browse_items') }}"
-         data-browse-search-url-value="{{ path('browse_search') }}">
+         data-browse-search-url-value="{{ path('browse_search') }}"
+         data-browse-similar-url-value="{{ path('browse_similar') }}">
         <section class="browse-section">
             <div class="browse-header">
                 <h2 class="row-title" data-browse-target="rowTitle">Trending</h2>
@@ -55,6 +56,7 @@
                         <div class="book-modal-cover" data-book-modal-target="cover"></div>
                         <button type="button" class="book-modal-action" data-book-modal-target="action" data-action="click->book-modal#requestBook" hidden></button>
                         <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        <button type="button" class="book-modal-search book-modal-recommend" data-book-modal-target="recommend" data-action="click->book-modal#moreLikeThis" hidden>More like this</button>
                     </div>
                     <div class="book-modal-content">
                         <h2 class="book-modal-title" id="book-modal-title" data-book-modal-target="title"></h2>

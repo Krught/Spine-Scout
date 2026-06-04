@@ -11,6 +11,7 @@ use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
 use App\Service\BookMetadataService;
+use App\Service\BookRecommendationService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -22,6 +23,7 @@ final class BookMetadataController extends AbstractController
         private readonly BookMetadataService $metadata,
         private readonly BookRepository $books,
         private readonly BookRequestRepository $requests,
+        private readonly BookRecommendationService $recommendations,
     ) {
     }
 
@@ -106,6 +108,9 @@ final class BookMetadataController extends AbstractController
             'downloaded'    => $downloaded,
             'externalUrl'   => $book->getExternalUrl(),
             'fetched'       => $book->getMetadataFetchedAt() !== null,
+            // Internal id to seed "More like this", or null when the book can't be recommended
+            // against (no resolvable Hardcover record). Drives the modal button's visibility.
+            'recommendSeed' => $this->recommendations->recommendSeedRef($book),
         ];
     }
 }

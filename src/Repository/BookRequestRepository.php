@@ -38,6 +38,26 @@ final class BookRequestRepository extends ServiceEntityRepository
         return $rows;
     }
 
+    /**
+     * Most-recently created requests for the homepage shelf, newest first.
+     *
+     * @return list<BookRequest>
+     */
+    public function findRecent(int $limit): array
+    {
+        /** @var list<BookRequest> $rows */
+        $rows = $this->createQueryBuilder('r')
+            ->addSelect('u', 'b')
+            ->leftJoin('r.requestedBy', 'u')
+            ->leftJoin('r.book', 'b')
+            ->orderBy('r.createdAt', 'DESC')
+            ->setMaxResults($limit)
+            ->getQuery()
+            ->getResult();
+
+        return $rows;
+    }
+
     public function findOneByUserAndBook(User $user, Book $book): ?BookRequest
     {
         return $this->findOneBy(['requestedBy' => $user, 'book' => $book]);

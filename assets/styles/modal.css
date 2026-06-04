@@ -132,6 +132,21 @@ body.book-modal-open { overflow: hidden; }
     border-color: var(--accent);
     color: var(--fg);
 }
+/* "More like this" — discovery action, deliberately set apart from the muted Interactive
+   Search button above it and the yellow Get action with its own purple gradient. */
+.book-modal-recommend {
+    border-color: transparent;
+    background: linear-gradient(135deg, #6d4ad6, #9b5de5);
+    color: #ffffff;
+    font-weight: 600;
+}
+.book-modal-recommend:hover {
+    border-color: transparent;
+    background: linear-gradient(135deg, #7d5ae6, #ab6df5);
+    color: #ffffff;
+    filter: brightness(1.08);
+    box-shadow: 0 6px 16px rgba(123, 90, 230, 0.4);
+}
 .book-modal-cover.has-image { background-color: transparent; }
 .author-modal-cover {
     width: 180px;
@@ -165,6 +180,23 @@ body.book-modal-open { overflow: hidden; }
     color: var(--fg-dim);
     font-size: 0.85rem;
     margin-bottom: 0.9rem;
+}
+
+/* Loading state: fake metadata text rendered blurred + pulsing so the modal reads as
+   "content is here, just resolving" rather than empty. Removed in place once the real
+   metadata arrives (book_modal_controller showSkeleton/clearSkeleton). */
+.book-modal-skel {
+    filter: blur(4.5px);
+    user-select: none;
+    pointer-events: none;
+    animation: book-modal-skel-pulse 1.4s ease-in-out infinite;
+}
+@keyframes book-modal-skel-pulse {
+    0%, 100% { opacity: 0.5; }
+    50%      { opacity: 0.8; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .book-modal-skel { animation: none; }
 }
 .book-modal-facts {
     margin: 0 0 1rem;

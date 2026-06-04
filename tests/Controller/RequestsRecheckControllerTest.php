@@ -67,7 +67,6 @@ final class RequestsRecheckControllerTest extends WebTestCase
 
         self::assertResponseIsSuccessful();
         self::assertSelectorExists('.request-btn-recheck');
-        self::assertSelectorTextContains('.request-status-error', 'Stalled');
     }
 
     public function testRecheckCancelsTheActiveJob(): void

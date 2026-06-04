@@ -11,7 +11,7 @@ const COVER_GRADIENTS = [
 
 export default class extends Controller {
     static targets = ['grid', 'sentinel', 'status', 'sort', 'dir', 'dirText', 'rowTitle'];
-    static values = { itemsUrl: String, searchUrl: String };
+    static values = { itemsUrl: String, searchUrl: String, similarUrl: String };
 
     connect() {
         this.resetState();
@@ -21,7 +21,17 @@ export default class extends Controller {
         this.searchQuery = initialQuery && initialQuery.trim() !== '' ? initialQuery.trim() : null;
         const initialType = initialUrl.searchParams.get('type');
         this.searchType = ['title', 'author', 'genre', 'series', 'publisher'].includes(initialType) ? initialType : 'title';
-        if (this.searchQuery) this.applySearchMode();
+        // "More like this" (?like=<seed id>) overrides search: it renders recommendations for a
+        // seed book through this same grid. likeTitle is just a label for the row header.
+        const like = initialUrl.searchParams.get('like');
+        this.similarSeed = like && like.trim() !== '' ? like.trim() : null;
+        this.similarTitle = (initialUrl.searchParams.get('likeTitle') || '').trim();
+        if (this.similarSeed) {
+            this.searchQuery = null;
+            this.applySimilarMode();
+        } else if (this.searchQuery) {
+            this.applySearchMode();
+        }
 
         this.onSearchSubmit = (e) => this.handleSearchSubmit(e);
         window.addEventListener('search:submit', this.onSearchSubmit);
@@ -55,6 +65,7 @@ export default class extends Controller {
         this.loading = false;
         this.totalRendered = 0;
         this.cancelled = false;
+        this.skeletonNodes = null;
     }
 
     currentSort() {
@@ -68,6 +79,7 @@ export default class extends Controller {
     refresh() {
         this.resetState();
         this.gridTarget.innerHTML = '';
+        this.skeletonNodes = null;
         this.statusTarget.textContent = '';
         this.loadMore();
     }
@@ -107,18 +119,24 @@ export default class extends Controller {
         const rawType = event.detail && typeof event.detail.type === 'string' ? event.detail.type : 'title';
         const type = ['title', 'author', 'genre', 'series', 'publisher'].includes(rawType) ? rawType : 'title';
         this.searchType = type;
+        // A search always leaves "More like this" mode.
+        this.similarSeed = null;
         if (query === '') {
             this.searchQuery = null;
             this.applyTrendingMode();
             const url = new URL(window.location.href);
             url.searchParams.delete('q');
             url.searchParams.delete('type');
+            url.searchParams.delete('like');
+            url.searchParams.delete('likeTitle');
             window.history.replaceState(null, '', url.toString());
         } else {
             this.searchQuery = query;
             this.applySearchMode();
             const url = new URL(window.location.href);
             url.searchParams.set('q', query);
+            url.searchParams.delete('like');
+            url.searchParams.delete('likeTitle');
             if (type === 'title') {
                 url.searchParams.delete('type');
             } else {
@@ -128,11 +146,9 @@ export default class extends Controller {
         }
         this.resetState();
         this.gridTarget.innerHTML = '';
-        if (this.searchQuery) {
-            this.statusTarget.innerHTML = '<span class="browse-spinner" aria-hidden="true"></span> Searching…';
-        } else {
-            this.statusTarget.textContent = '';
-        }
+        this.skeletonNodes = null;
+        this.statusTarget.textContent = '';
+        // loadMore() shows placeholder skeleton covers for the empty grid below.
         // Prefetch margin depends on search type (genre uses a larger lookahead).
         this.rebuildObserver();
         this.loadMore();
@@ -170,6 +186,13 @@ export default class extends Controller {
         if (this.hasRowTitleTarget) {
             this.rowTitleTarget.textContent = 'Trending';
         }
+    }
+
+    applySimilarMode() {
+        if (!this.hasRowTitleTarget) return;
+        this.rowTitleTarget.textContent = this.similarTitle
+            ? `More like "${this.similarTitle}"`
+            : 'More like this';
     }
 
     rowHeightPx() {
@@ -211,10 +234,52 @@ export default class extends Controller {
         return Math.max(100, Math.min(240, colCount * viewportRows * 2));
     }
 
+    // How many placeholder covers to append: a viewport's worth (+1 buffer row) for the
+    // initial empty-grid load, or ~2 rows for each infinite-scroll page (a "new row" of
+    // loading covers below the existing content).
+    skeletonCount() {
+        const grid = this.gridTarget;
+        const styles = window.getComputedStyle(grid);
+        const colCount = styles.gridTemplateColumns.split(' ').filter(Boolean).length || 6;
+        if (this.totalRendered > 0) {
+            return colCount * 2;
+        }
+        const rowHeight = (grid.clientWidth / colCount) * 1.5;
+        const rows = Math.max(2, Math.ceil(window.innerHeight / rowHeight)) + 1;
+        return colCount * rows;
+    }
+
+    showSkeletons() {
+        if (this.skeletonNodes && this.skeletonNodes.length) return;
+        const frag = document.createDocumentFragment();
+        const count = this.skeletonCount();
+        for (let i = 0; i < count; i++) {
+            const article = document.createElement('article');
+            article.className = 'card card-skeleton';
+            article.setAttribute('aria-hidden', 'true');
+            const cover = document.createElement('div');
+            cover.className = 'card-cover';
+            article.appendChild(cover);
+            frag.appendChild(article);
+        }
+        this.skeletonNodes = Array.from(frag.children);
+        this.gridTarget.appendChild(frag);
+    }
+
+    clearSkeletons() {
+        if (!this.skeletonNodes) return;
+        for (const node of this.skeletonNodes) node.remove();
+        this.skeletonNodes = null;
+    }
+
     async loadMore() {
         if (this.cancelled || this.loading || !this.hasMore) return;
         this.loading = true;
-        this.statusTarget.textContent = 'Loading…';
+        // Show shiny placeholder covers — a viewport's worth on the first load, a new
+        // row appended at the bottom for each infinite-scroll page. They're removed in
+        // place when the batch arrives (or when has_more is false). Never the old text.
+        this.statusTarget.textContent = '';
+        this.showSkeletons();
 
         const limit = this.pageSize();
         const params = new URLSearchParams({
@@ -223,12 +288,15 @@ export default class extends Controller {
             sort: this.currentSort(),
             dir: this.currentDir(),
         });
-        const isSearch = !!this.searchQuery;
-        if (isSearch) {
+        const isSimilar = !!this.similarSeed;
+        const isSearch = !isSimilar && !!this.searchQuery;
+        if (isSimilar) {
+            params.set('seed', this.similarSeed);
+        } else if (isSearch) {
             params.set('q', this.searchQuery);
             if (this.searchType && this.searchType !== 'title') params.set('type', this.searchType);
         }
-        const baseUrl = isSearch ? this.searchUrlValue : this.itemsUrlValue;
+        const baseUrl = isSimilar ? this.similarUrlValue : (isSearch ? this.searchUrlValue : this.itemsUrlValue);
         const url = `${baseUrl}?${params.toString()}`;
         const requestSort = this.currentSort();
         const requestDir = this.currentDir();
@@ -254,9 +322,11 @@ export default class extends Controller {
             if (this.hasMore) {
                 this.statusTarget.textContent = '';
             } else if (this.totalRendered === 0) {
-                this.statusTarget.textContent = isSearch
-                    ? `No results for "${requestQuery}".`
-                    : 'No trending books available yet.';
+                this.statusTarget.textContent = isSimilar
+                    ? 'No similar books found.'
+                    : (isSearch
+                        ? `No results for "${requestQuery}".`
+                        : 'No trending books available yet.');
             } else {
                 this.statusTarget.textContent = 'End of list.';
             }
@@ -265,6 +335,9 @@ export default class extends Controller {
             this.hasMore = true;
             console.error(err);
         } finally {
+            // Real cards have been appended (or an error/empty state set) — swap out
+            // the placeholder covers in place.
+            this.clearSkeletons();
             this.loading = false;
         }
 
@@ -318,18 +391,21 @@ export default class extends Controller {
         cover.className = 'card-cover';
         cover.style.background = COVER_GRADIENTS[index % COVER_GRADIENTS.length];
 
+        // Title placeholder is always rendered underneath; the cover image sits on top
+        // and removes itself if it fails to load (e.g. a Komga book with no thumbnail),
+        // revealing the gradient + title custom missing-cover.
+        const span = document.createElement('span');
+        span.className = 'card-cover-title';
+        span.textContent = (item.title ?? '').slice(0, 24);
+        cover.appendChild(span);
         if (item.cover_url) {
             const img = document.createElement('img');
             img.className = 'card-cover-img';
             img.loading = 'lazy';
             img.src = item.cover_url;
             img.alt = item.title ?? '';
+            img.addEventListener('error', () => img.remove());
             cover.appendChild(img);
-        } else {
-            const span = document.createElement('span');
-            span.className = 'card-cover-title';
-            span.textContent = (item.title ?? '').slice(0, 24);
-            cover.appendChild(span);
         }
 
         if (item.downloaded) {

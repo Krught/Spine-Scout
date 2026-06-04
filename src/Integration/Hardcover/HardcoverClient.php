@@ -74,6 +74,18 @@ final class HardcoverClient
     /** Cap on genre tags pulled in one shot — Hardcover's Genre vocabulary is well under this. */
     private const GENRE_TAGS_FETCH_LIMIT = 1000;
 
+    /**
+     * "More like this" via community-list co-occurrence — see {@see fetchSimilarBooks()}.
+     * Only curated lists (size MIN..MAX) count: generic mega-shelves ("Owned", "TBR") are
+     * pure noise. LISTS_CAP bounds how many such lists we read; MEMBERS_CAP bounds how many
+     * member rows we tally, so the whole computation stays ~4-6 GraphQL calls.
+     */
+    private const SIMILAR_LIST_SIZE_MIN = 5;
+    private const SIMILAR_LIST_SIZE_MAX = 120;
+    private const SIMILAR_LISTS_CAP     = 300;
+    private const SIMILAR_MEMBER_PAGE   = 2000;
+    private const SIMILAR_MEMBERS_CAP   = 6000;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly CacheItemPoolInterface $cache,
@@ -136,6 +148,188 @@ final class HardcoverClient
                 coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $integration->getHardcoverEditionPreferences()),
+            );
+        }
+        return $out;
+    }
+
+    /**
+     * "More like this": rank books that co-appear in the same curated community lists as the
+     * seed. Hardcover has no native recommendations endpoint, so this is the strongest signal
+     * it exposes. The seed's own series (sequels) are boosted ahead of unrelated co-occurrences.
+     *
+     * Bounded to ~4-6 GraphQL calls regardless of how many lists the seed is in: co-occurrence
+     * is tallied in PHP over a single bulk `_in` members query (paged only because Hasura caps
+     * rows per response), never one call per list.
+     *
+     * @return list<TrendingBook>
+     *
+     * @throws HardcoverException
+     */
+    public function fetchSimilarBooks(Integration $integration, string $slug, int $limit = 60): array
+    {
+        $slug = trim($slug);
+        if ($slug === '') {
+            return [];
+        }
+        $limit = max(1, min(100, $limit));
+
+        // A) Resolve the seed slug → numeric book id (+ its series ids, for the sequel boost).
+        $seedQuery = <<<'GQL'
+            query SpineScoutSimilarSeed($slug: String!) {
+              books(where: {slug: {_eq: $slug}}, limit: 1) {
+                id
+                book_series { series { id } }
+              }
+            }
+            GQL;
+        $seedData = $this->graphql($integration, $seedQuery, ['slug' => $slug]);
+        $seedRows = $seedData['books'] ?? null;
+        if (!is_array($seedRows) || !isset($seedRows[0]['id'])) {
+            return [];
+        }
+        $seedId = (int) $seedRows[0]['id'];
+        $seedSeriesIds = [];
+        foreach ($seedRows[0]['book_series'] ?? [] as $bs) {
+            if (is_array($bs) && isset($bs['series']['id'])) {
+                $seedSeriesIds[(int) $bs['series']['id']] = true;
+            }
+        }
+
+        // B) Curated lists that contain the seed. The books_count window drops generic
+        //    mega-shelves ("Owned", "TBR") — they're noise and would blow the row budget.
+        $listsQuery = <<<'GQL'
+            query SpineScoutSimilarLists($seed: Int!, $min: Int!, $max: Int!, $cap: Int!) {
+              list_books(
+                where: {book_id: {_eq: $seed}, list: {books_count: {_gte: $min, _lte: $max}}}
+                limit: $cap
+              ) { list_id }
+            }
+            GQL;
+        $listsData = $this->graphql($integration, $listsQuery, [
+            'seed' => $seedId,
+            'min'  => self::SIMILAR_LIST_SIZE_MIN,
+            'max'  => self::SIMILAR_LIST_SIZE_MAX,
+            'cap'  => self::SIMILAR_LISTS_CAP,
+        ]);
+        $listRows = $listsData['list_books'] ?? null;
+        if (!is_array($listRows)) {
+            throw new HardcoverException('Unexpected similar payload: missing list_books.');
+        }
+        $listIds = [];
+        foreach ($listRows as $row) {
+            if (is_array($row) && isset($row['list_id'])) {
+                $listIds[(int) $row['list_id']] = true;
+            }
+        }
+        $listIds = array_map('intval', array_keys($listIds));
+        if ($listIds === []) {
+            return [];
+        }
+
+        // C) Pull every member of those lists in bulk (one `_in` query, paged only because
+        //    Hasura caps rows per response) and tally co-occurrence in memory.
+        $membersQuery = <<<'GQL'
+            query SpineScoutSimilarMembers($lists: [Int!]!, $limit: Int!, $offset: Int!) {
+              list_books(
+                where: {list_id: {_in: $lists}}
+                order_by: {id: asc}
+                limit: $limit
+                offset: $offset
+              ) { book_id }
+            }
+            GQL;
+        $counts = [];
+        $offset = 0;
+        while ($offset < self::SIMILAR_MEMBERS_CAP) {
+            $membersData = $this->graphql($integration, $membersQuery, [
+                'lists'  => $listIds,
+                'limit'  => self::SIMILAR_MEMBER_PAGE,
+                'offset' => $offset,
+            ]);
+            $memberRows = $membersData['list_books'] ?? null;
+            if (!is_array($memberRows)) {
+                throw new HardcoverException('Unexpected similar payload: missing list_books members.');
+            }
+            foreach ($memberRows as $row) {
+                if (!is_array($row) || !isset($row['book_id'])) {
+                    continue;
+                }
+                $bid = (int) $row['book_id'];
+                if ($bid === $seedId) {
+                    continue; // the seed never recommends itself
+                }
+                $counts[$bid] = ($counts[$bid] ?? 0) + 1;
+            }
+            if (count($memberRows) < self::SIMILAR_MEMBER_PAGE) {
+                break;
+            }
+            $offset += self::SIMILAR_MEMBER_PAGE;
+        }
+        if ($counts === []) {
+            return [];
+        }
+
+        // Rank by co-occurrence (desc); keep headroom so the sequel boost has candidates to
+        // pull forward without starving the unrelated-but-popular tail.
+        arsort($counts);
+        $topIds = array_slice(array_keys($counts), 0, $limit + 40);
+
+        // D) Hydrate the candidates (reusing BOOKS_FIELDS, plus series ids for the boost).
+        $hydrateQuery = sprintf(<<<'GQL'
+            query SpineScoutSimilarBooks($ids: [Int!]!) {
+              books(where: {id: {_in: $ids}}) {
+                %s
+                book_series { series { id } }
+              }
+            }
+            GQL, self::BOOKS_FIELDS);
+        $booksData = $this->graphql($integration, $hydrateQuery, ['ids' => array_map('intval', $topIds)]);
+        $rows = $booksData['books'] ?? null;
+        if (!is_array($rows)) {
+            throw new HardcoverException('Unexpected similar payload: missing `books`.');
+        }
+        $byId = [];
+        foreach ($rows as $row) {
+            if (is_array($row) && isset($row['id'])) {
+                $byId[(int) $row['id']] = $row;
+            }
+        }
+
+        // Partition while preserving co-occurrence order: sequels (shared series) lead.
+        $sequels = [];
+        $others = [];
+        foreach ($topIds as $bid) {
+            $row = $byId[$bid] ?? null;
+            if ($row === null || empty($row['title'])) {
+                continue;
+            }
+            $isSequel = false;
+            if ($seedSeriesIds !== []) {
+                foreach ($row['book_series'] ?? [] as $bs) {
+                    if (is_array($bs) && isset($bs['series']['id']) && isset($seedSeriesIds[(int) $bs['series']['id']])) {
+                        $isSequel = true;
+                        break;
+                    }
+                }
+            }
+            if ($isSequel) {
+                $sequels[] = $row;
+            } else {
+                $others[] = $row;
+            }
+        }
+        $ordered = array_slice(array_merge($sequels, $others), 0, $limit);
+
+        $prefs = $integration->getHardcoverEditionPreferences();
+        $out = [];
+        foreach ($ordered as $row) {
+            $out[] = new TrendingBook(
+                title: (string) $row['title'],
+                author: $this->extractAuthor($row['cached_contributors'] ?? null),
+                coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
+                externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
+                isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
             );
         }
         return $out;
