@@ -97,8 +97,13 @@ RUN printf '%s\n' \
         'DATABASE_URL=postgresql://app:app@127.0.0.1:5432/app?serverVersion=16&charset=utf8' \
         > .env
 
-# Run the Symfony auto-scripts now that the full source is in place
+# Run the Symfony auto-scripts now that the full source is in place, then compile
+# the AssetMapper output. In prod Symfony does NOT serve /assets/* dynamically, so
+# the fingerprinted files in public/assets/ (+ manifest.json) must be generated at
+# build time or every CSS/JS request 404s. The nginx image copies this public/
+# tree so the served files match the hashes the app renders.
 RUN composer run-script post-install-cmd --no-interaction \
+    && php bin/console asset-map:compile --no-interaction \
     && mkdir -p var/cache var/log var/share \
     && chown -R www-data:www-data var vendor
 

@@ -189,14 +189,12 @@ wires everything up. No source checkout required.
    account and configure your first integration.
 
 > **Scaling downloads:** the `worker` is its own service, so run more of them when
-> your download/search volume grows - `docker compose up -d --scale worker=3`. Each
-> replica is a single lightweight PHP process; the web tier stays at one.
+> your download/search volume grows - `docker compose up -d --scale worker=3`.
 
 > **Upgrading:** bump the image tags (or re-pull `:latest`), then
 > `docker compose pull && docker compose up -d`. Database migrations run
 > automatically on start (the `app` service runs them) - **back up your database
-> first.** Image tags and the release process are documented in
-> [project_documentation/docker-release.md](project_documentation/docker-release.md).
+> first.**
 
 ### Install from source (development)
 

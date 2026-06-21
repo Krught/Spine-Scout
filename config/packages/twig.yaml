@@ -2,7 +2,8 @@ twig:
     file_name_pattern: '*.twig'
     globals:
         app_version: '%app.version%'
-        app_latest_version: '%app.latest_version%'
+        # app_latest_version is provided dynamically by App\Twig\VersionExtension
+        # (resolved live from GitHub releases, cached).
         dev_tools: '@App\Dev\DevTools'
 
 when@test:

@@ -11,11 +11,11 @@ parameters:
     # tag (e.g. "1.2.3") or "nightly" at build time; source checkouts and the dev
     # stack fall back to app.version_fallback below. Bump the fallback when you
     # cut a release so a `git clone` reports the right number too.
-    app.version_fallback: '0.0.6'
+    app.version_fallback: '0.0.1'
     app.version: '%env(default:app.version_fallback:APP_VERSION)%'
-    # The "latest available" value the sidebar status badge compares against; set
-    # by hand for now, so the badge reports up-to-date.
-    app.latest_version: '0.0.6'
+    # GitHub repo (owner/name) the sidebar badge checks for the latest release.
+    # Change this if you fork the project.
+    app.github_repository: 'Krught/Spine-Scout'
 
 services:
     # default configuration for services in *this* file
@@ -57,6 +57,12 @@ services:
         arguments:
             $environment: '%kernel.environment%'
             $projectDir: '%kernel.project_dir%'
+
+    # Sidebar "update available" check: scalar args can't be autowired.
+    App\Service\LatestVersionProvider:
+        arguments:
+            $installedVersion: '%app.version%'
+            $repository: '%app.github_repository%'
 
     # Reuse Doctrine's PDO connection so sessions share the app DB pool instead
     # of opening a second connection. LOCK_TRANSACTIONAL (1) prevents lost

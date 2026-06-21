@@ -76,6 +76,7 @@ jobs:
             latest=auto
 
       - name: Build & push (app)
+        id: build_app
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -93,6 +94,16 @@ jobs:
           cache-to: type=gha,mode=max,scope=app
 
       # ---- web image (nginx) -----------------------------------------------
+      # The web image is built FROM the app image (by digest) so it serves the
+      # exact compiled assets the app renders. github.repository may contain
+      # uppercase, so lowercase it for a valid image reference.
+      - name: Resolve app image reference
+        id: app_ref
+        run: echo "ref=ghcr.io/${REPO,,}-app@${DIGEST}" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ github.repository }}
+          DIGEST: ${{ steps.build_app.outputs.digest }}
+
       - name: Compute tags & labels (web)
         id: meta_web
         uses: docker/metadata-action@v5
@@ -111,11 +122,14 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/nginx/Dockerfile
+          file: docker/nginx/Dockerfile.prod
           platforms: ${{ env.PLATFORMS }}
           push: true
           tags: ${{ steps.meta_web.outputs.tags }}
           labels: ${{ steps.meta_web.outputs.labels }}
+          # Pin to the app image built moments ago so the served assets match.
+          build-args: |
+            APP_IMAGE=${{ steps.app_ref.outputs.ref }}
           provenance: false
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web

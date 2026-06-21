@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+#
+# Production web image. Unlike the dev nginx image (docker/nginx/Dockerfile, which
+# bakes the raw public/ and relies on PHP to serve /assets/* during development),
+# the prod image must serve the COMPILED AssetMapper output as real static files.
+#
+# Those compiled files (public/assets/*-<hash>.css|js + manifest.json) are produced
+# by the app image's `asset-map:compile`, so we copy public/ straight from that
+# image. This guarantees the asset hashes nginx serves match the hashes the app
+# renders in HTML — building them independently could drift and 404.
+#
+# CI (.github/workflows/docker-publish.yml) builds the app image first and passes
+# its digest as APP_IMAGE so this stays pinned to the exact app build in the run.
+ARG APP_IMAGE=ghcr.io/krught/spine-scout-app:latest
+FROM ${APP_IMAGE} AS appsrc
+
+FROM nginx:1.27-alpine
+
+COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
+
+# Compiled Symfony public/ tree (static assets) from the app image.
+COPY --from=appsrc /var/www/html/public /var/www/html/public
