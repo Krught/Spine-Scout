@@ -21,7 +21,6 @@ Spine Scout is early-access and being built in phases. The table below lists onl
 | Area | Status          | Notes                                                                              |
 |--|-----------------|------------------------------------------------------------------------------------|
 | Adding / managing additional users | Partial         | Admin user is created via first-run wizard; multi-user management UI not yet built |
-| Production Docker image | Partial         | Dev compose works; published prod image not yet shipped                            | |
 | External list importers (Goodreads, RSS, CSV) | Not Implemented | Planned                                                                            |
 
 ## 📸 Screenshots
@@ -60,26 +59,156 @@ Spine Scout is early-access and being built in phases. The table below lists onl
 ### Prerequisites
 
 - Docker & Docker Compose
+- A **PostgreSQL** database and (recommended) a **FlareSolverr** instance. You don't
+  need to install these yourself - the Compose file below runs them alongside Spine Scout.
 
-### Installation
+### Install (run the published images)
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Krught/Spine-Scout.git
-   cd spine-scout
+Spine Scout publishes two images to GHCR:
+
+- **`ghcr.io/krught/spine-scout-app`** - the PHP application. It runs as both the
+  `app` (web requests) and the `worker` (background downloads / scheduler)
+  services - same image, different command.
+- **`ghcr.io/krught/spine-scout-web`** - nginx, the HTTP entry point.
+
+You bring a Postgres database and a FlareSolverr container; the Compose file below
+wires everything up. No source checkout required.
+
+1. Create a directory for your deployment and add a **`.env`** file with your
+   parameters (every value Spine Scout reads is set here):
+
+   ```dotenv
+   # .env
+   APP_ENV=prod
+   APP_SECRET=change-me-to-a-long-random-string   # CHANGE ME
+
+   # Host port for the web UI
+   SPINESCOUT_HTTP_PORT=9092
+
+   # Host paths for persistent data
+   SPINESCOUT_COVER_CACHE_DIR=./book-covers
+   SPINESCOUT_DOWNLOAD_DIR=./library
+   SPINESCOUT_DATABASE_DATA_DIR=./application-data
+
+   # PostgreSQL credentials
+   POSTGRES_VERSION=16
+   POSTGRES_DB=spinescout                          # CHANGE ME
+   POSTGRES_USER=spinescout                        # CHANGE ME
+   POSTGRES_PASSWORD=change-me                     # CHANGE ME
+
+   # Max concurrent php-fpm workers
+   PHP_FPM_MAX_CHILDREN=15
    ```
 
-2. Copy the environment template and edit the values you want to change (at minimum the secrets):
-   ```bash
-   cp .env.template .env
+2. Add a **`docker-compose.yaml`** next to it. It pulls the two Spine Scout images
+   plus the Postgres and FlareSolverr services it needs, and reads your `.env`:
+
+   ```yaml
+   services:
+     # PHP application (web requests).
+     app:
+       image: ghcr.io/krught/spine-scout-app:latest   # pin to e.g. :0.0.6 in production
+       environment: &app-env
+         APP_ENV: ${APP_ENV:-prod}
+         APP_SECRET: ${APP_SECRET}
+         DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}?serverVersion=${POSTGRES_VERSION}&charset=utf8
+         MESSENGER_TRANSPORT_DSN: doctrine://default?auto_setup=0
+         PHP_FPM_MAX_CHILDREN: ${PHP_FPM_MAX_CHILDREN:-15}
+       restart: unless-stopped
+       volumes:
+         - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:rw
+         - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
+       depends_on:
+         database:
+           condition: service_healthy
+
+     # nginx front end - the only service that exposes a port.
+     web:
+       image: ghcr.io/krught/spine-scout-web:latest
+       ports:
+         - "${SPINESCOUT_HTTP_PORT:-9092}:80"
+       restart: unless-stopped
+       depends_on:
+         - app
+
+     # Background worker (downloads + scheduler). Same image as `app`, run as the
+     # unprivileged user with the consume command. Scale it with the download
+     # workload: `docker compose up -d --scale worker=3`.
+     worker:
+       image: ghcr.io/krught/spine-scout-app:latest
+       user: www-data
+       command: [php, bin/console, messenger:consume, async, scheduler_default, --time-limit=3600, --memory-limit=192M, -vv]
+       environment:
+         <<: *app-env
+         SPINESCOUT_RUN_MIGRATIONS: "0"   # the app service owns migrations
+       restart: unless-stopped
+       volumes:
+         - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:rw
+         - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
+       depends_on:
+         database:
+           condition: service_healthy
+         app:
+           condition: service_started
+
+     # Required: PostgreSQL database.
+     database:
+       image: postgres:${POSTGRES_VERSION:-16}-alpine
+       environment:
+         POSTGRES_DB: ${POSTGRES_DB}
+         POSTGRES_USER: ${POSTGRES_USER}
+         POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+       healthcheck:
+         test: ["CMD", "pg_isready", "-d", "${POSTGRES_DB}", "-U", "${POSTGRES_USER}"]
+         timeout: 5s
+         retries: 5
+         start_period: 60s
+       restart: unless-stopped
+       volumes:
+         - ${SPINESCOUT_DATABASE_DATA_DIR:-./application-data}:/var/lib/postgresql/data:rw
+
+     # Recommended: Cloudflare-challenge solver used by some download sources.
+     # Spine Scout reaches it at http://flaresolverr:8191 automatically.
+     flaresolverr:
+       image: ghcr.io/flaresolverr/flaresolverr:latest
+       environment:
+         LOG_LEVEL: info
+         CAPTCHA_SOLVER: none
+         TZ: UTC
+       restart: unless-stopped
    ```
 
-3. Start the stack:
+3. Pull and start the stack:
+
    ```bash
+   docker compose pull
    docker compose up -d
    ```
 
-4. Open `http://localhost:9092` and complete the setup wizard to create your admin account and configure your first integration.
+4. Open `http://localhost:9092` and complete the setup wizard to create your admin
+   account and configure your first integration.
+
+> **Scaling downloads:** the `worker` is its own service, so run more of them when
+> your download/search volume grows - `docker compose up -d --scale worker=3`. Each
+> replica is a single lightweight PHP process; the web tier stays at one.
+
+> **Upgrading:** bump the image tags (or re-pull `:latest`), then
+> `docker compose pull && docker compose up -d`. Database migrations run
+> automatically on start (the `app` service runs them) - **back up your database
+> first.** Image tags and the release process are documented in
+> [project_documentation/docker-release.md](project_documentation/docker-release.md).
+
+### Install from source (development)
+
+Prefer to build the images yourself? Clone the repo and use the bundled Compose
+files, which build from `docker/php/Dockerfile` and `docker/nginx/Dockerfile`:
+
+```bash
+git clone https://github.com/Krught/Spine-Scout.git
+cd Spine-Scout
+cp .env.template .env      # edit secrets
+docker compose up -d --build
+```
 
 ### Environment Variables
 

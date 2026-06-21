@@ -1,0 +1,121 @@
+name: Build & publish Docker images
+
+# Publishes the two Spine Scout images to the GitHub Container Registry (GHCR):
+#
+#   ghcr.io/<owner>/spine-scout-app   - PHP-FPM; used by both the `app` and
+#                                       `worker` services (same image, different
+#                                       command). The released version is stamped
+#                                       into it via the APP_VERSION build-arg.
+#   ghcr.io/<owner>/spine-scout-web   - nginx serving public/ and proxying to app.
+#
+# Trigger model (see project_documentation/docker-release.md):
+#   * push to master            -> "nightly" + "sha-<short>"      (rolling dev build)
+#   * push tag  vX.Y.Z          -> "X.Y.Z" "X.Y" "X" "latest"     (release build)
+#   * manual run (dispatch)     -> "sha-<short>" only             (smoke build)
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+# Cancel an in-flight master build when a newer commit is pushed. Tag/release
+# builds get their own concurrency group so they are never cancelled.
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/master' }}
+
+env:
+  REGISTRY: ghcr.io
+  # Build both arches by default. arm64 is emulated via QEMU and roughly doubles
+  # build time; drop it here if you only deploy to amd64 hosts.
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- app image (php-fpm; also runs as the worker service) -------------
+      # metadata-action lowercases the image name, so a "Krught/Spine-Scout"
+      # repo yields ghcr.io/krught/spine-scout-app.
+      - name: Compute tags & labels (app)
+        id: meta_app
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-app
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=nightly,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-,format=short
+          # latest=auto -> "latest" applies to semver tag builds only, never nightly.
+          flavor: |
+            latest=auto
+
+      - name: Build & push (app)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/php/Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta_app.outputs.tags }}
+          labels: ${{ steps.meta_app.outputs.labels }}
+          # Stamp the resolved version (e.g. "1.2.3" on a tag, "nightly" on
+          # master) into the image so the UI version badge matches the deploy.
+          build-args: |
+            APP_VERSION=${{ steps.meta_app.outputs.version }}
+          provenance: false
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      # ---- web image (nginx) -----------------------------------------------
+      - name: Compute tags & labels (web)
+        id: meta_web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-web
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=nightly,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-,format=short
+          flavor: |
+            latest=auto
+
+      - name: Build & push (web)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/nginx/Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta_web.outputs.tags }}
+          labels: ${{ steps.meta_web.outputs.labels }}
+          provenance: false
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web

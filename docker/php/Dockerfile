@@ -70,6 +70,12 @@ COPY --from=vendor /app/vendor ./vendor
 # App source
 COPY . .
 
+# Stamp the build with its version. CI passes the released tag (e.g. "1.2.3") or
+# "nightly"; a plain `docker build` (the dev stack) leaves it at "dev".
+# config/services.yaml reads APP_VERSION at runtime for the UI version badge.
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 # Run the Symfony auto-scripts now that the full source is in place
 ENV APP_ENV=prod
 ENV APP_DEBUG=0

@@ -7,11 +7,15 @@
 # Put parameters here that don't need to change on each machine where the app is deployed
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
 parameters:
-    # Installed app version. Bump on release. The "latest deployed" value below
-    # is what the sidebar status badge compares against; for now both are set
-    # by hand, so the badge always reports up-to-date.
-    app.version: '0.0.5'
-    app.latest_version: '0.0.5'
+    # Installed app version. Published images set APP_VERSION to the released git
+    # tag (e.g. "1.2.3") or "nightly" at build time; source checkouts and the dev
+    # stack fall back to app.version_fallback below. Bump the fallback when you
+    # cut a release so a `git clone` reports the right number too.
+    app.version_fallback: '0.0.6'
+    app.version: '%env(default:app.version_fallback:APP_VERSION)%'
+    # The "latest available" value the sidebar status badge compares against; set
+    # by hand for now, so the badge reports up-to-date.
+    app.latest_version: '0.0.6'
 
 services:
     # default configuration for services in *this* file
