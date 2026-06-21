@@ -3,6 +3,11 @@
 .gitignore
 .idea
 .vscode
+# Never bake developer/local env files (they hold secrets, and the container is
+# configured purely via real environment variables injected by Compose).
+.env
+.env.dev
+.env.test
 .env.local
 .env.*.local
 

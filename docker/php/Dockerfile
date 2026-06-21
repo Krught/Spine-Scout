@@ -76,9 +76,28 @@ COPY . .
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
-# Run the Symfony auto-scripts now that the full source is in place
+# Symfony's Runtime boots the Dotenv component, which requires a .env file to
+# exist (it throws otherwise), and compiling the prod cache below resolves a few
+# env vars (DATABASE_URL, APP_SECRET). Real production configuration is injected
+# as container environment variables by Compose, sourced from the operator's own
+# .env that sits next to their docker-compose.yaml, and ALWAYS takes precedence
+# (Dotenv never overrides existing environment variables). The values below are
+# therefore build-time-only placeholders that let the framework bootstrap and the
+# cache compile; they are overridden at runtime. The developer's local .env is
+# excluded via .dockerignore and is never baked into the image.
 ENV APP_ENV=prod
 ENV APP_DEBUG=0
+RUN printf '%s\n' \
+        'APP_ENV=prod' \
+        'APP_DEBUG=0' \
+        'APP_SHARE_DIR=var/share' \
+        'DEFAULT_URI=http://localhost' \
+        'MESSENGER_TRANSPORT_DSN=doctrine://default?auto_setup=0' \
+        'APP_SECRET=build-time-placeholder-overridden-at-runtime' \
+        'DATABASE_URL=postgresql://app:app@127.0.0.1:5432/app?serverVersion=16&charset=utf8' \
+        > .env
+
+# Run the Symfony auto-scripts now that the full source is in place
 RUN composer run-script post-install-cmd --no-interaction \
     && mkdir -p var/cache var/log var/share \
     && chown -R www-data:www-data var vendor
