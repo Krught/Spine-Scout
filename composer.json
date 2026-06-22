@@ -15,7 +15,9 @@
         "symfony/asset": "8.0.*",
         "symfony/asset-mapper": "8.0.*",
         "symfony/console": "8.0.*",
+        "symfony/css-selector": "8.0.*",
         "symfony/doctrine-messenger": "8.0.*",
+        "symfony/dom-crawler": "8.0.*",
         "symfony/dotenv": "8.0.*",
         "symfony/expression-language": "8.0.*",
         "symfony/flex": "^2",
@@ -100,7 +102,6 @@
     "require-dev": {
         "phpunit/phpunit": "^13.1",
         "symfony/browser-kit": "8.0.*",
-        "symfony/css-selector": "8.0.*",
         "symfony/debug-bundle": "8.0.*",
         "symfony/maker-bundle": "^1.0",
         "symfony/stopwatch": "8.0.*",
