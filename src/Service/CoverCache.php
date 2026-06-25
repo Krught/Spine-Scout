@@ -6,6 +6,9 @@ namespace App\Service;
 
 use App\Entity\Book;
 use App\Entity\Integration;
+use App\Integration\Hardcover\HardcoverClient;
+use App\Integration\Hardcover\HardcoverException;
+use App\Repository\BookRepository;
 use App\Repository\IntegrationRepository;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -31,6 +34,8 @@ final class CoverCache implements BookCoverProvider
         private readonly HttpClientInterface $httpClient,
         private readonly IntegrationRepository $integrations,
         private readonly UrlGeneratorInterface $urls,
+        private readonly BookRepository $books,
+        private readonly HardcoverClient $hardcover,
         private readonly LoggerInterface $logger = new NullLogger(),
     ) {
     }
@@ -87,14 +92,14 @@ final class CoverCache implements BookCoverProvider
             if (!is_string($url) || $url === '') { continue; }
             $queued++;
             $hash = $this->hashFor(self::KIND_REMOTE, $url);
-            if (is_file($this->imagePath($hash))) { $skipped++; continue; }
+            if ($this->imageReady($hash)) { $skipped++; continue; }
             $this->warmRemote($url) ? $warmed++ : $failed++;
         }
         foreach ($komgaIds as $id) {
             if (!is_string($id) || $id === '') { continue; }
             $queued++;
             $hash = $this->hashFor(self::KIND_KOMGA, $id);
-            if (is_file($this->imagePath($hash))) { $skipped++; continue; }
+            if ($this->imageReady($hash)) { $skipped++; continue; }
             $this->warmKomga($id) ? $warmed++ : $failed++;
         }
         return ['queued' => $queued, 'warmed' => $warmed, 'skipped' => $skipped, 'failed' => $failed];
@@ -186,15 +191,36 @@ final class CoverCache implements BookCoverProvider
     {
         $hash = $this->hashFor($kind, $key);
         $this->writeMetaIfMissing($hash, $meta);
-        $imagePath = $this->imagePath($hash);
-        if (is_file($imagePath) && filesize($imagePath) > 0) {
+        if ($this->imageReady($hash)) {
             return true;
         }
-        if ($this->fetch($meta, $imagePath)) {
+        if ($this->fetch($meta, $this->imagePath($hash))) {
             return true;
         }
         $this->logger->info('Cover warm failed', ['kind' => $kind, 'key' => $key]);
         return false;
+    }
+
+    /**
+     * A cached image is "ready" when it is present, non-empty, and — for Komga covers,
+     * whose ids are reassigned by library resets — still belongs to the book that owns
+     * its external id. A stale Komga cover is deleted here so callers re-fetch it.
+     * Identity is checked against the on-disk sidecar (the source of truth for the
+     * `fp` stamp), not any caller-supplied meta.
+     */
+    private function imageReady(string $hash): bool
+    {
+        $imagePath = $this->imagePath($hash);
+        if (!is_file($imagePath) || filesize($imagePath) <= 0) {
+            return false;
+        }
+        $meta = $this->readMeta($hash);
+        if ($meta !== null && ($meta['kind'] ?? null) === self::KIND_KOMGA && !$this->komgaCacheStillValid($meta)) {
+            @unlink($imagePath);
+            $this->logger->info('Dropped stale Komga cover', ['id' => $meta['id'] ?? null]);
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -209,7 +235,9 @@ final class CoverCache implements BookCoverProvider
             return null;
         }
         $imagePath = $this->imagePath($hash);
-        if (is_file($imagePath) && filesize($imagePath) > 0) {
+        // imageReady() drops a Komga cover that a library reset has reassigned to a
+        // different book, so the chain below re-resolves it to the correct cover.
+        if ($this->imageReady($hash)) {
             return ['path' => $imagePath, 'contentType' => 'image/webp'];
         }
         $meta = $this->readMeta($hash);
@@ -220,6 +248,61 @@ final class CoverCache implements BookCoverProvider
             return null;
         }
         return ['path' => $imagePath, 'contentType' => 'image/webp'];
+    }
+
+    /**
+     * True only when the cached Komga cover carries an identity stamp matching the book
+     * that currently owns its external id. A missing stamp (legacy entry, pre-dating this
+     * check) or a mismatch (id reassigned by a library reset) is treated as stale.
+     *
+     * @param array{kind: string, url?: string, id?: string, fp?: string} $meta
+     */
+    private function komgaCacheStillValid(array $meta): bool
+    {
+        $id = $meta['id'] ?? null;
+        if (!is_string($id) || $id === '') {
+            return false;
+        }
+        $current = $this->komgaIdentity($id);
+        $stamped = $meta['fp'] ?? null;
+        return is_string($stamped) && $stamped !== '' && $stamped === $current;
+    }
+
+    /**
+     * Identity fingerprint of the book our sync currently has at this Komga id — the second
+     * factor that, together with the Komga id, must match a cached cover for us to trust it.
+     * ISBN when known (stable across reindexes), else normalized title+author. The DB is the
+     * minute-fresh local mirror of Komga, so comparing against it is the "ISBN + Komga id still
+     * agree" check without a per-request upstream call.
+     */
+    private function komgaIdentity(string $externalId): ?string
+    {
+        $book = $this->books->findOneBySourceAndExternalId(Book::SOURCE_GRIMMORY, $externalId);
+        if ($book === null) {
+            return null;
+        }
+        $isbn = BookRepository::normalizeIsbn($book->getIsbn());
+        if ($isbn !== null) {
+            return 'isbn:' . $isbn;
+        }
+        $titleAuthor = BookRepository::normalizeTitleAuthor($book->getTitle(), $book->getAuthor());
+        return $titleAuthor !== null ? 'ta:' . $titleAuthor : null;
+    }
+
+    /** Re-write a Komga sidecar with the current identity stamp after a fresh fetch. */
+    private function stampKomgaMeta(string $externalId): void
+    {
+        $meta = ['kind' => self::KIND_KOMGA, 'id' => $externalId];
+        $fp = $this->komgaIdentity($externalId);
+        if ($fp !== null) {
+            $meta['fp'] = $fp;
+        }
+        $hash = $this->hashFor(self::KIND_KOMGA, $externalId);
+        $metaPath = $this->metaPath($hash);
+        $this->ensureDir(\dirname($metaPath));
+        // A failed sidecar write must never break cover serving — the worst case is the
+        // entry re-resolves next time rather than serving from a validated cache hit.
+        @file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_SLASHES) ?: '');
     }
 
     private function hashFor(string $kind, string $key): string
@@ -235,7 +318,7 @@ final class CoverCache implements BookCoverProvider
             return;
         }
         $this->ensureDir(\dirname($metaPath));
-        file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_SLASHES) ?: '');
+        @file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_SLASHES) ?: '');
     }
 
     /** @return array{kind: string, url?: string, id?: string}|null */
@@ -253,8 +336,70 @@ final class CoverCache implements BookCoverProvider
         return is_array($decoded) && isset($decoded['kind']) ? $decoded : null;
     }
 
-    /** @param array{kind: string, url?: string, id?: string} $meta */
+    /**
+     * Resolve a cover to disk. For Komga (Grimmory) covers the live thumbnail is tried first;
+     * on failure we re-pull from Hardcover keyed by the book's ISBN. A genuine miss leaves no
+     * file, so the proxy 404s and the UI shows its colour+text placeholder. We never reuse a
+     * cover cached under a *different* Komga id — index numbers are reassigned by reindexes/
+     * resets, so a same-title cache can belong to an unrelated book.
+     *
+     * @param array{kind: string, url?: string, id?: string} $meta
+     */
     private function fetch(array $meta, string $destination): bool
+    {
+        $isKomga = ($meta['kind'] ?? null) === self::KIND_KOMGA && !empty($meta['id']) && is_string($meta['id']);
+
+        $ok = $this->fetchLive($meta, $destination);
+        if (!$ok && $isKomga) {
+            $ok = $this->komgaCoverFallback($meta['id'], $destination);
+        }
+        if ($ok && $isKomga) {
+            // Stamp the entry with the book's current identity so a later reindex that reassigns
+            // this id is detected (stamp no longer matches) and the now-wrong cover is dropped.
+            $this->stampKomgaMeta($meta['id']);
+        }
+        return $ok;
+    }
+
+    /**
+     * Komga cover fallback: re-pull from Hardcover by the book's ISBN. The image is fetched
+     * for this exact book, so the cover is attributable — unlike reusing a file cached under
+     * some other (possibly reassigned) Komga id.
+     */
+    private function komgaCoverFallback(string $externalId, string $destination): bool
+    {
+        $book = $this->books->findOneBySourceAndExternalId(Book::SOURCE_GRIMMORY, $externalId);
+        if ($book === null) {
+            return false;
+        }
+        $isbn = $book->getIsbn();
+        return $isbn !== null && $this->fetchCoverFromHardcover($isbn, $destination);
+    }
+
+    /** Re-pull a cover from Hardcover keyed by ISBN and cache it under $destination. */
+    private function fetchCoverFromHardcover(string $isbn, string $destination): bool
+    {
+        $integration = $this->integrations->findByKind(Integration::KIND_HARDCOVER);
+        if ($integration === null || !$integration->isEnabled()) {
+            return false;
+        }
+        try {
+            $url = $this->hardcover->fetchCoverUrlByIsbn($integration, $isbn);
+        } catch (HardcoverException) {
+            return false;
+        }
+        if ($url === null) {
+            return false;
+        }
+        if ($this->fetchLive(['kind' => self::KIND_REMOTE, 'url' => $url], $destination)) {
+            $this->logger->info('Cover re-pulled from Hardcover by ISBN', ['isbn' => $isbn]);
+            return true;
+        }
+        return false;
+    }
+
+    /** @param array{kind: string, url?: string, id?: string} $meta */
+    private function fetchLive(array $meta, string $destination): bool
     {
         try {
             [$url, $auth] = $this->resolveUpstream($meta);

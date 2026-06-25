@@ -880,6 +880,48 @@ final class HardcoverClient
     }
 
     /**
+     * Look up a cover image URL by ISBN (10 or 13). Used as a last-resort fallback when a
+     * Grimmory book's own thumbnail is unavailable but we know its ISBN — Hardcover is the
+     * same metadata provider the rest of the app leans on. Returns null when no edition
+     * matches or the matched book has no cached image.
+     *
+     * @throws HardcoverException
+     */
+    public function fetchCoverUrlByIsbn(Integration $integration, string $isbn): ?string
+    {
+        $isbn = trim($isbn);
+        if ($isbn === '') {
+            return null;
+        }
+        $query = <<<'GQL'
+            query SpineScoutCoverByIsbn($isbn: String!) {
+              editions(
+                where: {_or: [{isbn_10: {_eq: $isbn}}, {isbn_13: {_eq: $isbn}}]}
+                order_by: {users_count: desc_nulls_last}
+                limit: 10
+              ) {
+                book { cached_image }
+              }
+            }
+            GQL;
+        $data = $this->graphql($integration, $query, ['isbn' => $isbn]);
+        $rows = $data['editions'] ?? null;
+        if (!is_array($rows)) {
+            return null;
+        }
+        foreach ($rows as $row) {
+            if (!is_array($row) || !is_array($row['book'] ?? null)) {
+                continue;
+            }
+            $url = $this->extractCoverUrl($row['book']['cached_image'] ?? null);
+            if ($url !== null) {
+                return $url;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Includes top Book-type contributions so the popup can show a "selected works" list inline.
      *
      * @return array{
