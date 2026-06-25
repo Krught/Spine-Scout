@@ -14,6 +14,7 @@ use App\Entity\Book;
 use App\Entity\DownloadJob;
 use App\Message\ProcessDownloadJob;
 use App\Repository\BookRepository;
+use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\DirectDownload\DirectDownloadCascade;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\DirectDownload\DownloadAttempt;
@@ -80,6 +81,7 @@ final class ProcessDownloadJobHandler
         $picked = null;
         $lastError = 'no source/mirror/item produced a downloadable file';
         $attemptNo = 0;
+        $policy = $this->settings->getBestMatchPolicy();
 
         foreach ($this->cascade->attempts($plan, $subject) as $attempt) {
             ++$attemptNo;
@@ -92,6 +94,19 @@ final class ProcessDownloadJobHandler
             $label = $this->attemptLabel($attempt, $attemptNo);
             $staged = $this->tryLinks($client, $attempt->links, $subject, $label, $lastError);
             if ($staged !== null) {
+                // Final safety net: the file we just downloaded must be an allowed
+                // format. Otherwise delete it (an invalid filetype must never land in
+                // the library) and keep walking the cascade for a valid candidate.
+                if (!$this->formatAllowed($attempt->item->format, $policy)) {
+                    @unlink($staged);
+                    $staged = null;
+                    $lastError = sprintf(
+                        "Downloaded file format '%s' is not in the format priority list.",
+                        $attempt->item->format ?? '?',
+                    );
+                    $this->log->info($lastError . ' Deleted; trying next candidate.', $subject);
+                    continue;
+                }
                 $picked = $attempt;
                 break;
             }
@@ -278,5 +293,19 @@ final class ProcessDownloadJobHandler
     private function baseName(DownloadJob $job): string
     {
         return $job->getBookRequest()?->getBook()->getTitle() ?? $job->getSourceId();
+    }
+
+    /**
+     * A downloaded file's format must be in the policy's format-priority allow-list.
+     * An empty list means "no preference / allow all", matching BestMatchSelector.
+     */
+    private function formatAllowed(?string $format, BestMatchPolicy $policy): bool
+    {
+        if ($policy->formatPriority === []) {
+            return true;
+        }
+
+        return $format !== null
+            && in_array(strtolower($format), array_map('strtolower', $policy->formatPriority), true);
     }
 }

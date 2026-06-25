@@ -507,7 +507,6 @@ final class SettingsController extends AbstractController
     {
         $req = $request->request;
         return [
-            'allowedFormats'   => $this->splitCsv((string) $req->get('allowedFormats', '')),
             'formatPriority'   => $this->decodeJsonField($request, 'formatPriority') ?? [],
             'tieBreakers'      => $this->decodeJsonField($request, 'tieBreakers') ?? [],
             'minSizeBytes'     => $req->get('minSizeBytes') === '' ? null : $req->get('minSizeBytes'),
@@ -519,12 +518,4 @@ final class SettingsController extends AbstractController
         ];
     }
 
-    /**
-     * @return list<string>
-     */
-    private function splitCsv(string $raw): array
-    {
-        $parts = array_map('trim', explode(',', $raw));
-        return array_values(array_filter($parts, static fn (string $v) => $v !== ''));
-    }
 }

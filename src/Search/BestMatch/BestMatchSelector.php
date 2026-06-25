@@ -11,7 +11,7 @@ use App\Search\Source\ReleaseCandidate;
  * best-matching candidate (or null if nothing qualifies).
  *
  * Algorithm:
- *   1. Apply hard gates (allowed formats, min/max size, min seeders, ISBN match).
+ *   1. Apply hard gates (format priority allow-list, min/max size, min seeders, ISBN match).
  *   2. Order survivors by language-priority, then format-priority, then
  *      source-priority (lowest-index hit first), then the configured tie-breaker
  *      chain, stable on original order.
@@ -82,8 +82,8 @@ final class BestMatchSelector
 
     private function passesGates(ReleaseCandidate $c, BestMatchPolicy $policy, bool $isbnMatched): bool
     {
-        if ($policy->allowedFormats !== []) {
-            if ($c->format === null || !in_array(strtolower($c->format), array_map('strtolower', $policy->allowedFormats), true)) {
+        if ($policy->formatPriority !== []) {
+            if ($c->format === null || !in_array(strtolower($c->format), array_map('strtolower', $policy->formatPriority), true)) {
                 return false;
             }
         }

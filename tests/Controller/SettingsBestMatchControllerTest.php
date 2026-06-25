@@ -47,7 +47,6 @@ final class SettingsBestMatchControllerTest extends WebTestCase
         $token = $this->fetchCsrfToken('/settings/best-match');
         $this->client->request('POST', '/settings/best-match', [
             '_token'           => $token,
-            'allowedFormats'   => 'epub, pdf',
             'formatPriority'   => json_encode(['epub', 'azw3']),
             'sourcePriority'   => json_encode([]),
             'tieBreakers'      => json_encode([BestMatchPolicy::TIE_MOST_SEEDERS]),
@@ -62,7 +61,6 @@ final class SettingsBestMatchControllerTest extends WebTestCase
 
         $this->em->clear();
         $policy = $this->integrations->getBestMatchPolicy();
-        self::assertSame(['epub', 'pdf'], $policy->allowedFormats);
         self::assertSame(['epub', 'azw3'], $policy->formatPriority);
         self::assertSame([BestMatchPolicy::TIE_MOST_SEEDERS], $policy->tieBreakers);
         self::assertSame(12345, $policy->minSizeBytes);

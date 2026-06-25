@@ -28,14 +28,12 @@ final class BestMatchPolicy
     ];
 
     /**
-     * @param list<string> $allowedFormats     Empty = allow all
-     * @param list<string> $formatPriority     Empty = no format preference
+     * @param list<string> $formatPriority     Allow-list AND preference order. Empty = allow all
      * @param list<string> $sourcePriority     Empty = treat all sources equally
      * @param list<string> $tieBreakers        Empty = stable (first-found) ordering
      * @param list<string> $languagePriority   Empty = no language preference
      */
     public function __construct(
-        public readonly array $allowedFormats = [],
         public readonly array $formatPriority = ['epub', 'mobi', 'azw3', 'pdf', 'cbz', 'cbr'],
         public readonly array $sourcePriority = [],
         public readonly array $tieBreakers = [
@@ -67,7 +65,6 @@ final class BestMatchPolicy
         }
         $def = self::default();
         return new self(
-            allowedFormats:   self::coerceStringList($raw['allowedFormats']   ?? null),
             formatPriority:   self::coerceStringList($raw['formatPriority']   ?? null) ?: $def->formatPriority,
             sourcePriority:   self::coerceStringList($raw['sourcePriority']   ?? null),
             tieBreakers:      self::filterValues(
@@ -87,7 +84,6 @@ final class BestMatchPolicy
     public function toArray(): array
     {
         return [
-            'allowedFormats'   => $this->allowedFormats,
             'formatPriority'   => $this->formatPriority,
             'sourcePriority'   => $this->sourcePriority,
             'tieBreakers'      => $this->tieBreakers,

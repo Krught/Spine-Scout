@@ -23,16 +23,26 @@ final class BestMatchSelectorTest extends TestCase
         self::assertNull($this->selector->pick([], BestMatchPolicy::default()));
     }
 
-    public function testAllowedFormatsActsAsHardGate(): void
+    public function testFormatPriorityActsAsHardGate(): void
     {
         $candidates = [
             $this->candidate('a', format: 'pdf'),
             $this->candidate('b', format: 'epub'),
         ];
-        $policy = new BestMatchPolicy(allowedFormats: ['epub']);
+        $policy = new BestMatchPolicy(formatPriority: ['epub']);
         $pick = $this->selector->pick($candidates, $policy);
         self::assertNotNull($pick);
         self::assertSame('b', $pick->sourceId);
+    }
+
+    public function testFormatPriorityRejectsFormatsNotInList(): void
+    {
+        $candidates = [
+            $this->candidate('raw', format: 'raw'),
+            $this->candidate('unknown', format: null),
+        ];
+        // Default policy lists epub/mobi/azw3/pdf/cbz/cbr — neither candidate qualifies.
+        self::assertNull($this->selector->pick($candidates, BestMatchPolicy::default()));
     }
 
     public function testFormatPriorityPicksBetterFormatOverBetterTieBreaker(): void
@@ -188,8 +198,7 @@ final class BestMatchSelectorTest extends TestCase
     public function testPolicyRoundtripsThroughArray(): void
     {
         $original = new BestMatchPolicy(
-            allowedFormats: ['epub', 'pdf'],
-            formatPriority: ['epub'],
+            formatPriority: ['epub', 'pdf'],
             sourcePriority: ['source_a'],
             tieBreakers: [BestMatchPolicy::TIE_MOST_SEEDERS, BestMatchPolicy::TIE_LARGEST_SIZE],
             minSizeBytes: 10_000,
@@ -247,7 +256,7 @@ final class BestMatchSelectorTest extends TestCase
             $this->candidate('pdf', format: 'pdf'),
             $this->candidate('epub', format: 'epub'),
         ];
-        $ranked = $this->selector->rank($candidates, new BestMatchPolicy(allowedFormats: ['epub']));
+        $ranked = $this->selector->rank($candidates, new BestMatchPolicy(formatPriority: ['epub']));
 
         self::assertSame(['epub'], array_map(static fn ($c) => $c->sourceId, $ranked));
     }

@@ -16,16 +16,10 @@
         <fieldset class="settings-fieldset">
             <legend>Format preference</legend>
             <p class="form-note">
-                Hard filter (top) decides whether a candidate is eligible at all.
-                Priority order (bottom) decides which eligible format wins when multiple qualify.
+                This list is both the allow-list and the preference order: a format must
+                appear here to be eligible at all, and the highest-listed eligible format wins.
+                Leave empty to allow every format.
             </p>
-
-            <div class="field">
-                <label for="allowedFormats">Allowed formats (comma-separated, blank = allow all)</label>
-                <input id="allowedFormats" name="allowedFormats" type="text"
-                       value="{{ policy.allowedFormats|join(', ') }}"
-                       placeholder="epub, mobi, azw3, pdf">
-            </div>
 
             <div class="field"
                  data-controller="orderable-list"
@@ -39,7 +33,7 @@
                     <button type="button" data-action="click->orderable-list#add">Add</button>
                 </div>
                 <input type="hidden" name="formatPriority" data-orderable-list-target="hidden">
-                <p class="form-note">Drag to reorder. First format that appears in the results wins.</p>
+                <p class="form-note">Drag to reorder — first match wins. Formats not in this list are never downloaded.</p>
             </div>
         </fieldset>
 

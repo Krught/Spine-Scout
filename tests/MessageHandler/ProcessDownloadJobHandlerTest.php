@@ -80,6 +80,25 @@ final class ProcessDownloadJobHandlerTest extends TestCase
         self::assertSame('hash123', $job->getSourceId());
     }
 
+    public function testFormatNotInPriorityListIsNeverDownloaded(): void
+    {
+        // The source reports an odd format ('raw') that isn't in the policy's
+        // format-priority allow-list. It must be filtered before download — no file
+        // should ever land in the library — and the job errored.
+        $http = new MockHttpClient([new MockResponse('BOOKBYTES')]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+        $outDir = $this->root . '/library';
+
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+
+        $handler = $this->handler([$client], $outDir, ['https://m.test/ok'], format: 'raw');
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_ERROR, $job->getStatus());
+        self::assertNull($job->getFilePath());
+        self::assertFalse(is_dir($outDir) && (scandir($outDir) ?: []) !== ['.', '..'], 'No file should be written to the library.');
+    }
+
     public function testAllLinksFailingMarksJobError(): void
     {
         $http = new MockHttpClient([
