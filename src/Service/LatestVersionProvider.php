@@ -33,6 +33,63 @@ final class LatestVersionProvider
     ) {
     }
 
+    /**
+     * Classifies the installed build and decides whether a newer stable release
+     * is available, so the sidebar badge can render the right state instead of a
+     * naive string compare.
+     *
+     * The installed version takes one of three shapes:
+     *   - "dev" (or anything unrecognised) -> a local/source build; no version
+     *     number, never "update available".
+     *   - "X.Y.ZN" -> a nightly stamped by CI with the latest release it was
+     *     built on top of; "update available" once a stable release > X.Y.Z ships.
+     *   - "X.Y.Z" -> a tagged release; "update available" once a higher stable
+     *     release exists.
+     *
+     * @return array{channel: 'dev'|'nightly'|'release', display: ?string, latest: string, updateAvailable: bool}
+     */
+    public function getStatus(): array
+    {
+        $installed = $this->installedVersion;
+        $latest = $this->getLatestVersion();
+
+        // Nightly: "X.Y.ZN" carries its base release; legacy "nightly" has none.
+        if (preg_match('/^(\d+\.\d+\.\d+)N$/', $installed, $m)) {
+            return [
+                'channel' => 'nightly',
+                'display' => $installed,
+                'latest' => $latest,
+                'updateAvailable' => version_compare($latest, $m[1], '>'),
+            ];
+        }
+        if ('nightly' === $installed) {
+            return [
+                'channel' => 'nightly',
+                'display' => 'nightly',
+                'latest' => $latest,
+                'updateAvailable' => false,
+            ];
+        }
+
+        // Release: a plain semver tag.
+        if (preg_match('/^v?(\d+\.\d+\.\d+)$/', $installed, $m)) {
+            return [
+                'channel' => 'release',
+                'display' => $m[1],
+                'latest' => $latest,
+                'updateAvailable' => version_compare($latest, $m[1], '>'),
+            ];
+        }
+
+        // Anything else ("dev" or an unrecognised stamp) is a dev build.
+        return [
+            'channel' => 'dev',
+            'display' => null,
+            'latest' => $latest,
+            'updateAvailable' => false,
+        ];
+    }
+
     public function getLatestVersion(): string
     {
         return $this->cache->get(self::CACHE_KEY, function (ItemInterface $item): string {

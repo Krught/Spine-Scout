@@ -77,21 +77,28 @@
                 </nav>
 
                 <div class="sidebar-footer">
-                    {% set version_up_to_date = app_version == app_latest_version %}
-                    <div class="version-badge{% if version_up_to_date %} version-badge-ok{% else %} version-badge-stale{% endif %}"
-                         title="Installed {{ app_version }} · latest {{ app_latest_version }}">
-                        {% if version_up_to_date %}
-                            <span class="version-check" aria-hidden="true">
-                                <svg viewBox="0 0 24 24" width="12" height="12" focusable="false">
-                                    <path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                                </svg>
-                            </span>
-                            <span class="version-label">Up to date</span>
-                        {% else %}
-                            <span class="version-label">Update available</span>
-                        {% endif %}
-                        <span class="version-number">v{{ app_version }}</span>
-                    </div>
+                    {% set v = app_version_status %}
+                    {% if v.channel == 'dev' %}
+                        <div class="version-badge version-badge-dev" title="Development build">
+                            <span class="version-label">Development</span>
+                        </div>
+                    {% else %}
+                        {% set number = v.channel == 'release' ? 'v' ~ v.display : v.display %}
+                        <div class="version-badge{% if v.updateAvailable %} version-badge-stale{% else %} version-badge-ok{% endif %}"
+                             title="{% if v.channel == 'nightly' %}Nightly {{ v.display }}{% else %}Installed {{ v.display }}{% endif %} · latest {{ v.latest }}">
+                            {% if v.updateAvailable %}
+                                <span class="version-label">Update available</span>
+                            {% else %}
+                                <span class="version-check" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="12" height="12" focusable="false">
+                                        <path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </span>
+                                <span class="version-label">Up to date</span>
+                            {% endif %}
+                            <span class="version-number">{{ number }}</span>
+                        </div>
+                    {% endif %}
                 </div>
             </aside>
 

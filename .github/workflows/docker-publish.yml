@@ -43,6 +43,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Fetch all tags so the nightly step can resolve the latest release.
+          fetch-depth: 0
 
       - name: Set up QEMU (multi-arch emulation)
         uses: docker/setup-qemu-action@v3
@@ -75,6 +78,19 @@ jobs:
           flavor: |
             latest=auto
 
+      # On master, stamp the nightly with the latest *released* version + an "N"
+      # suffix (e.g. "0.0.7N") instead of the literal "nightly", so the badge can
+      # show the base release and only flag "update available" once a newer stable
+      # release ships. Skipped on tag/dispatch builds (output empty -> falls
+      # through to the metadata version below).
+      - name: Resolve nightly version (master only)
+        if: github.ref == 'refs/heads/master'
+        id: nightly
+        run: |
+          latest=$(git tag -l 'v*.*.*' --sort=-v:refname | head -n1)
+          latest=${latest#v}
+          echo "version=${latest:-0.0.0}N" >> "$GITHUB_OUTPUT"
+
       - name: Build & push (app)
         id: build_app
         uses: docker/build-push-action@v6
@@ -85,10 +101,11 @@ jobs:
           push: true
           tags: ${{ steps.meta_app.outputs.tags }}
           labels: ${{ steps.meta_app.outputs.labels }}
-          # Stamp the resolved version (e.g. "1.2.3" on a tag, "nightly" on
-          # master) into the image so the UI version badge matches the deploy.
+          # Stamp the resolved version into the image so the UI version badge
+          # matches the deploy: the nightly stamp (e.g. "0.0.7N") on master, else
+          # the metadata version ("1.2.3" on a tag, "sha-…" on dispatch).
           build-args: |
-            APP_VERSION=${{ steps.meta_app.outputs.version }}
+            APP_VERSION=${{ steps.nightly.outputs.version || steps.meta_app.outputs.version }}
           provenance: false
           cache-from: type=gha,scope=app
           cache-to: type=gha,mode=max,scope=app

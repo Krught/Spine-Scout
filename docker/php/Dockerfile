@@ -70,8 +70,9 @@ COPY --from=vendor /app/vendor ./vendor
 # App source
 COPY . .
 
-# Stamp the build with its version. CI passes the released tag (e.g. "1.2.3") or
-# "nightly"; a plain `docker build` (the dev stack) leaves it at "dev".
+# Stamp the build with its version. CI passes the released tag (e.g. "1.2.3"), a
+# nightly stamp ("1.2.3N" - the latest release the nightly was built on), or a
+# "sha-…"; a plain `docker build` (the dev stack) leaves it at "dev".
 # config/services.yaml reads APP_VERSION at runtime for the UI version badge.
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}

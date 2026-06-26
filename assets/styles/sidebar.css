@@ -111,6 +111,11 @@
     border-color: rgba(240, 180, 41, 0.55);
     background: rgba(240, 180, 41, 0.12);
 }
+.version-badge-dev {
+    color: var(--fg);
+    border-color: var(--border);
+    background: var(--bg-elev);
+}
 .version-check {
     display: inline-flex;
     align-items: center;
