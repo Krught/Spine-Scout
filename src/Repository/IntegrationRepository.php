@@ -6,6 +6,7 @@ namespace App\Repository;
 
 use App\Entity\Integration;
 use App\Mirror\MirrorListNormalizer;
+use App\Download\Client\TorrentClientSettings;
 use App\Download\Torrent\TorrentClientConfig;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\DirectDownload\DirectDownloadConfig;
@@ -19,7 +20,7 @@ use Doctrine\Persistence\ManagerRegistry;
 /**
  * @extends ServiceEntityRepository<Integration>
  */
-final class IntegrationRepository extends ServiceEntityRepository implements SearchSettingsProvider, AppSettingsProvider
+final class IntegrationRepository extends ServiceEntityRepository implements SearchSettingsProvider, AppSettingsProvider, TorrentClientSettings
 {
     public function __construct(
         ManagerRegistry $registry,
@@ -36,6 +37,11 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
     public function getOrCreate(string $kind): Integration
     {
         return $this->findByKind($kind) ?? new Integration($kind);
+    }
+
+    public function qbittorrentIntegration(): ?Integration
+    {
+        return $this->findByKind(Integration::KIND_QBITTORRENT);
     }
 
     // -- app (General tab) ------------------------------------------------------
