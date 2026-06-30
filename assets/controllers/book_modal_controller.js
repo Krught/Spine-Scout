@@ -14,6 +14,8 @@ export default class extends Controller {
         this.seedMode = 'book';
         this.audiobookAvailable = false;
         this.bookData = null;
+        // One async narrator/runtime backfill per opened book — see maybeFetchAudio().
+        this.audioBackfillTried = false;
     }
 
     async open(event) {
@@ -53,6 +55,7 @@ export default class extends Controller {
         // (clicking from the Audiobook listing opens straight to the audiobook view).
         this.modes = null;
         this.bookData = null;
+        this.audioBackfillTried = false;
         this.audiobookAvailable = params.bookModalAudiobookParam === '1';
         const openMode = (this.audiobookAvailable && params.bookModalModeParam === 'audiobook') ? 'audiobook' : 'book';
         this.currentMode = openMode;
@@ -209,6 +212,51 @@ export default class extends Controller {
         this.applyMode(mode);
         // Facts differ by mode (audiobook shows Narrator + Audio length instead of Publisher/Published).
         if (this.bookData) this.renderFacts();
+        // Switching onto the audiobook tab is the trigger to lazily backfill narrator/runtime.
+        if (mode === 'audiobook') this.maybeFetchAudio();
+    }
+
+    // Async narrator/runtime backfill. The modal opens instantly on cached data; this fires only
+    // while the user is on the audiobook tab and the values aren't cached yet, then patches the
+    // facts in place — but only if the user is still looking at this book's audiobook tab when it
+    // resolves. The cached data otherwise stands; failures are silent.
+    async maybeFetchAudio() {
+        if (this.currentMode !== 'audiobook' || !this.audiobookAvailable || this.audioBackfillTried) return;
+        const b = this.bookData;
+        if (!b) return;
+        if (b.narrator && typeof b.audioSeconds === 'number' && b.audioSeconds > 0) return;
+
+        const query = new URLSearchParams();
+        if (this.currentBookId !== null) {
+            query.set('id', String(this.currentBookId));
+        } else if (this.currentSeed && this.currentSeed.source && this.currentSeed.externalId) {
+            query.set('source', this.currentSeed.source);
+            query.set('externalId', this.currentSeed.externalId);
+        } else {
+            return;
+        }
+        this.audioBackfillTried = true;
+
+        const seq = this.requestSeq;
+        try {
+            const res = await fetch(`/books/metadata/audio?${query.toString()}`, {
+                headers: { Accept: 'application/json' },
+                credentials: 'same-origin',
+            });
+            if (seq !== this.requestSeq || !res.ok) return;
+            const data = await res.json();
+            // Bail if the user moved to another book / closed the modal while we were fetching.
+            if (seq !== this.requestSeq) return;
+            const audio = data && data.audio;
+            if (!audio || !this.bookData) return;
+            this.bookData.narrator = audio.narrator;
+            this.bookData.audioSeconds = audio.audioSeconds;
+            if (audio.audiobookAvailable) this.audiobookAvailable = true;
+            // Only insert into the visible facts if the user is still on the audiobook tab.
+            if (this.currentMode === 'audiobook') this.renderFacts();
+        } catch (e) {
+            /* silent — cached data stands */
+        }
     }
 
     // Drive the action button from the selected format's ownership/status. The card seed
@@ -554,6 +602,8 @@ export default class extends Controller {
         }
 
         this.renderFacts();
+        // If the book opened straight onto the audiobook tab, backfill its narrator/runtime now.
+        this.maybeFetchAudio();
 
         if (Array.isArray(book.genres) && book.genres.length > 0) {
             this.genresTarget.innerHTML = book.genres

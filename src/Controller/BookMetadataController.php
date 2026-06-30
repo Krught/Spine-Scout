@@ -58,6 +58,39 @@ final class BookMetadataController extends AbstractController
     }
 
     /**
+     * Async narrator/runtime backfill for audiobooks. The modal opens instantly on cached data
+     * (show() never blocks on this) and fires this in the background when the user is on the
+     * audiobook tab; it patches the audio facts in once we have them. Returns just the audio
+     * fields — a no-op upstream when they're already cached (see {@see BookMetadataService::ensureAudioMetadata()}).
+     */
+    #[Route('/books/metadata/audio', name: 'book_metadata_audio', methods: ['GET'])]
+    public function audio(Request $request): JsonResponse
+    {
+        $id = $request->query->get('id');
+        if (is_string($id) && ctype_digit($id)) {
+            $book = $this->books->find((int) $id);
+        } else {
+            $source = (string) $request->query->get('source', '');
+            $externalId = (string) $request->query->get('externalId', '');
+            if ($source === '' || $externalId === '') {
+                return new JsonResponse(['error' => 'missing_identifier'], 400);
+            }
+            $book = $this->books->findOneBySourceAndExternalId($source, $externalId);
+        }
+        if ($book === null) {
+            return new JsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $this->metadata->ensureAudioMetadata($book);
+
+        return new JsonResponse(['audio' => [
+            'audiobookAvailable' => $book->isAudiobookAvailable(),
+            'narrator'           => $book->getNarrator(),
+            'audioSeconds'       => $book->getAudioSeconds(),
+        ]]);
+    }
+
+    /**
      * Force a fresh upstream metadata fetch (the modal's manual "refresh" button), then return
      * the same payload as show() so the modal can re-render in place.
      */

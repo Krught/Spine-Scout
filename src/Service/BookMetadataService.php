@@ -24,6 +24,14 @@ final class BookMetadataService
 {
     private const COVER_CACHE_TTL = 60 * 60 * 24 * 30;
 
+    /**
+     * Cooldown before a second on-open audiobook backfill attempt. The trending poll caches
+     * availability but not narrator/runtime, so the first modal open fetches them. When Hardcover
+     * genuinely has no narrator/runtime for an audio edition, this stops every subsequent open
+     * from re-hitting upstream while still retrying periodically in case the data lands later.
+     */
+    private const AUDIO_BACKFILL_COOLDOWN = '-7 days';
+
     public function __construct(
         private readonly BookRepository $books,
         private readonly IntegrationRepository $integrations,
@@ -129,6 +137,42 @@ final class BookMetadataService
             $this->em->flush();
         }
         return $book;
+    }
+
+    /**
+     * Lazily backfill a Hardcover audiobook's narrator/runtime, returning true when a fresh value
+     * was cached. The modal opens instantly on cached data and calls this asynchronously (via
+     * /books/metadata/audio) so the audio facts patch in afterward. No-op — and no upstream call —
+     * when the data is already cached, the book isn't a Hardcover audiobook, or we last tried within
+     * the cooldown.
+     */
+    public function ensureAudioMetadata(Book $book): bool
+    {
+        if (!$this->needsAudioBackfill($book)) {
+            return false;
+        }
+        $this->refresh($book);
+        $this->em->flush();
+        return true;
+    }
+
+    /**
+     * True when this is a Hardcover audiobook whose narrator or runtime hasn't been cached yet.
+     * The trending poll records availability but not narrator/runtime, so we lazily backfill those.
+     * Guarded so print-only works (which never have a narrator) and non-Hardcover sources don't
+     * re-hit upstream, and throttled by {@see self::AUDIO_BACKFILL_COOLDOWN} for audiobooks
+     * Hardcover simply has no narrator/runtime for.
+     */
+    private function needsAudioBackfill(Book $book): bool
+    {
+        if ($book->getSource() !== Book::SOURCE_HARDCOVER || !$book->isAudiobookAvailable()) {
+            return false;
+        }
+        if ($book->getNarrator() !== null && $book->getAudioSeconds() !== null) {
+            return false;
+        }
+        $fetchedAt = $book->getMetadataFetchedAt();
+        return $fetchedAt === null || $fetchedAt < new \DateTimeImmutable(self::AUDIO_BACKFILL_COOLDOWN);
     }
 
     /**
