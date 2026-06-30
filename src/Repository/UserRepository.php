@@ -33,4 +33,18 @@ final class UserRepository extends ServiceEntityRepository
     {
         return $this->findOneBy(['username' => User::normalizeUsername($username)]);
     }
+
+    /**
+     * Master first, then alphabetical — the order the /users management page lists users in.
+     *
+     * @return list<User>
+     */
+    public function findAllOrdered(): array
+    {
+        return $this->createQueryBuilder('u')
+            ->orderBy('u.isMaster', 'DESC')
+            ->addOrderBy('u.username', 'ASC')
+            ->getQuery()
+            ->getResult();
+    }
 }

@@ -3,9 +3,150 @@
 {% block title %}Users - Spine Scout{% endblock %}
 
 {% block body %}
-    <div class="users">
-        <header class="users-header">
+    <div class="settings users" data-controller="user-modal">
+        <header class="settings-header">
             <h1>Users</h1>
+            <p>Create and manage accounts, permissions, and per-user request approval.</p>
         </header>
+
+        {% for label, messages in app.flashes %}
+            {% for msg in messages %}
+                <div class="flash flash-{{ label }}">{{ msg }}</div>
+            {% endfor %}
+        {% endfor %}
+
+        <div class="users-toolbar">
+            <button type="button" class="btn btn-primary"
+                    data-action="user-modal#openCreate"
+                    data-user-modal-create-url-param="{{ path('users_create') }}"
+                    data-user-modal-create-token-param="{{ csrf_token('users_create') }}">
+                Add user
+            </button>
+        </div>
+
+        <div class="settings-panel">
+            <table class="users-table">
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Permissions</th>
+                        <th>Auto-approve</th>
+                        <th>Created</th>
+                        <th class="users-table__actions-col"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                        <tr>
+                            <td>
+                                <span class="users-name">{{ u.username }}</span>
+                                {% if u.master %}<span class="users-badge users-badge--master">Master admin</span>{% endif %}
+                            </td>
+                            <td>
+                                {% if u.master %}
+                                    <span class="users-badge">Full access</span>
+                                {% else %}
+                                    {% if u.canManageSettings %}<span class="users-badge">Settings</span>{% endif %}
+                                    {% if u.canManageUsers %}<span class="users-badge">Users</span>{% endif %}
+                                    {% if not u.canManageSettings and not u.canManageUsers %}
+                                        <span class="users-muted">Standard</span>
+                                    {% endif %}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if u.autoApproveRequests %}
+                                    <span class="users-badge users-badge--on">On</span>
+                                {% else %}
+                                    <span class="users-muted">Off</span>
+                                {% endif %}
+                            </td>
+                            <td class="users-muted">{{ u.createdAt|date('Y-m-d') }}</td>
+                            <td class="users-table__actions">
+                                <button type="button" class="btn btn-ghost btn-sm"
+                                        data-action="user-modal#openEdit"
+                                        data-user-modal-id-param="{{ u.id }}"
+                                        data-user-modal-username-param="{{ u.username }}"
+                                        data-user-modal-manage-settings-param="{{ u.canManageSettings ? '1' : '0' }}"
+                                        data-user-modal-manage-users-param="{{ u.canManageUsers ? '1' : '0' }}"
+                                        data-user-modal-auto-approve-param="{{ u.autoApproveRequests ? '1' : '0' }}"
+                                        data-user-modal-master-param="{{ u.master ? '1' : '0' }}"
+                                        data-user-modal-update-url-param="{{ path('users_update', { id: u.id }) }}"
+                                        data-user-modal-update-token-param="{{ csrf_token('users_update_' ~ u.id) }}">
+                                    Edit
+                                </button>
+                                <form method="post" action="{{ path('users_delete', { id: u.id }) }}"
+                                      class="users-delete-form"
+                                      onsubmit="return confirm('Delete {{ u.username|e('js') }}? Their book requests will also be removed.');">
+                                    <input type="hidden" name="_token" value="{{ csrf_token('users_delete_' ~ u.id) }}">
+                                    <button type="submit" class="btn btn-ghost btn-sm btn-danger"
+                                            {% if u.master %}disabled title="The master administrator cannot be deleted."{% endif %}>
+                                        Delete
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {# Shared create/edit modal. The controller swaps the form action, token, and field state. #}
+        <div class="book-modal" data-user-modal-target="modal" data-action="click->user-modal#backdropClick" hidden>
+            <div class="book-modal-dialog users-modal-dialog">
+                <button type="button" class="book-modal-close" data-action="user-modal#close" aria-label="Close">×</button>
+                <div class="users-modal-body">
+                    <h2 class="panel-title" data-user-modal-target="title">Add user</h2>
+                    <form method="post" class="settings-form" data-user-modal-target="form" novalidate>
+                        <input type="hidden" name="_token" data-user-modal-target="token" value="">
+
+                        <div class="field">
+                            <label for="users-username">Username</label>
+                            <input type="text" id="users-username" name="username" autocomplete="off"
+                                   data-user-modal-target="username" required>
+                        </div>
+
+                        <div class="field">
+                            <label for="users-password">Password</label>
+                            <input type="password" id="users-password" name="password" autocomplete="new-password"
+                                   data-user-modal-target="password">
+                            <span class="form-help" data-user-modal-target="passwordHelp"></span>
+                        </div>
+                        <div class="field">
+                            <label for="users-password-confirm">Confirm password</label>
+                            <input type="password" id="users-password-confirm" name="password_confirm"
+                                   autocomplete="new-password" data-user-modal-target="passwordConfirm">
+                        </div>
+
+                        <fieldset class="settings-fieldset">
+                            <legend>Permissions</legend>
+                            <p class="form-help" data-user-modal-target="masterNote" hidden>
+                                The master administrator always has full access; permissions are locked.
+                            </p>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="manage_settings" value="1" data-user-modal-target="manageSettings">
+                                <span>Manage settings (view &amp; edit Settings)</span>
+                            </label>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="manage_users" value="1" data-user-modal-target="manageUsers">
+                                <span>Manage users (create, edit, delete accounts)</span>
+                            </label>
+                        </fieldset>
+
+                        <fieldset class="settings-fieldset">
+                            <legend>Requests</legend>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="auto_approve" value="1" data-user-modal-target="autoApprove">
+                                <span>Auto-approve this user's book requests</span>
+                            </label>
+                        </fieldset>
+
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-ghost" data-action="user-modal#close">Cancel</button>
+                            <button type="submit" class="btn btn-primary" data-user-modal-target="submit">Create user</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
     </div>
 {% endblock %}

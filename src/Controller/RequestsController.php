@@ -274,11 +274,11 @@ final class RequestsController extends AbstractController
 
         $entity = new BookRequest($user, $book);
         $entity->setAudiobook($audiobook);
-        // Auto-approve when enabled. Audiobooks go to the torrent pipeline, so only
-        // auto-approve one when Prowlarr + qBittorrent are configured; otherwise it
-        // stays pending (an admin can approve once the stack is set up) rather than
-        // erroring out immediately.
-        $autoApproved = $settings->isAutoApproveRequestsEnabled()
+        // Auto-approve when enabled globally OR for this specific user. Audiobooks go to
+        // the torrent pipeline, so only auto-approve one when Prowlarr + qBittorrent are
+        // configured; otherwise it stays pending (an admin can approve once the stack is
+        // set up) rather than erroring out immediately.
+        $autoApproved = ($settings->isAutoApproveRequestsEnabled() || $user->isAutoApproveRequests())
             && (!$audiobook || $this->torrentStackReady());
         if ($autoApproved) {
             $entity->setStatus(BookRequest::STATUS_APPROVED);

@@ -35,7 +35,7 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\IsGranted;
 
 #[Route('/settings', name: 'settings_')]
-#[IsGranted('ROLE_ADMIN')]
+#[IsGranted('ROLE_MANAGE_SETTINGS')]
 final class SettingsController extends AbstractController
 {
     #[Route('', name: 'index')]

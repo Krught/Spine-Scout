@@ -19,9 +19,15 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public const ROLE_USER  = 'ROLE_USER';
     public const ROLE_ADMIN = 'ROLE_ADMIN';
 
+    /** Capability roles. ROLE_ADMIN implies both via role_hierarchy (see security.yaml). */
+    public const ROLE_MANAGE_SETTINGS = 'ROLE_MANAGE_SETTINGS';
+    public const ROLE_MANAGE_USERS    = 'ROLE_MANAGE_USERS';
+
     public const USERNAME_MIN = 3;
     public const USERNAME_MAX = 60;
     public const USERNAME_PATTERN = '/^[a-z0-9][a-z0-9._-]{1,58}[a-z0-9]$/';
+
+    public const PASSWORD_MIN = 8;
 
     #[ORM\Id]
     #[ORM\GeneratedValue]
@@ -37,6 +43,14 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     /** @var list<string> */
     #[ORM\Column(type: Types::JSON, options: ['jsonb' => true])]
     private array $roles = [];
+
+    /** The protected first user: never deletable, always holds every capability. */
+    #[ORM\Column]
+    private bool $isMaster = false;
+
+    /** When true, this user's book requests auto-approve regardless of the global toggle. */
+    #[ORM\Column]
+    private bool $autoApproveRequests = false;
 
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
@@ -87,6 +101,23 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function isAdmin(): bool
     {
         return in_array(self::ROLE_ADMIN, $this->getRoles(), true);
+    }
+
+    public function isMaster(): bool { return $this->isMaster; }
+    public function setMaster(bool $master): self { $this->isMaster = $master; return $this; }
+
+    public function isAutoApproveRequests(): bool { return $this->autoApproveRequests; }
+    public function setAutoApproveRequests(bool $on): self { $this->autoApproveRequests = $on; return $this; }
+
+    /** Raw-role capability check for UI/templates (ROLE_ADMIN, and thus master, implies true). */
+    public function canManageSettings(): bool
+    {
+        return $this->isAdmin() || in_array(self::ROLE_MANAGE_SETTINGS, $this->roles, true);
+    }
+
+    public function canManageUsers(): bool
+    {
+        return $this->isAdmin() || in_array(self::ROLE_MANAGE_USERS, $this->roles, true);
     }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }

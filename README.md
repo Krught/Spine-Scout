@@ -14,15 +14,6 @@ It is designed to plug into:
 - **[Komga](https://komga.org/)**-compatible library / reader that owns the files - **[Grimmory](https://github.com/grimmory-tools/grimmory)** is the currently confirmed-working client
 - **[Hardcover](https://hardcover.app/)**, **[Open Library](https://openlibrary.org/)** - metadata providers
 
-## 📊 Feature Status
-
-Spine Scout is early-access and being built in phases. The table below lists only what is **not yet done** - anything not listed here is considered implemented and working.
-
-| Area | Status          | Notes                                                                              |
-|--|-----------------|------------------------------------------------------------------------------------|
-| Adding / managing additional users | Partial         | Admin user is created via first-run wizard; multi-user management UI not yet built |
-| External list importers (Goodreads, RSS, CSV) | Not Implemented | Planned                                                                            |
-
 ## 📸 Screenshots
 
 <p align="center">

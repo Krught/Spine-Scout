@@ -95,13 +95,14 @@ final class SetupController extends AbstractController
 
             if (!$this->isCsrfTokenValid(self::PASSWORD_TOKEN_ID, $token)) {
                 $error = 'Your session expired. Please try again.';
-            } elseif (strlen($password) < 8) {
-                $error = 'Password must be at least 8 characters.';
+            } elseif (strlen($password) < User::PASSWORD_MIN) {
+                $error = sprintf('Password must be at least %d characters.', User::PASSWORD_MIN);
             } elseif ($password !== $confirm) {
                 $error = 'The two passwords do not match.';
             } else {
                 $user = new User($username);
                 $user->setRoles([User::ROLE_ADMIN]);
+                $user->setMaster(true);
                 $user->setPassword($hasher->hashPassword($user, $password));
                 $em->persist($user);
                 $em->flush();
