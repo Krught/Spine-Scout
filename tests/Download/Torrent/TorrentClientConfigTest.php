@@ -44,4 +44,16 @@ final class TorrentClientConfigTest extends TestCase
         self::assertArrayNotHasKey('remotePathTo', $array);
         self::assertSame($config->category, TorrentClientConfig::fromArray($array)->category);
     }
+
+    public function testRemoveOnCompleteDefaultsToTrueAndRoundTrips(): void
+    {
+        // Absent from the stored blob (older configs) → defaults to remove + delete.
+        self::assertTrue(TorrentClientConfig::fromArray(['category' => 'ab'])->removeOnComplete);
+        self::assertTrue(TorrentClientConfig::default()->removeOnComplete);
+
+        // An explicit false (operator opted to keep seeding) survives a round trip.
+        $kept = TorrentClientConfig::fromArray(['removeOnComplete' => false]);
+        self::assertFalse($kept->removeOnComplete);
+        self::assertFalse(TorrentClientConfig::fromArray($kept->toArray())->removeOnComplete);
+    }
 }

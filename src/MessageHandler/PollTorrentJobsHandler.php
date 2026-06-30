@@ -9,6 +9,7 @@ use App\Download\Client\DownloadStatus;
 use App\Download\FileMover;
 use App\Download\FilenameTemplate;
 use App\Download\FulfillmentLog;
+use App\Download\Metadata\AudiobookSidecarWriter;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Torrent\TorrentClientConfig;
 use App\Download\Torrent\TorrentMover;
@@ -54,6 +55,7 @@ final class PollTorrentJobsHandler
         private readonly TorrentMover $mover,
         private readonly FileMover $fileMover,
         private readonly EbookMetadataInjector $metadataInjector,
+        private readonly AudiobookSidecarWriter $sidecarWriter,
         private readonly FilenameTemplate $filenames,
         private readonly EntityManagerInterface $em,
         private readonly FulfillmentLog $log,
@@ -108,11 +110,11 @@ final class PollTorrentJobsHandler
                 continue;
             }
 
-            $this->finalize($job, $status, $subject);
+            $this->finalize($job, $status, $subject, $client);
         }
     }
 
-    private function finalize(DownloadJob $job, DownloadStatus $status, string $subject): void
+    private function finalize(DownloadJob $job, DownloadStatus $status, string $subject, DownloadClientInterface $client): void
     {
         $rawPath = (string) $status->filePath;
         // Resolve under the fixed /downloads mount by basename — the client's own save
@@ -135,13 +137,13 @@ final class PollTorrentJobsHandler
         }
 
         if ($job->getBookRequest()?->isAudiobook()) {
-            $this->finalizeAudiobook($job, $sourcePath, $subject);
+            $this->finalizeAudiobook($job, $sourcePath, $subject, $client);
         } else {
-            $this->finalizeEbook($job, $sourcePath, $subject);
+            $this->finalizeEbook($job, $sourcePath, $subject, $client);
         }
     }
 
-    private function finalizeAudiobook(DownloadJob $job, string $sourcePath, string $subject): void
+    private function finalizeAudiobook(DownloadJob $job, string $sourcePath, string $subject, DownloadClientInterface $client): void
     {
         $config = $this->integrations->getTorrentClientConfig();
 
@@ -176,10 +178,17 @@ final class PollTorrentJobsHandler
             return;
         }
 
-        $this->complete($job, $finalDir, sprintf('Audiobook moved to library: %s (%d file(s))', basename($finalDir), \count($audioFiles)), $subject);
+        // Drop a Grimmory-importable metadata sidecar (and cover) into the folder,
+        // named after the folder so it sits at the album level. Best-effort.
+        $book = $job->getBookRequest()?->getBook();
+        if ($book !== null) {
+            $this->sidecarWriter->write($finalDir, basename($finalDir), $book);
+        }
+
+        $this->complete($job, $finalDir, sprintf('Audiobook moved to library: %s (%d file(s))', basename($finalDir), \count($audioFiles)), $subject, $client);
     }
 
-    private function finalizeEbook(DownloadJob $job, string $sourcePath, string $subject): void
+    private function finalizeEbook(DownloadJob $job, string $sourcePath, string $subject, DownloadClientInterface $client): void
     {
         $ddConfig = $this->integrations->getDirectDownloadConfig();
 
@@ -236,10 +245,10 @@ final class PollTorrentJobsHandler
             return;
         }
 
-        $this->complete($job, $finalPath, 'Book moved to library: ' . basename($finalPath), $subject);
+        $this->complete($job, $finalPath, 'Book moved to library: ' . basename($finalPath), $subject, $client);
     }
 
-    private function complete(DownloadJob $job, string $finalPath, string $logMessage, string $subject): void
+    private function complete(DownloadJob $job, string $finalPath, string $logMessage, string $subject, DownloadClientInterface $client): void
     {
         $job->setFilePath($finalPath)
             ->setStatus(DownloadJob::STATUS_COMPLETE)
@@ -250,6 +259,32 @@ final class PollTorrentJobsHandler
 
         $this->log->info($logMessage, $subject);
         $this->logger->info('Torrent complete', ['job' => $job->getId(), 'path' => $finalPath]);
+
+        $this->cleanupTorrent($job, $client);
+    }
+
+    /**
+     * The library now holds its own copy of the import, so unless the operator opted to
+     * keep seeding, remove the finished torrent from the download client and delete its
+     * original files (qBittorrent's torrents/delete with deleteFiles=true). A failure
+     * here is non-fatal — the import already succeeded — so it only logs.
+     */
+    private function cleanupTorrent(DownloadJob $job, DownloadClientInterface $client): void
+    {
+        if (!$this->integrations->getTorrentClientConfig()->removeOnComplete) {
+            return;
+        }
+
+        $hash = (string) $job->getClientRef();
+        if ($hash === '') {
+            return;
+        }
+
+        if ($client->cancel($hash, true)) {
+            $this->logger->info('Torrent removed from download client after import', ['job' => $job->getId(), 'hash' => $hash]);
+        } else {
+            $this->logger->warning('Failed to remove torrent from download client after import', ['job' => $job->getId(), 'hash' => $hash]);
+        }
     }
 
     /** Copy a file into a temp staging path so the original keeps seeding. */

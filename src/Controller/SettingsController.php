@@ -543,6 +543,7 @@ final class SettingsController extends AbstractController
                 'useEbookLibraryDir'   => $req->getBoolean('use_ebook_library_dir'),
                 'stagingSubdir'        => (string) $req->get('staging_subdir', ''),
                 'filenameTemplate'     => (string) $req->get('torrent_filename_template', ''),
+                'removeOnComplete'     => $req->getBoolean('remove_on_complete'),
             ]);
             $qbittorrent->setEnabled(
                 $req->getBoolean('qbittorrent_enabled')

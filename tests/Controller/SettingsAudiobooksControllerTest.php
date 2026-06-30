@@ -96,6 +96,7 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
             'use_ebook_library_dir'      => '0',
             'staging_subdir'             => 'torrents',
             'torrent_filename_template'  => '{Author} - {Title}',
+            'remove_on_complete'         => '1',
         ]);
 
         self::assertResponseRedirects('/settings/audiobooks');
@@ -117,6 +118,7 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
         self::assertSame('audiobooks', $client->category);
         self::assertSame('/audiobooks', $client->audioOutputDirectory);
         self::assertFalse($client->useEbookLibraryDir);
+        self::assertTrue($client->removeOnComplete);
 
         $qbitRow = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
         self::assertNotNull($qbitRow);

@@ -40,6 +40,8 @@ final class TorrentClientConfig
      * @param bool   $useEbookLibraryDir   When true, deliver into the ebook library output dir instead of $audioOutputDirectory
      * @param string $stagingSubdir        Sub-folder under var/downloads used to stage audio files before the final move
      * @param string $filenameTemplate     Naming template with {Author}/{Title}/{Year}/{ISBN} tokens
+     * @param bool   $removeOnComplete     After a successful import, remove the torrent from the download client and
+     *                                      delete its original files. Disable to keep seeding (e.g. private trackers).
      */
     public function __construct(
         public readonly string $category = self::DEFAULT_CATEGORY,
@@ -47,6 +49,7 @@ final class TorrentClientConfig
         public readonly bool $useEbookLibraryDir = false,
         public readonly string $stagingSubdir = self::DEFAULT_STAGING_SUBDIR,
         public readonly string $filenameTemplate = self::DEFAULT_FILENAME_TEMPLATE,
+        public readonly bool $removeOnComplete = true,
     ) {
     }
 
@@ -75,6 +78,7 @@ final class TorrentClientConfig
             (bool) ($raw['useEbookLibraryDir'] ?? false),
             $str($raw['stagingSubdir'] ?? null, self::DEFAULT_STAGING_SUBDIR),
             $str($raw['filenameTemplate'] ?? null, self::DEFAULT_FILENAME_TEMPLATE),
+            (bool) ($raw['removeOnComplete'] ?? true),
         );
     }
 
@@ -87,6 +91,7 @@ final class TorrentClientConfig
             'useEbookLibraryDir'   => $this->useEbookLibraryDir,
             'stagingSubdir'        => $this->stagingSubdir,
             'filenameTemplate'     => $this->filenameTemplate,
+            'removeOnComplete'     => $this->removeOnComplete,
         ];
     }
 

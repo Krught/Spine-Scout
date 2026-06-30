@@ -192,6 +192,14 @@
                     <code>{{ '{Year}' }}</code>, <code>{{ '{ISBN}' }}</code>.
                 </p>
             </div>
+            <label class="field-checkbox">
+                <input type="checkbox" name="remove_on_complete" value="1" {{ client_config.removeOnComplete ? 'checked' : '' }}>
+                <span>Remove the torrent and delete its original files after import</span>
+            </label>
+            <p class="form-note">
+                Once the import lands in your library, remove the finished torrent from qBittorrent and delete
+                the files it downloaded. Untick to keep seeding (e.g. on a private tracker).
+            </p>
         </fieldset>
 
         <div class="form-actions">
