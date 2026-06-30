@@ -310,6 +310,14 @@
     background: rgba(150, 100, 210, 0.15);
     border-color: rgba(150, 100, 210, 0.9);
 }
+.request-btn-sidecar {
+    border-color: rgba(180, 150, 70, 0.5);
+    color: #e6d08a;
+}
+.request-btn-sidecar:hover {
+    background: rgba(180, 150, 70, 0.15);
+    border-color: rgba(180, 150, 70, 0.9);
+}
 .request-btn-delete {
     border-color: rgba(180, 60, 60, 0.5);
     color: #f7a4a4;

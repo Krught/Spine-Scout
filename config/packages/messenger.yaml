@@ -32,3 +32,5 @@ framework:
             App\Message\DispatchTorrentSearch: async
             App\Message\ProcessTorrentJob: async
             App\Message\PollTorrentJobs: async
+            App\Message\RewriteAllAudiobookSidecars: async
+            App\Message\RewriteAudiobookSidecar: async

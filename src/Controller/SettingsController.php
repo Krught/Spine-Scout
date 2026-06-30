@@ -13,7 +13,9 @@ use App\Entity\BookSectionEntry;
 use App\Message\PurgeStaleBooks;
 use App\Message\RefreshHardcoverTrending;
 use App\Message\RefreshOpenLibraryTrending;
+use App\Message\RewriteAllAudiobookSidecars;
 use App\Message\SyncGrimmoryLibrary;
+use App\Repository\DownloadJobRepository;
 use App\Mirror\MirrorList;
 use App\Mirror\MirrorListNormalizer;
 use App\Repository\BookRepository;
@@ -568,6 +570,28 @@ final class SettingsController extends AbstractController
             'client_config'   => $clientConfig,
             'ebook_output_directory' => $integrations->getDirectDownloadConfig()->outputDirectory,
         ]);
+    }
+
+    #[Route('/audiobooks/rewrite-sidecars', name: 'audiobooks_rewrite_sidecars', methods: ['POST'])]
+    public function audiobooksRewriteSidecars(Request $request, DownloadJobRepository $jobs, MessageBusInterface $bus): Response
+    {
+        if (!$this->isCsrfTokenValid('audiobooks_rewrite_sidecars', (string) $request->request->get('_token'))) {
+            $this->addFlash('error', 'Invalid CSRF token.');
+
+            return $this->redirectToRoute('settings_audiobooks');
+        }
+
+        $count = \count($jobs->completedAudiobookJobIds());
+        if ($count === 0) {
+            $this->addFlash('error', 'No downloaded audiobooks found to rewrite.');
+
+            return $this->redirectToRoute('settings_audiobooks');
+        }
+
+        $bus->dispatch(new RewriteAllAudiobookSidecars());
+        $this->addFlash('success', sprintf('Queued metadata sidecar rewrite for %d audiobook(s). Refresh in a moment.', $count));
+
+        return $this->redirectToRoute('settings_audiobooks');
     }
 
     #[Route('/audiobooks/test/prowlarr', name: 'audiobooks_test_prowlarr', methods: ['POST'])]

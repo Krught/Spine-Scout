@@ -11,13 +11,16 @@ use Psr\Log\NullLogger;
 
 /**
  * Writes a Grimmory-compatible JSON metadata sidecar (and, best-effort, a cover
- * image) into a finished audiobook's folder, so the library holds a portable,
- * importable copy of Spine Scout's stored metadata next to the audio files.
+ * image) for a finished audiobook, so the library holds a portable, importable copy
+ * of Spine Scout's stored metadata.
  *
- * The on-disk shape matches Grimmory's sidecar contract: for a folder named
- * "<base>", we write "<base>.metadata.json" and "<base>.cover.jpg". The JSON is
- * the {version, generatedAt, generatedBy, metadata{...}} envelope; only non-null
- * metadata fields are emitted.
+ * The on-disk shape matches Grimmory's sidecar contract: into a given "<folder>" we
+ * write "<baseName>.metadata.json" and "<baseName>.cover.jpg". Grimmory matches a
+ * sidecar to an album folder by name, so the caller passes the album folder's parent
+ * as "<folder>" and the album folder's own name as "<baseName>" — placing the sidecar
+ * BESIDE the album folder (the folder itself holds only audio). The JSON is the
+ * {version, generatedAt, generatedBy, metadata{...}} envelope; only non-null metadata
+ * fields are emitted.
  *
  * Never throws — a sidecar hiccup must not lose an otherwise-good download — so the
  * caller can always treat the import as successful.
@@ -35,8 +38,9 @@ final class AudiobookSidecarWriter
 
     /**
      * Write "<baseName>.metadata.json" (and a best-effort "<baseName>.cover.jpg")
-     * into $folder, overwriting any existing sidecar. $baseName is the audiobook
-     * folder's own name so the sidecar sits at the album level beside the audio.
+     * into $folder, overwriting any existing sidecar. The caller passes the album
+     * folder's parent as $folder and the album folder's own name as $baseName, so the
+     * sidecar lands beside the album folder, named to match it on Grimmory import.
      */
     public function write(string $folder, string $baseName, Book $book): void
     {

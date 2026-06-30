@@ -16,6 +16,7 @@ use App\Download\Client\QbittorrentDownloadClient;
 use App\Integration\Prowlarr\ProwlarrClient;
 use App\Message\DispatchReleaseSearch;
 use App\Message\DispatchTorrentSearch;
+use App\Message\RewriteAudiobookSidecar;
 use App\Repository\DownloadJobRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
@@ -341,6 +342,33 @@ final class RequestsController extends AbstractController
             $this->dispatchFulfillment($entity, $bus);
             $this->addFlash('success', 'Re-checking for a release…');
         }
+
+        return $this->redirectToRoute('requests');
+    }
+
+    #[Route('/requests/{id}/rewrite-sidecar', name: 'requests_rewrite_sidecar', methods: ['POST'], requirements: ['id' => '\d+'])]
+    #[IsGranted('ROLE_ADMIN')]
+    public function rewriteSidecar(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, MessageBusInterface $bus): Response
+    {
+        $entity = $requests->find($id);
+        if ($entity === null) {
+            throw $this->createNotFoundException();
+        }
+        if (!$this->isCsrfTokenValid('rewrite-sidecar-request-' . $id, (string) $request->request->get('_csrf_token'))) {
+            throw new AccessDeniedHttpException('Invalid CSRF token.');
+        }
+
+        // Only a completed audiobook download has an on-disk album folder to rewrite
+        // a sidecar beside; its path lives on the latest job's filePath.
+        $job = $jobs->findLatestForRequest($entity);
+        if (!$entity->isAudiobook() || $job === null || $job->getStatus() !== DownloadJob::STATUS_COMPLETE || $job->getFilePath() === null) {
+            $this->addFlash('error', 'No downloaded audiobook to rewrite for this request.');
+
+            return $this->redirectToRoute('requests');
+        }
+
+        $bus->dispatch(new RewriteAudiobookSidecar((int) $job->getId()));
+        $this->addFlash('success', 'Metadata sidecar rewrite queued.');
 
         return $this->redirectToRoute('requests');
     }

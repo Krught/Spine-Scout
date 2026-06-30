@@ -133,6 +133,12 @@
                                     <button type="submit" class="request-btn request-btn-recheck" title="Search and download again now">Recheck now</button>
                                 </form>
                             {% endif %}
+                            {% if is_granted('ROLE_ADMIN') and is_fulfilled and item.format_key == 'audiobook' %}
+                                <form method="post" action="{{ path('requests_rewrite_sidecar', {id: r.id}) }}">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token('rewrite-sidecar-request-' ~ r.id) }}">
+                                    <button type="submit" class="request-btn request-btn-sidecar" title="Re-write the metadata.json and cover.jpg sidecar beside this audiobook">Rewrite sidecar</button>
+                                </form>
+                            {% endif %}
                             {% if can_delete %}
                                 <form method="post" action="{{ path('requests_delete', {id: r.id}) }}"
                                       onsubmit="return confirm('Remove this request?');">

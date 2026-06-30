@@ -162,6 +162,30 @@ final class DownloadJobRepository extends ServiceEntityRepository
     }
 
     /**
+     * Ids of every completed audiobook download — the jobs whose stored filePath is
+     * the on-disk album folder, so a metadata/cover sidecar can be (re)written beside
+     * it. Used to fan out the library-wide "rewrite all sidecars" action.
+     *
+     * @return list<int>
+     */
+    public function completedAudiobookJobIds(): array
+    {
+        /** @var list<array{id: int}> $rows */
+        $rows = $this->createQueryBuilder('j')
+            ->select('j.id')
+            ->join('j.bookRequest', 'r')
+            ->where('j.status = :complete')
+            ->andWhere('r.audiobook = true')
+            ->andWhere('j.filePath IS NOT NULL')
+            ->setParameter('complete', DownloadJob::STATUS_COMPLETE)
+            ->orderBy('j.id', 'ASC')
+            ->getQuery()
+            ->getScalarResult();
+
+        return array_map(static fn (array $row): int => (int) $row['id'], $rows);
+    }
+
+    /**
      * Latest job per request id, for rendering delivery status on the list.
      *
      * @param list<int> $requestIds

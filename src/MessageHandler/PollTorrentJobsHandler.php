@@ -178,11 +178,12 @@ final class PollTorrentJobsHandler
             return;
         }
 
-        // Drop a Grimmory-importable metadata sidecar (and cover) into the folder,
-        // named after the folder so it sits at the album level. Best-effort.
+        // Drop a Grimmory-importable metadata sidecar (and cover) BESIDE the album
+        // folder (in the library root), named after the folder so Grimmory matches it
+        // to its sibling on import. The folder itself holds only audio. Best-effort.
         $book = $job->getBookRequest()?->getBook();
         if ($book !== null) {
-            $this->sidecarWriter->write($finalDir, basename($finalDir), $book);
+            $this->sidecarWriter->write(\dirname($finalDir), basename($finalDir), $book);
         }
 
         $this->complete($job, $finalDir, sprintf('Audiobook moved to library: %s (%d file(s))', basename($finalDir), \count($audioFiles)), $subject, $client);
