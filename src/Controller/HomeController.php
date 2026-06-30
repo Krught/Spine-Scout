@@ -28,7 +28,11 @@ final class HomeController extends AbstractController
     /**
      * Editorial-controlled tiles; gradients are inline styles, not theme-derived.
      *
-     * @var list<array{label: string, slug: string, background: string}>
+     * `query` (optional) overrides the term sent to the genre search when the displayed `label`
+     * does not match Hardcover's tag vocabulary (e.g. "Non-Fiction" vs Hardcover's "Nonfiction").
+     * When absent, the label is used as the search term.
+     *
+     * @var list<array{label: string, slug: string, background: string, query?: string}>
      */
     private const BROWSE_GENRES = [
         ['label' => 'Fantasy',         'slug' => 'fantasy',            'background' => 'linear-gradient(135deg, #2f5a3f, #1d3a28)'],
@@ -39,7 +43,8 @@ final class HomeController extends AbstractController
         ['label' => 'Horror',          'slug' => 'horror',             'background' => 'linear-gradient(135deg, #7f1d1d, #450a0a)'],
         ['label' => 'Historical',      'slug' => 'historical-fiction', 'background' => 'linear-gradient(135deg, #92400e, #78350f)'],
         ['label' => 'Young Adult',     'slug' => 'young-adult',        'background' => 'linear-gradient(135deg, #7c3aed, #c026d3)'],
-        ['label' => 'Non-Fiction',     'slug' => 'non-fiction',        'background' => 'linear-gradient(135deg, #475569, #334155)'],
+        ['label' => 'Non-Fiction',     'slug' => 'non-fiction',        'background' => 'linear-gradient(135deg, #475569, #334155)', 'query' => 'Nonfiction'],
+        ['label' => 'Self-Help',       'slug' => 'self-help',          'background' => 'linear-gradient(135deg, #0d9488, #0f766e)'],
         ['label' => 'Biography',       'slug' => 'biography',          'background' => 'linear-gradient(135deg, #b45309, #92400e)'],
         ['label' => 'Graphic Novels',  'slug' => 'graphic-novels',     'background' => 'linear-gradient(135deg, #db2777, #f59e0b)'],
         ['label' => 'Manga',           'slug' => 'manga',              'background' => 'linear-gradient(135deg, #be123c, #1f2937)'],

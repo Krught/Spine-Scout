@@ -23,7 +23,7 @@
                             <button type="button" class="genre-tile"
                                     data-genre-slug="{{ genre.slug }}"
                                     data-action="click->book-modal#searchFor"
-                                    data-search-term="{{ genre.label }}"
+                                    data-search-term="{{ genre.query|default(genre.label) }}"
                                     data-search-type="genre"
                                     aria-label="Browse {{ genre.label }}"
                                     style="background: {{ genre.background }};">
