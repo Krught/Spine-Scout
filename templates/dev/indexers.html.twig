@@ -1,0 +1,93 @@
+{% extends 'dev/_layout.html.twig' %}
+
+{% block dev_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Indexer search inspector</h2>
+    </div>
+
+    <section class="dev-test">
+        <p class="form-note">
+            Runs a live indexer search and shows each parsed torrent candidate with the
+            exact <strong>weighted score</strong> the fulfillment pipeline uses to pick a winner.
+            Releases below the seed floor / above the size cap are dropped before scoring. Tune the
+            min-seeders and weights in <a href="{{ path('settings_audiobooks') }}">Settings → Torrents</a>.
+        </p>
+
+        {% if not configured %}
+            <p class="flash flash-error">Indexers are not configured/enabled. Set them up in Settings → Torrents.</p>
+        {% endif %}
+
+        <form method="get" action="{{ path('dev_indexers') }}" class="settings-form dev-form">
+            <div class="dev-form__grid">
+                <label class="field">
+                    <span>Title</span>
+                    <input type="text" name="title" value="{{ inputs.title }}" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="field">
+                    <span>Author</span>
+                    <input type="text" name="author" value="{{ inputs.author }}" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="field">
+                    <span>ISBN <em>(optional)</em></span>
+                    <input type="text" name="isbn" value="{{ inputs.isbn }}" autocomplete="off" spellcheck="false">
+                </label>
+            </div>
+            <div class="form-actions">
+                <button type="submit" name="search" value="1" class="btn btn-primary"{{ configured ? '' : ' disabled' }}>Search indexers</button>
+            </div>
+        </form>
+
+        {% if error %}
+            <p class="flash flash-error">{{ error }}</p>
+        {% endif %}
+
+        {% if submitted and not error %}
+            <div class="dev-result">
+                <h4>
+                    {{ raw_count }} raw result(s) → {{ scored|length }} after seed/size filter
+                    <span class="dev-hc-badge dev-hc-badge--none">min seeders: {{ policy.minSeeders }}</span>
+                    {% if policy.maxSizeBytes %}<span class="dev-hc-badge dev-hc-badge--none">max: {{ (policy.maxSizeBytes / (1024*1024*1024))|round(2) }} GB</span>{% endif %}
+                </h4>
+
+                {% if scored is empty %}
+                    <p class="form-note">No candidates cleared the filter. Loosen the seed floor / size cap, or broaden the query.</p>
+                {% else %}
+                    <table class="dev-hc-editions">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>score</th>
+                                <th>title</th>
+                                <th>indexer</th>
+                                <th>seeders</th>
+                                <th>size</th>
+                                <th>format</th>
+                                <th>breakdown (match / seed / size / fmt)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for s in scored %}
+                                <tr class="{{ loop.first ? 'is-audio' : '' }}">
+                                    <td>{{ loop.index }}</td>
+                                    <td><strong>{{ (s.score * 100)|round }}</strong></td>
+                                    <td>{{ s.candidate.title }}</td>
+                                    <td>{{ s.candidate.indexer ?? '' }}</td>
+                                    <td>{{ s.candidate.seeders ?? 0 }}</td>
+                                    <td>{{ s.candidate.sizeBytes ? (s.candidate.sizeBytes / (1024*1024))|round ~ ' MB' : '∅' }}</td>
+                                    <td>{{ s.candidate.format ?? '∅' }}</td>
+                                    <td>
+                                        {{ (s.components.match * 100)|round }} /
+                                        {{ (s.components.seeders * 100)|round }} /
+                                        {{ (s.components.size * 100)|round }} /
+                                        {{ (s.components.format * 100)|round }}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    <p class="form-note">Row 1 (highlighted) is what the pipeline would add to the download client.</p>
+                {% endif %}
+            </div>
+        {% endif %}
+    </section>
+{% endblock %}

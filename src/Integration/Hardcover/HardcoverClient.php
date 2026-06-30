@@ -39,10 +39,12 @@ final class HardcoverClient
             slug
             cached_image
             cached_contributors
-            editions(limit: 200, where: {_or: [{isbn_10: {_is_null: false}}, {isbn_13: {_is_null: false}}]}) {
+            editions(limit: 200) {
               isbn_10
               isbn_13
               physical_format
+              edition_format
+              reading_format_id
               users_count
               language { code3 }
               country { code2 }
@@ -58,10 +60,12 @@ final class HardcoverClient
         slug
         cached_image
         cached_contributors
-        editions(limit: 200, where: {_or: [{isbn_10: {_is_null: false}}, {isbn_13: {_is_null: false}}]}) {
+        editions(limit: 200) {
           isbn_10
           isbn_13
           physical_format
+          edition_format
+          reading_format_id
           users_count
           language { code3 }
           country { code2 }
@@ -102,23 +106,7 @@ final class HardcoverClient
     {
         // `books_trending` returns only ids; book records come from a follow-up `books(where:_in)`
         // query, re-ordered here because Hasura doesn't preserve `_in` order.
-        // Dates are baked into the query string — Hardcover's schema rejects variable substitution
-        // for from/to (returns "missing required field 'from'"). Window matches Hardcover's web UI.
-        $to = new \DateTimeImmutable('today');
-        $from = $to->modify('-30 days');
-        $idsQuery = strtr(self::TRENDING_IDS_QUERY_TEMPLATE, [
-            '%FROM%' => $from->format('Y-m-d'),
-            '%TO%' => $to->format('Y-m-d'),
-        ]);
-        $idsData = $this->graphql($integration, $idsQuery, ['limit' => $limit, 'offset' => max(0, $offset)]);
-        $trending = $idsData['books_trending'] ?? null;
-        if (!is_array($trending) || !isset($trending['ids']) || !is_array($trending['ids'])) {
-            throw new HardcoverException('Unexpected trending payload: missing books_trending.ids');
-        }
-        if (!empty($trending['error'])) {
-            throw new HardcoverException('Hardcover trending error: ' . $trending['error']);
-        }
-        $ids = array_values(array_filter(array_map('intval', $trending['ids'])));
+        $ids = $this->fetchTrendingIds($integration, $limit, $offset);
         if ($ids === []) {
             return [];
         }
@@ -148,7 +136,105 @@ final class HardcoverClient
                 coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $integration->getHardcoverEditionPreferences()),
+                audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
             );
+        }
+        return $out;
+    }
+
+    /**
+     * Resolve the trending book ids for the current 30-day window. Shared by {@see fetchTrending()}
+     * and {@see fetchTrendingDebug()}. Dates are baked into the query string — Hardcover's schema
+     * rejects variable substitution for from/to ("missing required field 'from'"); the window
+     * matches Hardcover's web UI. Server caps the page at 100.
+     *
+     * @return list<int>
+     *
+     * @throws HardcoverException
+     */
+    private function fetchTrendingIds(Integration $integration, int $limit, int $offset): array
+    {
+        $to = new \DateTimeImmutable('today');
+        $from = $to->modify('-30 days');
+        $idsQuery = strtr(self::TRENDING_IDS_QUERY_TEMPLATE, [
+            '%FROM%' => $from->format('Y-m-d'),
+            '%TO%' => $to->format('Y-m-d'),
+        ]);
+        $idsData = $this->graphql($integration, $idsQuery, ['limit' => $limit, 'offset' => max(0, $offset)]);
+        $trending = $idsData['books_trending'] ?? null;
+        if (!is_array($trending) || !isset($trending['ids']) || !is_array($trending['ids'])) {
+            throw new HardcoverException('Unexpected trending payload: missing books_trending.ids');
+        }
+        if (!empty($trending['error'])) {
+            throw new HardcoverException('Hardcover trending error: ' . $trending['error']);
+        }
+        return array_values(array_filter(array_map('intval', $trending['ids'])));
+    }
+
+    /**
+     * Dev diagnostic for the Development → Hardcover Inspector tool. Same two-step trending fetch
+     * as {@see fetchTrending()}, but returns the raw per-edition detail (physical_format, ISBNs,
+     * popularity) and the computed audiobook flag, so the exact data behind the Browse
+     * Books/Audiobooks toggle is visible. Not used by the app's normal flow.
+     *
+     * @return list<array{id: int, title: string, slug: ?string, author: ?string, audiobook: bool, edition_count: int, editions: list<array<string, mixed>>}>
+     *
+     * @throws HardcoverException
+     */
+    public function fetchTrendingDebug(Integration $integration, int $limit = 25, int $offset = 0): array
+    {
+        $ids = $this->fetchTrendingIds($integration, $limit, $offset);
+        if ($ids === []) {
+            return [];
+        }
+
+        $booksData = $this->graphql($integration, self::BOOKS_BY_IDS_QUERY, ['ids' => $ids]);
+        $rows = $booksData['books'] ?? null;
+        if (!is_array($rows)) {
+            throw new HardcoverException('Unexpected books payload: missing `books`.');
+        }
+
+        $byId = [];
+        foreach ($rows as $row) {
+            if (is_array($row) && isset($row['id'])) {
+                $byId[(int) $row['id']] = $row;
+            }
+        }
+
+        $out = [];
+        foreach ($ids as $id) {
+            $row = $byId[$id] ?? null;
+            if ($row === null || empty($row['title'])) {
+                continue;
+            }
+            $editions = is_array($row['editions'] ?? null) ? $row['editions'] : [];
+            $editionDetail = [];
+            foreach ($editions as $e) {
+                if (!is_array($e)) {
+                    continue;
+                }
+                $readingFormatId = isset($e['reading_format_id']) ? (int) $e['reading_format_id'] : null;
+                $editionDetail[] = [
+                    'edition_format'   => isset($e['edition_format']) ? (string) $e['edition_format'] : null,
+                    'physical_format'  => isset($e['physical_format']) ? (string) $e['physical_format'] : null,
+                    'reading_format'   => self::readingFormatLabel($readingFormatId),
+                    'audio'            => $this->editionIsAudio($e),
+                    'isbn_10'          => isset($e['isbn_10']) ? (string) $e['isbn_10'] : null,
+                    'isbn_13'          => isset($e['isbn_13']) ? (string) $e['isbn_13'] : null,
+                    'users_count'      => (int) ($e['users_count'] ?? 0),
+                    'language'         => isset($e['language']['code3']) ? (string) $e['language']['code3'] : null,
+                    'country'          => isset($e['country']['code2']) ? (string) $e['country']['code2'] : null,
+                ];
+            }
+            $out[] = [
+                'id'            => $id,
+                'title'         => (string) $row['title'],
+                'slug'          => !empty($row['slug']) ? (string) $row['slug'] : null,
+                'author'        => $this->extractAuthor($row['cached_contributors'] ?? null),
+                'audiobook'     => $this->hasAudiobookEdition($editions),
+                'edition_count' => count($editionDetail),
+                'editions'      => $editionDetail,
+            ];
         }
         return $out;
     }
@@ -330,6 +416,7 @@ final class HardcoverClient
                 coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
+                audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
             );
         }
         return $out;
@@ -402,6 +489,7 @@ final class HardcoverClient
                 coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
+                audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
             );
         }
         return $out;
@@ -750,6 +838,7 @@ final class HardcoverClient
                 coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
+                audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
             );
         }
         return $out;
@@ -799,6 +888,12 @@ final class HardcoverClient
                   publisher { name }
                   language { code3 }
                   country { code2 }
+                }
+                audio_editions: editions(limit: 20, where: {reading_format_id: {_eq: 2}}) {
+                  id
+                  cached_contributors
+                  audio_seconds
+                  language { code3 }
                 }
               }
             }
@@ -853,10 +948,12 @@ final class HardcoverClient
             }
         }
 
+        $prefs = $integration->getHardcoverEditionPreferences();
         $edition = $this->pickPreferredEdition(
             is_array($row['editions'] ?? null) ? $row['editions'] : [],
-            $integration->getHardcoverEditionPreferences(),
+            $prefs,
         );
+        $audioEdition = $this->pickAudioEdition($row['audio_editions'] ?? null, $prefs);
 
         return [
             'title'         => !empty($row['title']) ? (string) $row['title'] : null,
@@ -876,7 +973,73 @@ final class HardcoverClient
             'seriesIndex'   => $seriesIndex,
             'seriesTotal'   => $seriesTotal,
             'coverUrl'      => $this->extractCoverUrl($row['cached_image'] ?? null),
+            'audiobookAvailable' => is_array($row['audio_editions'] ?? null) && $row['audio_editions'] !== [],
+            'narrator'      => $this->extractNarrator($audioEdition),
+            'audioSeconds'  => $audioEdition !== null && isset($audioEdition['audio_seconds']) && is_int($audioEdition['audio_seconds'])
+                ? $audioEdition['audio_seconds']
+                : null,
         ];
+    }
+
+    /**
+     * Pick the best audiobook edition to source narrator/runtime from: prefer the integration's
+     * preferred language and an edition that actually carries a runtime, else fall back.
+     *
+     * @param array{languages: list<string>, formats: list<string>, countries: list<string>} $prefs
+     */
+    private function pickAudioEdition(mixed $audioEditions, array $prefs): ?array
+    {
+        if (!is_array($audioEditions) || $audioEditions === []) {
+            return null;
+        }
+        // Default to English when no edition-language preference is configured, so we don't
+        // surface an arbitrary foreign-language narrator/runtime.
+        $langs = array_map('strtolower', $prefs['languages'] ?? []);
+        if ($langs === []) {
+            $langs = ['eng'];
+        }
+        $langMatch = static function (array $e) use ($langs): bool {
+            $code = isset($e['language']['code3']) ? strtolower((string) $e['language']['code3']) : null;
+            return $langs !== [] && $code !== null && in_array($code, $langs, true);
+        };
+        $hasRuntime = static fn (array $e): bool => isset($e['audio_seconds']) && is_int($e['audio_seconds']);
+
+        $editions = array_values(array_filter($audioEditions, 'is_array'));
+        if ($editions === []) {
+            return null;
+        }
+        // Preference order: preferred-language + runtime → preferred-language → any + runtime → first.
+        foreach ([
+            static fn (array $e): bool => $langMatch($e) && $hasRuntime($e),
+            static fn (array $e): bool => $langMatch($e),
+            static fn (array $e): bool => $hasRuntime($e),
+        ] as $predicate) {
+            foreach ($editions as $e) {
+                if ($predicate($e)) {
+                    return $e;
+                }
+            }
+        }
+        return $editions[0];
+    }
+
+    /** Comma-joined narrator names from an audiobook edition's cached contributors. */
+    private function extractNarrator(?array $audioEdition): ?string
+    {
+        if ($audioEdition === null || !is_array($audioEdition['cached_contributors'] ?? null)) {
+            return null;
+        }
+        $names = [];
+        foreach ($audioEdition['cached_contributors'] as $c) {
+            if (is_array($c)
+                && isset($c['contribution'])
+                && is_string($c['contribution'])
+                && stripos($c['contribution'], 'narrat') !== false
+                && !empty($c['author']['name'])) {
+                $names[] = (string) $c['author']['name'];
+            }
+        }
+        return $names === [] ? null : implode(', ', array_values(array_unique($names)));
     }
 
     /**
@@ -1153,6 +1316,55 @@ final class HardcoverClient
      * @param array{languages: list<string>, formats: list<string>, countries: list<string>} $prefs
      * @return list<string>
      */
+    /** Hardcover `reading_format_id`: 1 = physical/print, 2 = audiobook, 4 = ebook. */
+    private const READING_FORMAT_AUDIO = 2;
+
+    /**
+     * True if any edition is an audiobook. The canonical signal is `reading_format_id == 2`;
+     * Hardcover's `physical_format` is usually null, so keying on it (as we first did) missed
+     * every audio edition. We still fall back to the free-form `edition_format`/`physical_format`
+     * strings ("Audiobook", "Audible Audio") for the rare edition with no reading_format_id.
+     * Detection is client-side because Hasura blocks `_ilike`/`_iregex` (see searchBooksByGenre).
+     */
+    private function hasAudiobookEdition(mixed $editions): bool
+    {
+        if (!is_array($editions)) {
+            return false;
+        }
+        foreach ($editions as $e) {
+            if (is_array($e) && $this->editionIsAudio($e)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @param array<string, mixed> $edition */
+    private function editionIsAudio(array $edition): bool
+    {
+        if ((int) ($edition['reading_format_id'] ?? 0) === self::READING_FORMAT_AUDIO) {
+            return true;
+        }
+        foreach (['edition_format', 'physical_format'] as $key) {
+            if (isset($edition[$key]) && str_contains(strtolower((string) $edition[$key]), 'audio')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Human-readable category for a Hardcover `reading_format_id`, for the dev inspector. */
+    private static function readingFormatLabel(?int $id): string
+    {
+        return match ($id) {
+            1 => 'Physical',
+            2 => 'Audiobook',
+            4 => 'Ebook',
+            null => '—',
+            default => '#' . $id,
+        };
+    }
+
     private function extractIsbns(mixed $editions, array $prefs): array
     {
         if (!is_array($editions)) {

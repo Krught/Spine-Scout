@@ -9,8 +9,23 @@ const COVER_GRADIENTS = [
     'linear-gradient(135deg,#5a2a3d,#8a4a60)',
 ];
 
+// Remembers the Books/Audiobook toggle across refresh/navigation (1 year).
+const FORMAT_COOKIE = 'spinescout_browse_format';
+
+function writeCookie(name, value) {
+    document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=31536000; samesite=lax`;
+}
+
+function readCookie(name) {
+    const target = `${name}=`;
+    for (const part of document.cookie.split('; ')) {
+        if (part.startsWith(target)) return decodeURIComponent(part.slice(target.length));
+    }
+    return null;
+}
+
 export default class extends Controller {
-    static targets = ['grid', 'sentinel', 'status', 'sort', 'dir', 'dirText', 'rowTitle'];
+    static targets = ['grid', 'sentinel', 'status', 'sort', 'dir', 'dirText', 'rowTitle', 'format'];
     static values = { itemsUrl: String, searchUrl: String, similarUrl: String };
 
     connect() {
@@ -56,6 +71,14 @@ export default class extends Controller {
         window.addEventListener('scroll', this.onScroll, { passive: true });
         window.addEventListener('resize', this.onScroll, { passive: true });
 
+        // Restore the last Books/Audiobook choice (cookie) so the selected mode persists across
+        // refresh/navigation. Applied before the first load so loadMore() picks it up; no extra
+        // reload needed.
+        const savedFormat = readCookie(FORMAT_COOKIE);
+        if ((savedFormat === 'book' || savedFormat === 'audiobook') && this.hasFormatTarget && savedFormat !== this.currentFormat()) {
+            this.setFormat(savedFormat);
+        }
+
         this.loadMore();
     }
 
@@ -76,6 +99,10 @@ export default class extends Controller {
         return this.hasDirTarget ? (this.dirTarget.dataset.direction || 'asc') : 'asc';
     }
 
+    currentFormat() {
+        return this.hasFormatTarget ? (this.formatTarget.dataset.format || 'book') : 'book';
+    }
+
     refresh() {
         this.resetState();
         this.gridTarget.innerHTML = '';
@@ -93,6 +120,34 @@ export default class extends Controller {
         this.refresh();
     }
 
+    selectFormat(event) {
+        const next = event.currentTarget.dataset.format === 'audiobook' ? 'audiobook' : 'book';
+        if (next === this.currentFormat()) return;
+        this.setFormat(next, { refresh: true });
+    }
+
+    // Apply a Books/Audiobook mode to the toggle UI and remember it in a cookie so the choice
+    // survives a refresh or navigating back to /browse. Pass { refresh: true } to reload the grid.
+    setFormat(next, { refresh = false } = {}) {
+        if (!this.hasFormatTarget) return;
+        this.formatTarget.dataset.format = next;
+        for (const opt of this.formatTarget.querySelectorAll('.browse-format__option')) {
+            const active = opt.dataset.format === next;
+            opt.classList.toggle('is-active', active);
+            opt.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+        // Play the dissolve only on an actual user toggle (not the silent restore on load).
+        if (refresh) {
+            this.formatTarget.classList.add('is-switching');
+            window.clearTimeout(this.formatSwitchTimer);
+            this.formatSwitchTimer = window.setTimeout(() => {
+                if (this.hasFormatTarget) this.formatTarget.classList.remove('is-switching');
+            }, 360);
+        }
+        writeCookie(FORMAT_COOKIE, next);
+        if (refresh) this.refresh();
+    }
+
     openFilters() {
         // Filters UI not implemented yet.
     }
@@ -105,6 +160,7 @@ export default class extends Controller {
         // because getBoundingClientRect().top === 0.
         this.cancelled = true;
         this.observer?.disconnect();
+        window.clearTimeout(this.formatSwitchTimer);
         if (this.onScroll) {
             window.removeEventListener('scroll', this.onScroll);
             window.removeEventListener('resize', this.onScroll);
@@ -288,6 +344,8 @@ export default class extends Controller {
             sort: this.currentSort(),
             dir: this.currentDir(),
         });
+        // Applies to trending, search, and similar — backend treats a missing param as "book".
+        if (this.currentFormat() === 'audiobook') params.set('format', 'audiobook');
         const isSimilar = !!this.similarSeed;
         const isSearch = !isSimilar && !!this.searchQuery;
         if (isSimilar) {
@@ -301,6 +359,7 @@ export default class extends Controller {
         const requestSort = this.currentSort();
         const requestDir = this.currentDir();
         const requestQuery = this.searchQuery;
+        const requestFormat = this.currentFormat();
 
         try {
             const res = await fetch(url, { headers: { Accept: 'application/json' } });
@@ -308,7 +367,7 @@ export default class extends Controller {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             if (this.cancelled) return;
-            if (requestSort !== this.currentSort() || requestDir !== this.currentDir() || requestQuery !== this.searchQuery) {
+            if (requestSort !== this.currentSort() || requestDir !== this.currentDir() || requestQuery !== this.searchQuery || requestFormat !== this.currentFormat()) {
                 return;
             }
             const batch = data.items || [];
@@ -386,6 +445,9 @@ export default class extends Controller {
         article.dataset.bookModalCoverParam = item.cover_url ?? '';
         article.dataset.bookModalDownloadedParam = item.downloaded ? '1' : '0';
         article.dataset.bookModalRequestStatusParam = item.request_status || '';
+        article.dataset.bookModalAudiobookParam = item.audiobook ? '1' : '0';
+        // Open the modal in the mode the user is browsing (Book vs Audiobook).
+        article.dataset.bookModalModeParam = this.currentFormat();
 
         const cover = document.createElement('div');
         cover.className = 'card-cover';

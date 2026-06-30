@@ -24,6 +24,7 @@ final readonly class BookSummary
         public ?string $isbn,
         public ?\DateTimeImmutable $addedAt,
         public ?\DateTimeImmutable $lastModifiedAt,
+        public ?string $format = null,
     ) {
     }
 }

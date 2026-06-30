@@ -3,7 +3,7 @@
 {% block title %}Requests - Spine Scout{% endblock %}
 
 {% block body %}
-    <section class="requests-section" data-controller="request-search requests-filter">
+    <section class="requests-section" data-controller="request-search requests-filter book-modal">
         <header class="requests-header">
             <h1 class="requests-title">Requests</h1>
         </header>
@@ -30,8 +30,23 @@
                 {% endfor %}
             </div>
 
+            {% if format_filters is not empty %}
+                <div class="requests-filters requests-format-filters" role="group" aria-label="Filter requests by format">
+                    {% for f in format_filters %}
+                        <button type="button"
+                                class="requests-filter{{ f.key == 'all' ? ' is-active' : '' }}"
+                                data-requests-filter-target="formatChip"
+                                data-format-key="{{ f.key }}"
+                                data-action="requests-filter#selectFormat"
+                                data-requests-filter-key-param="{{ f.key }}">
+                            {{ f.label }} <span class="requests-filter-count">{{ f.count }}</span>
+                        </button>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
             <div class="requests-empty requests-filter-empty" data-requests-filter-target="empty" hidden>
-                No requests with this status.
+                No requests match these filters.
             </div>
 
             <ul class="requests-list">
@@ -55,8 +70,18 @@
                     {% set _dur = random(900, 3600) %}
                     <li class="request-row" data-controller="cover-palette" data-cover-palette-target-value=".request-cover"
                         data-requests-filter-target="row" data-status-key="{{ item.status_key }}"
+                        data-format="{{ item.format_key }}"
                         style="--row-fill-duration: {{ _dur }}ms;">
-                        <div class="request-left">
+                        <div class="request-left request-left-clickable" role="button" tabindex="0"
+                             data-action="click->book-modal#open keydown.enter->book-modal#open keydown.space->book-modal#open"
+                             data-book-modal-id-param="{{ r.book.id }}"
+                             data-book-modal-title-param="{{ r.book.title }}"
+                             data-book-modal-author-param="{{ r.book.author ?? '' }}"
+                             data-book-modal-cover-param="{{ item.cover_url ?? '' }}"
+                             data-book-modal-downloaded-param="{{ is_fulfilled ? '1' : '0' }}"
+                             data-book-modal-request-status-param="{{ item.status_key }}"
+                             data-book-modal-audiobook-param="{{ r.book.audiobookAvailable ? '1' : '0' }}"
+                             data-book-modal-mode-param="{{ r.audiobook ? 'audiobook' : 'book' }}">
                             {% if item.cover_url %}
                                 <img class="request-cover" src="{{ item.cover_url }}" alt="" loading="lazy">
                             {% else %}
@@ -74,6 +99,7 @@
                         </div>
 
                         <div class="request-meta">
+                            <span class="request-format request-format-{{ item.format_key }}">{{ item.format_key == 'audiobook' ? 'Audiobook' : 'Book' }}</span>
                             <span class="request-status request-status-{{ item.status_key }}">{{ item.status_label }}</span>
                             <span class="request-when">
                                 Requested {{ item.ago }} by <strong>{{ r.requestedBy.username }}</strong>
@@ -119,6 +145,38 @@
                 {% endfor %}
             </ul>
         {% endif %}
+
+        {# Book detail popup, opened by clicking a request's cover/title. No interactive-search
+           panel here (admins use the per-row button), so the modal's own Interactive Search
+           button is hidden via CSS. #}
+        <div class="book-modal" data-book-modal-target="modal" data-action="click->book-modal#backdropClick keydown.esc@window->book-modal#close interactive-search:downloaded@window->book-modal#onDownloaded" hidden>
+            <div class="book-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="book-modal-title">
+                <button type="button" class="book-modal-refresh" aria-label="Refresh metadata" title="Refresh metadata" data-book-modal-target="refresh" data-action="click->book-modal#refreshMetadata">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                        <path d="M21 3v6h-6"/>
+                    </svg>
+                </button>
+                <button type="button" class="book-modal-close" aria-label="Close" data-action="click->book-modal#close">×</button>
+                <div class="book-modal-body">
+                    <div class="book-modal-cover-wrap">
+                        <div class="book-modal-cover" data-book-modal-target="cover"></div>
+                        <button type="button" class="book-modal-action" data-book-modal-target="action" data-action="click->book-modal#requestBook" hidden></button>
+                        <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        <button type="button" class="book-modal-search book-modal-recommend" data-book-modal-target="recommend" data-action="click->book-modal#moreLikeThis" hidden>More like this</button>
+                    </div>
+                    <div class="book-modal-content">
+                        <h2 class="book-modal-title" id="book-modal-title" data-book-modal-target="title"></h2>
+                        <div class="book-modal-author" data-book-modal-target="author"></div>
+                        <div class="book-modal-format" data-book-modal-target="format" hidden></div>
+                        <div class="book-modal-status" data-book-modal-target="status">Loading…</div>
+                        <dl class="book-modal-facts" data-book-modal-target="facts"></dl>
+                        <div class="book-modal-genres" data-book-modal-target="genres"></div>
+                        <div class="book-modal-description" data-book-modal-target="description"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         {% if is_granted('ROLE_ADMIN') %}
             <div class="book-modal request-search-overlay" data-request-search-target="overlay"

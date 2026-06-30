@@ -12,6 +12,9 @@
         <nav class="settings-tabs" aria-label="Development tools">
             {% set tabs = [
                 { id: 'direct_download', label: 'Direct Download Probe', route: 'dev_direct_download' },
+                { id: 'hardcover', label: 'Hardcover Inspector', route: 'dev_hardcover' },
+                { id: 'komga', label: 'Komga Inspector', route: 'dev_komga' },
+                { id: 'indexers', label: 'Indexer Search', route: 'dev_indexers' },
                 { id: 'downloads', label: 'Downloads Activity', route: 'dev_downloads' }
             ] %}
             {% for tab in tabs %}

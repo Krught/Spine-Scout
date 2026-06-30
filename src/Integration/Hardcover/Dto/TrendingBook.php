@@ -23,10 +23,11 @@ final readonly class TrendingBook
         public ?string $coverUrl = null,
         public ?string $externalUrl = null,
         public array $isbns = [],
+        public bool $audiobook = false,
     ) {
     }
 
-    /** @return array{title: string, author: ?string, coverUrl: ?string, externalUrl: ?string, isbns: list<string>} */
+    /** @return array{title: string, author: ?string, coverUrl: ?string, externalUrl: ?string, isbns: list<string>, audiobook: bool} */
     public function toArray(): array
     {
         return [
@@ -35,6 +36,7 @@ final readonly class TrendingBook
             'coverUrl' => $this->coverUrl,
             'externalUrl' => $this->externalUrl,
             'isbns' => $this->isbns,
+            'audiobook' => $this->audiobook,
         ];
     }
 }

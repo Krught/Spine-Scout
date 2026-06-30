@@ -53,6 +53,12 @@ services:
         arguments:
             $stagingDir: '%kernel.project_dir%/var/downloads'
 
+    # Audiobook torrents stage under var/downloads/<staging> before the final move
+    # into the library destination. Scalar arg can't be autowired.
+    App\Download\Torrent\TorrentMover:
+        arguments:
+            $stagingBaseDir: '%kernel.project_dir%/var/downloads'
+
     # Dev-tools gate: scalar args can't be autowired.
     App\Dev\DevTools:
         arguments:

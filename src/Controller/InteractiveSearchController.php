@@ -86,14 +86,15 @@ final class InteractiveSearchController extends AbstractController
 
         // Operator priority order first (so the panel defaults to their highest
         // source), then any source not yet in their saved priority list.
+        // HTTP mirror sources only — torrent isn't a manual, link-resolving source.
         $orderedIds = [];
         foreach ($config->indexerPriority as $row) {
             $id = $row['id'] ?? null;
-            if (is_string($id) && DirectDownloadSource::tryFromId($id) !== null && !in_array($id, $orderedIds, true)) {
+            if (is_string($id) && DirectDownloadSource::tryFromId($id)?->usesMirrors() && !in_array($id, $orderedIds, true)) {
                 $orderedIds[] = $id;
             }
         }
-        foreach (DirectDownloadSource::ids() as $id) {
+        foreach (DirectDownloadSource::mirrorIds() as $id) {
             if (!in_array($id, $orderedIds, true)) {
                 $orderedIds[] = $id;
             }

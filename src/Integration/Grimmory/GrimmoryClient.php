@@ -7,6 +7,7 @@ namespace App\Integration\Grimmory;
 use App\Entity\Integration;
 use App\Integration\Grimmory\Dto\BookSummary;
 use App\Integration\Grimmory\Dto\LibraryEntry;
+use App\Support\AudioFormat;
 use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -85,6 +86,63 @@ final class GrimmoryClient
                 return;
             }
         }
+    }
+
+    /**
+     * Dev diagnostic for the Development → Komga Inspector. Returns the raw media/format detail
+     * per book (one page, capped at $limit) so you can see what {@see formatFromRow()} resolves
+     * and how it classifies each owned file: 'audiobook', 'book', or 'unknown' (no derivable
+     * format). This is the exact `format` persisted to {@see \App\Entity\Book::$format} and used
+     * by the Browse "downloaded" badge.
+     *
+     * @param list<string>|null $libraryIds
+     * @return list<array{id: string, title: string, author: ?string, url: ?string, media_type: ?string, media_profile: ?string, format: ?string, classification: string}>
+     *
+     * @throws GrimmoryException
+     */
+    public function fetchBooksDebug(Integration $integration, ?array $libraryIds = null, int $limit = 50): array
+    {
+        $baseQuery = ['size' => max(1, min($limit, self::PAGE_SIZE)), 'sort' => 'createdDate,desc'];
+        if ($libraryIds !== null && $libraryIds !== []) {
+            $baseQuery['library_id'] = implode(',', $libraryIds);
+        }
+
+        $body = $this->getJson($integration, '/books', $baseQuery + ['page' => 0]);
+        if (!is_array($body) || !isset($body['content']) || !is_array($body['content'])) {
+            throw new GrimmoryException('Unexpected /books response shape.');
+        }
+
+        $out = [];
+        foreach ($body['content'] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $metadata = is_array($row['metadata'] ?? null) ? $row['metadata'] : [];
+            $authors = is_array($metadata['authors'] ?? null) ? $metadata['authors'] : [];
+            $authorNames = [];
+            foreach ($authors as $a) {
+                if (is_array($a) && !empty($a['name'])) {
+                    $authorNames[] = (string) $a['name'];
+                }
+            }
+            $media = is_array($row['media'] ?? null) ? $row['media'] : [];
+            $format = $this->formatFromRow($row);
+
+            $out[] = [
+                'id'            => (string) ($row['id'] ?? ''),
+                'title'         => (string) ($metadata['title'] ?? $row['name'] ?? '(untitled)'),
+                'author'        => $authorNames === [] ? null : implode(', ', $authorNames),
+                'url'           => isset($row['url']) ? (string) $row['url'] : null,
+                'media_type'    => isset($media['mediaType']) ? (string) $media['mediaType'] : null,
+                'media_profile' => isset($media['mediaProfile']) ? (string) $media['mediaProfile'] : null,
+                'format'        => $format,
+                'classification' => $format === null ? 'unknown' : (AudioFormat::isAudio($format) ? 'audiobook' : 'book'),
+            ];
+            if (count($out) >= $limit) {
+                break;
+            }
+        }
+        return $out;
     }
 
     /** @throws GrimmoryException */
@@ -230,7 +288,37 @@ final class GrimmoryClient
             isbn: \App\Repository\BookRepository::normalizeIsbn($metadata['isbn'] ?? null),
             addedAt: $this->parseTimestamp($row['created'] ?? null),
             lastModifiedAt: $this->parseTimestamp($row['lastModified'] ?? null),
+            format: $this->formatFromRow($row),
         );
+    }
+
+    /**
+     * The owned file's format token, lowercased (e.g. `epub`, `pdf`, `m4b`, `mp3`). Komga's
+     * book `url` is the on-disk file path, so its extension is the most reliable cross-format
+     * signal; fall back to the media MIME subtype when no extension is present. This is what
+     * lets the app distinguish an owned audiobook from an ebook (see {@see \App\Support\AudioFormat}).
+     *
+     * @param array<string, mixed> $row
+     */
+    private function formatFromRow(array $row): ?string
+    {
+        $url = is_string($row['url'] ?? null) ? $row['url'] : '';
+        $path = parse_url($url, PHP_URL_PATH);
+        $ext = strtolower(pathinfo(is_string($path) && $path !== '' ? $path : $url, PATHINFO_EXTENSION));
+        if ($ext !== '') {
+            return substr($ext, 0, 32);
+        }
+
+        // Fall back to Komga's media MIME (e.g. "application/epub+zip" -> "epub", "audio/mpeg" -> "mpeg").
+        $media = is_array($row['media'] ?? null) ? $row['media'] : [];
+        $mime = is_string($media['mediaType'] ?? null) ? strtolower($media['mediaType']) : '';
+        if ($mime !== '' && preg_match('~/(?:x-)?([a-z0-9.+-]+)~', $mime, $m)) {
+            $sub = preg_replace('~\+.*$~', '', $m[1]); // strip "+zip"/"+xml" suffix
+            if ($sub !== '' && $sub !== null) {
+                return substr($sub, 0, 32);
+            }
+        }
+        return null;
     }
 
     private function parseTimestamp(mixed $value): ?\DateTimeImmutable

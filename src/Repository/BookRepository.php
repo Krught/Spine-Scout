@@ -52,16 +52,19 @@ final class BookRepository extends ServiceEntityRepository
      * Normalization is lowercase + non-alphanumeric stripped, so "The Fifth Season" matches
      * "the fifth season:".
      *
+     * When $audiobook is non-null, restrict to owned copies whose file format is (true) or is
+     * not (false) an audiobook format, so the Browse "downloaded" badge can reflect the toggle.
+     *
      * @return array<string, true>
      */
-    public function downloadedTitleAuthorKeys(): array
+    public function downloadedTitleAuthorKeys(?bool $audiobook = null): array
     {
-        $rows = $this->createQueryBuilder('b')
+        $qb = $this->createQueryBuilder('b')
             ->select('b.title', 'b.author')
             ->where('b.removedAt IS NULL')
-            ->andWhere('b.downloaded = true')
-            ->getQuery()
-            ->getArrayResult();
+            ->andWhere('b.downloaded = true');
+        $this->applyAudiobookFilter($qb, $audiobook);
+        $rows = $qb->getQuery()->getArrayResult();
 
         $out = [];
         foreach ($rows as $row) {
@@ -84,15 +87,15 @@ final class BookRepository extends ServiceEntityRepository
     }
 
     /** @return array<string, true> */
-    public function downloadedIsbns(): array
+    public function downloadedIsbns(?bool $audiobook = null): array
     {
-        $rows = $this->createQueryBuilder('b')
+        $qb = $this->createQueryBuilder('b')
             ->select('b.isbn')
             ->where('b.removedAt IS NULL')
             ->andWhere('b.downloaded = true')
-            ->andWhere('b.isbn IS NOT NULL')
-            ->getQuery()
-            ->getArrayResult();
+            ->andWhere('b.isbn IS NOT NULL');
+        $this->applyAudiobookFilter($qb, $audiobook);
+        $rows = $qb->getQuery()->getArrayResult();
 
         $out = [];
         foreach ($rows as $row) {
@@ -102,6 +105,23 @@ final class BookRepository extends ServiceEntityRepository
             }
         }
         return $out;
+    }
+
+    /**
+     * Narrow an owned-books query to audiobook (true) or non-audiobook (false) copies by file
+     * format; a null $audiobook leaves the query untouched. `b.format` is stored lowercased.
+     */
+    private function applyAudiobookFilter(\Doctrine\ORM\QueryBuilder $qb, ?bool $audiobook): void
+    {
+        if ($audiobook === null) {
+            return;
+        }
+        if ($audiobook) {
+            $qb->andWhere('b.format IN (:audioFormats)');
+        } else {
+            $qb->andWhere('(b.format IS NULL OR b.format NOT IN (:audioFormats))');
+        }
+        $qb->setParameter('audioFormats', \App\Support\AudioFormat::EXTENSIONS);
     }
 
     /**
@@ -212,6 +232,7 @@ final class BookRepository extends ServiceEntityRepository
         ?string $coverUrl,
         array $rawIsbns,
         \DateTimeImmutable $now,
+        bool $audiobookAvailable = false,
     ): Book {
         $book = $this->findOneBySourceAndExternalId($source, $externalId);
         if ($book === null) {
@@ -220,6 +241,11 @@ final class BookRepository extends ServiceEntityRepository
             $this->getEntityManager()->persist($book);
         } else {
             $book->setTitle($title);
+        }
+        // Availability only ever flips on — a later sighting without audio editions shouldn't
+        // erase a known audiobook edition.
+        if ($audiobookAvailable) {
+            $book->setAudiobookAvailable(true);
         }
         if ($author !== null) {
             $book->setAuthor($author);

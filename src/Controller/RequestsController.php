@@ -12,7 +12,10 @@ use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
 use App\Service\AppSettingsProvider;
 use App\Service\BookMetadataService;
+use App\Download\Client\QbittorrentDownloadClient;
+use App\Integration\Prowlarr\ProwlarrClient;
 use App\Message\DispatchReleaseSearch;
+use App\Message\DispatchTorrentSearch;
 use App\Repository\DownloadJobRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
@@ -47,8 +50,31 @@ final class RequestsController extends AbstractController
         'rejected'   => 'Rejected',
     ];
 
-    public function __construct(private readonly CacheItemPoolInterface $cache)
+    public function __construct(
+        private readonly CacheItemPoolInterface $cache,
+        private readonly ProwlarrClient $prowlarr,
+        private readonly QbittorrentDownloadClient $qbittorrent,
+    ) {
+    }
+
+    /**
+     * Route a just-approved request to the right fulfillment pipeline: audiobooks
+     * go to Prowlarr/qBittorrent (torrent), everything else to the direct-download
+     * cascade (HTTP).
+     */
+    private function dispatchFulfillment(BookRequest $entity, MessageBusInterface $bus): void
     {
+        if ($entity->isAudiobook()) {
+            $bus->dispatch(new DispatchTorrentSearch((int) $entity->getId()));
+        } else {
+            $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
+        }
+    }
+
+    /** Both halves of the audiobook torrent stack must be configured to fulfill one. */
+    private function torrentStackReady(): bool
+    {
+        return $this->prowlarr->isConfigured() && $this->qbittorrent->isConfigured();
     }
 
     #[Route('/requests', name: 'requests', methods: ['GET'])]
@@ -90,12 +116,14 @@ final class RequestsController extends AbstractController
                 'stalled'        => $stalled,
                 'status_key'     => $statusKey,
                 'status_label'   => self::STATUS_LABELS[$statusKey] ?? $r->getStatusLabel(),
+                'format_key'     => $r->isAudiobook() ? 'audiobook' : 'book',
             ];
         }
 
         return $this->render('requests/index.html.twig', [
-            'items'   => $items,
-            'filters' => $this->buildFilters($items),
+            'items'          => $items,
+            'filters'        => $this->buildFilters($items),
+            'format_filters' => $this->buildFormatFilters($items),
         ]);
     }
 
@@ -141,6 +169,34 @@ final class RequestsController extends AbstractController
         }
 
         return $filters;
+    }
+
+    /**
+     * The format filter chips: "All" plus Book / Audiobook, each with its count.
+     * A chip is omitted when nothing matches so the bar only offers useful filters
+     * (and disappears entirely when every request is the same format).
+     *
+     * @param list<array{format_key: string, ...}> $items
+     *
+     * @return list<array{key: string, label: string, count: int}>
+     */
+    private function buildFormatFilters(array $items): array
+    {
+        $counts = ['book' => 0, 'audiobook' => 0];
+        foreach ($items as $item) {
+            $counts[$item['format_key']] = ($counts[$item['format_key']] ?? 0) + 1;
+        }
+
+        // Only one format present → no useful choice, hide the bar.
+        if ($counts['book'] === 0 || $counts['audiobook'] === 0) {
+            return [];
+        }
+
+        return [
+            ['key' => 'all', 'label' => 'All formats', 'count' => \count($items)],
+            ['key' => 'book', 'label' => 'Book', 'count' => $counts['book']],
+            ['key' => 'audiobook', 'label' => 'Audiobook', 'count' => $counts['audiobook']],
+        ];
     }
 
     private function rememberCover(int $bookId, string $proxyUrl): void
@@ -201,18 +257,28 @@ final class RequestsController extends AbstractController
             $this->rememberCover($bookId, $coverUrl);
         }
 
-        $existing = $requests->findOneByUserAndBook($user, $book);
+        $audiobook = !empty($payload['audiobook']) && $payload['audiobook'] !== '0';
+
+        // Book and audiobook are independent requests for the same work.
+        $existing = $requests->findOneByUserAndBook($user, $book, $audiobook);
         if ($existing !== null) {
             return new JsonResponse([
                 'requested' => true,
                 'requestId' => $existing->getId(),
                 'bookId' => $book->getId(),
+                'audiobook' => $existing->isAudiobook(),
                 'alreadyExisted' => true,
             ]);
         }
 
         $entity = new BookRequest($user, $book);
-        $autoApproved = $settings->isAutoApproveRequestsEnabled();
+        $entity->setAudiobook($audiobook);
+        // Auto-approve when enabled. Audiobooks go to the torrent pipeline, so only
+        // auto-approve one when Prowlarr + qBittorrent are configured; otherwise it
+        // stays pending (an admin can approve once the stack is set up) rather than
+        // erroring out immediately.
+        $autoApproved = $settings->isAutoApproveRequestsEnabled()
+            && (!$audiobook || $this->torrentStackReady());
         if ($autoApproved) {
             $entity->setStatus(BookRequest::STATUS_APPROVED);
         }
@@ -221,7 +287,7 @@ final class RequestsController extends AbstractController
 
         if ($autoApproved) {
             // Same async fulfillment loop a manual approve() triggers.
-            $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
+            $this->dispatchFulfillment($entity, $bus);
         }
 
         return new JsonResponse([
@@ -229,6 +295,7 @@ final class RequestsController extends AbstractController
             'requestId' => $entity->getId(),
             'bookId' => $book->getId(),
             'status' => $entity->getStatus(),
+            'audiobook' => $entity->isAudiobook(),
             'alreadyExisted' => false,
         ]);
     }
@@ -249,7 +316,7 @@ final class RequestsController extends AbstractController
         $em->flush();
 
         // Kick off the async fulfillment loop: search → best match → download.
-        $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
+        $this->dispatchFulfillment($entity, $bus);
 
         return $this->redirectToRoute('requests');
     }
@@ -271,7 +338,7 @@ final class RequestsController extends AbstractController
         // idempotent via hasActiveJobForRequest() — can start a fresh attempt.
         if ($entity->getStatus() === BookRequest::STATUS_APPROVED) {
             $jobs->cancelActiveForRequest($entity);
-            $bus->dispatch(new DispatchReleaseSearch((int) $entity->getId()));
+            $this->dispatchFulfillment($entity, $bus);
             $this->addFlash('success', 'Re-checking for a release…');
         }
 

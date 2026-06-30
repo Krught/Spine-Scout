@@ -157,6 +157,7 @@ final class RefreshHardcoverTrendingHandler
                 coverUrl: $b->coverUrl,
                 rawIsbns: $b->isbns,
                 now: $now,
+                audiobookAvailable: $b->audiobook,
             );
             // We can't get the id until after flush, so flush before reading it back. The caller
             // flushes once per shelf so this is at most one extra flush per ~25-200 books.

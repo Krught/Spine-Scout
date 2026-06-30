@@ -118,6 +118,7 @@ wires everything up. No source checkout required.
        volumes:
          - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:rw
          - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
+         # - ${SPINESCOUT_TORRENT_DIR:-./downloads}:/downloads:rw # completed torrents location
        depends_on:
          database:
            condition: service_healthy
@@ -145,6 +146,7 @@ wires everything up. No source checkout required.
        volumes:
          - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:rw
          - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
+        # - ${SPINESCOUT_TORRENT_DIR:-./downloads}:/downloads:rw # completed torrents location  
        depends_on:
          database:
            condition: service_healthy
@@ -226,8 +228,31 @@ Most configuration happens in the **Settings** area of the web UI after first la
 
 - Connect your **Komga**-compatible library via its REST API
 - Add **metadata provider** credentials (Hardcover API key, etc.)
+- Configure **torrent** fulfillment — your **indexers** and a **download client** under Settings → Torrents
 - Manage users, roles, and per-user request preferences
 - Adjust per-integration sync cadence and trigger manual "Sync now" runs
+
+### Torrent downloads: mapping the download path
+
+Books and audiobooks can be fulfilled over BitTorrent. Audiobooks always use it; for books, add **Torrent** to *Settings → Direct downloads → Source priority* (drag it above the HTTP sources to prefer it, or below to use it as a fallback). Spine Scout searches your indexers, sends the best match to your download client, then **moves the finished files into your library** — audiobooks to your audiobook folder, books to your ebook library folder. To do the move it reads the client's completed downloads from disk; it does not pull files over the client's API.
+
+The convention is a single fixed mount: **bind-mount your download client's completed-downloads folder into the Spine Scout `app` and `worker` containers at `/downloads`.** Spine Scout then resolves a finished torrent at `/downloads/<torrent name>`, so it works no matter what absolute path the client uses on its own host (e.g. `/mnt/videos/torr/...`) — only the basename matters. No path-mapping fields are needed in the UI; the `/downloads` mount is the whole contract.
+
+**Production** — add the bind to both the `app` and `worker` services of your production `docker-compose.yaml` (alongside the existing library/cover mounts):
+
+```yaml
+services:
+  app:
+    volumes:
+      - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
+      - ${SPINESCOUT_TORRENT_DIR:-./downloads}:/downloads:rw   # completed torrents
+  worker:
+    volumes:
+      - ${SPINESCOUT_DOWNLOAD_DIR:-./library}:/var/www/html/library:rw
+      - ${SPINESCOUT_TORRENT_DIR:-./downloads}:/downloads:rw   # completed torrents
+```
+
+Set `SPINESCOUT_TORRENT_DIR` in your `.env` to wherever completed torrents physically land **on the Spine Scout host**. 
 
 ## 🛠️ Tech Stack
 

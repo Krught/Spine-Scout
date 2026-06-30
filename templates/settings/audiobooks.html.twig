@@ -1,0 +1,201 @@
+{% extends 'settings/_layout.html.twig' %}
+
+{% block settings_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Torrents</h2>
+    </div>
+
+    <p class="form-note">
+        Books and audiobooks can be fulfilled over BitTorrent. Configure your <strong>indexers</strong>
+        and a <strong>download client</strong> below, then turn on torrenting per format: audiobooks use
+        it automatically, and for books you add/order <strong>Torrent</strong> in
+        <a href="{{ path('settings_direct_download') }}">Direct downloads → Source priority</a>.
+        Spine Scout searches your indexers, sends the best match to the download client, then moves the
+        finished files into your library.
+    </p>
+
+    <form method="post" action="{{ path('settings_audiobooks') }}" class="settings-form" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token('settings_audiobooks') }}">
+
+        {# -- Indexers ------------------------------------------------------------ #}
+        <fieldset class="settings-fieldset">
+            <legend>Indexers</legend>
+            {% if prowlarr.id is not null %}
+                <div class="status-pill {{ prowlarr.enabled ? 'status-pill-on' : 'status-pill-off' }}">
+                    <span class="dot"></span>
+                    {{ prowlarr.enabled ? 'Enabled' : 'Disabled' }}
+                    {% if prowlarr.lastError %}· <span class="status-error">Last error: {{ prowlarr.lastError }}</span>{% endif %}
+                </div>
+            {% endif %}
+            <label class="field-checkbox">
+                <input type="checkbox" name="prowlarr_enabled" value="1" {{ prowlarr.enabled ? 'checked' : '' }}>
+                <span>Enable torrent search</span>
+            </label>
+            <div class="field">
+                <label for="prowlarr_base_url">Indexer manager URL</label>
+                <input type="text" id="prowlarr_base_url" name="prowlarr_base_url" value="{{ prowlarr.baseUrl }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="http://your-indexer-host:9696">
+            </div>
+            <div class="field">
+                <label for="prowlarr_api_key">API key</label>
+                <input type="password" id="prowlarr_api_key" name="prowlarr_api_key" value=""
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="{{ prowlarr.hasCredentials ? 'Leave blank to keep current key' : 'Indexer manager API key' }}">
+            </div>
+            <div class="field">
+                <label for="prowlarr_categories">Torznab categories</label>
+                <input type="text" id="prowlarr_categories" name="prowlarr_categories"
+                       value="{{ prowlarr_config.categories|join(', ') }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="3030">
+                <p class="form-note">Comma-separated audiobook categories. <code>3030</code> is Audio/Audiobook. (Book torrents search the Books categories automatically.)</p>
+            </div>
+            <div class="field" data-controller="connection-test"
+                 data-connection-test-url-value="{{ path('settings_audiobooks_test_prowlarr') }}"
+                 data-connection-test-token-value="{{ csrf_token('settings_audiobooks_test') }}">
+                <button type="button" class="btn" data-connection-test-target="button" data-action="connection-test#run">Test connection</button>
+                <p class="form-note" data-connection-test-target="result" hidden></p>
+                <p class="form-note">Tests the saved settings — save first if you just changed them.</p>
+            </div>
+        </fieldset>
+
+        {# -- Matching ------------------------------------------------------------ #}
+        <fieldset class="settings-fieldset">
+            <legend>Match criteria</legend>
+            <p class="form-note">
+                Among the search results, releases below the seed floor (or above the size cap) are
+                discarded, and the rest are ranked by a weighted score. Higher weight = more influence.
+            </p>
+            <div class="field">
+                <label for="prowlarr_min_seeders">Minimum seeders</label>
+                <input type="number" id="prowlarr_min_seeders" name="prowlarr_min_seeders" min="0" step="1"
+                       value="{{ prowlarr_config.minSeeders }}">
+            </div>
+            <div class="field">
+                <label for="prowlarr_max_size_gb">Maximum size (GB, optional)</label>
+                <input type="number" id="prowlarr_max_size_gb" name="prowlarr_max_size_gb" min="0" step="0.1"
+                       value="{{ prowlarr_config.maxSizeBytes ? (prowlarr_config.maxSizeBytes / (1024*1024*1024))|round(2) : '' }}"
+                       placeholder="no cap">
+            </div>
+            <div class="field-grid">
+                <div class="field">
+                    <label for="prowlarr_weight_match">Weight: title/author match</label>
+                    <input type="number" id="prowlarr_weight_match" name="prowlarr_weight_match" min="0" step="0.05"
+                           value="{{ prowlarr_config.weights.match }}">
+                </div>
+                <div class="field">
+                    <label for="prowlarr_weight_seeders">Weight: seeders</label>
+                    <input type="number" id="prowlarr_weight_seeders" name="prowlarr_weight_seeders" min="0" step="0.05"
+                           value="{{ prowlarr_config.weights.seeders }}">
+                </div>
+                <div class="field">
+                    <label for="prowlarr_weight_size">Weight: size</label>
+                    <input type="number" id="prowlarr_weight_size" name="prowlarr_weight_size" min="0" step="0.05"
+                           value="{{ prowlarr_config.weights.size }}">
+                </div>
+                <div class="field">
+                    <label for="prowlarr_weight_format">Weight: format</label>
+                    <input type="number" id="prowlarr_weight_format" name="prowlarr_weight_format" min="0" step="0.05"
+                           value="{{ prowlarr_config.weights.format }}">
+                </div>
+            </div>
+        </fieldset>
+
+        {# -- Download client ----------------------------------------------------- #}
+        <fieldset class="settings-fieldset">
+            <legend>Download Client</legend>
+            {% if qbittorrent.id is not null %}
+                <div class="status-pill {{ qbittorrent.enabled ? 'status-pill-on' : 'status-pill-off' }}">
+                    <span class="dot"></span>
+                    {{ qbittorrent.enabled ? 'Enabled' : 'Disabled' }}
+                    {% if qbittorrent.lastError %}· <span class="status-error">Last error: {{ qbittorrent.lastError }}</span>{% endif %}
+                </div>
+            {% endif %}
+            <label class="field-checkbox">
+                <input type="checkbox" name="qbittorrent_enabled" value="1" {{ qbittorrent.enabled ? 'checked' : '' }}>
+                <span>Enable download client</span>
+            </label>
+            <div class="field">
+                <label for="qbittorrent_base_url">Download client URL</label>
+                <input type="text" id="qbittorrent_base_url" name="qbittorrent_base_url" value="{{ qbittorrent.baseUrl }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="http://your-download-host:8080">
+            </div>
+            <div class="field-grid">
+                <div class="field">
+                    <label for="qbittorrent_username">Username</label>
+                    <input type="text" id="qbittorrent_username" name="qbittorrent_username"
+                           value="{{ qbittorrent.credentials.username ?? '' }}"
+                           spellcheck="false" autocapitalize="off" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label for="qbittorrent_password">Password</label>
+                    <input type="password" id="qbittorrent_password" name="qbittorrent_password" value=""
+                           spellcheck="false" autocapitalize="off" autocomplete="off"
+                           placeholder="{{ qbittorrent.hasCredentials ? 'Leave blank to keep current' : '' }}">
+                </div>
+            </div>
+            <div class="field">
+                <label for="qbittorrent_category">Category</label>
+                <input type="text" id="qbittorrent_category" name="qbittorrent_category" value="{{ client_config.category }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="spinescout">
+                <p class="form-note">Applied to torrents Spine Scout adds, so you can isolate them in your client.</p>
+            </div>
+            <p class="form-note">
+                <strong>Required mount:</strong> bind-mount your download client's completed-downloads folder
+                into the Spine Scout containers at <code>/downloads</code>. Spine Scout reads a finished
+                torrent from <code>/downloads/&lt;torrent name&gt;</code>, so no path mapping is needed — it
+                works regardless of where the client stores files on its own host. See the README for an example.
+            </p>
+            <div class="field" data-controller="connection-test"
+                 data-connection-test-url-value="{{ path('settings_audiobooks_test_qbittorrent') }}"
+                 data-connection-test-token-value="{{ csrf_token('settings_audiobooks_test') }}">
+                <button type="button" class="btn" data-connection-test-target="button" data-action="connection-test#run">Test connection</button>
+                <p class="form-note" data-connection-test-target="result" hidden></p>
+                <p class="form-note">Tests the saved settings — save first if you just changed them.</p>
+            </div>
+        </fieldset>
+
+        {# -- Destination --------------------------------------------------------- #}
+        <fieldset class="settings-fieldset">
+            <legend>Audiobook destination</legend>
+            <p class="form-note">Book torrents are delivered into your ebook library folder (Direct downloads → Output). These settings apply to audiobooks.</p>
+            <label class="field-checkbox">
+                <input type="checkbox" name="use_ebook_library_dir" value="1" {{ client_config.useEbookLibraryDir ? 'checked' : '' }}>
+                <span>Deliver audiobooks into the ebook library folder (<code>{{ ebook_output_directory }}</code>)</span>
+            </label>
+            <div class="field">
+                <label for="audio_output_directory">Audiobook output folder</label>
+                <input type="text" id="audio_output_directory" name="audio_output_directory"
+                       value="{{ client_config.audioOutputDirectory }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="/var/www/html/audiobooks">
+                <p class="form-note">
+                    Absolute path the finished audiobook is moved into — point at the folder your
+                    audiobook library watches. Ignored when the checkbox above is ticked.
+                </p>
+            </div>
+            <div class="field">
+                <label for="staging_subdir">Staging sub-folder</label>
+                <input type="text" id="staging_subdir" name="staging_subdir" value="{{ client_config.stagingSubdir }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="torrents">
+                <p class="form-note">Under <code>var/downloads</code>; files are staged here before the final move.</p>
+            </div>
+            <div class="field">
+                <label for="torrent_filename_template">Folder/filename template</label>
+                <input type="text" id="torrent_filename_template" name="torrent_filename_template"
+                       value="{{ client_config.filenameTemplate }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="{{ '{Author} - {Title}' }}">
+                <p class="form-note">
+                    Tokens: <code>{{ '{Author}' }}</code>, <code>{{ '{Title}' }}</code>,
+                    <code>{{ '{Year}' }}</code>, <code>{{ '{ISBN}' }}</code>.
+                </p>
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save settings</button>
+        </div>
+    </form>
+{% endblock %}

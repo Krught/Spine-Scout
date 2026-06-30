@@ -1,0 +1,105 @@
+{% extends 'dev/_layout.html.twig' %}
+
+{% block dev_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Hardcover trending inspector</h2>
+    </div>
+
+    <section class="dev-test">
+        <p class="form-note">
+            Loads the live Hardcover <code>books_trending</code> feed (30-day window) and dumps the raw
+            editions per book. An edition counts as audio when its <code>reading_format_id</code> is
+            <code>2</code> (Audiobook) — Hardcover's <code>physical_format</code> is usually null, so we
+            key on reading format. This is the exact signal behind the Browse Books / Audiobooks toggle.
+        </p>
+
+        {% if not configured %}
+            <p class="flash flash-error">Hardcover integration is not configured/enabled. Add a token in Settings → Integrations.</p>
+        {% endif %}
+
+        <form method="get" action="{{ path('dev_hardcover') }}" class="settings-form dev-form">
+            <div class="dev-form__grid">
+                <label class="field">
+                    <span>Limit <em>(1–100)</em></span>
+                    <input type="number" name="limit" value="{{ limit }}" min="1" max="100" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>Offset</span>
+                    <input type="number" name="offset" value="{{ offset }}" min="0" autocomplete="off">
+                </label>
+            </div>
+            <div class="form-actions">
+                <button type="submit" name="load" value="1" class="btn btn-primary"{{ configured ? '' : ' disabled' }}>Load trending</button>
+            </div>
+        </form>
+
+        {% if error %}
+            <p class="flash flash-error">{{ error }}</p>
+        {% endif %}
+
+        {% if loaded and not error %}
+            <div class="dev-result">
+                <h4>
+                    {{ books|length }} book(s) — <strong>{{ audiobook_count }}</strong> with an audiobook edition
+                    (offset {{ offset }}, limit {{ limit }})
+                </h4>
+
+                {% if books is empty %}
+                    <p class="form-note">No trending books returned for this window/offset.</p>
+                {% endif %}
+
+                {% for book in books %}
+                    <div class="dev-hc-book">
+                        <h5 class="dev-hc-book__title">
+                            {% if book.audiobook %}
+                                <span class="dev-hc-badge dev-hc-badge--audio" title="Has an audiobook edition">🎧 Audiobook</span>
+                            {% else %}
+                                <span class="dev-hc-badge dev-hc-badge--none" title="No audiobook edition found">Book</span>
+                            {% endif %}
+                            {{ book.title }}
+                            {% if book.author %}<span class="form-note">— {{ book.author }}</span>{% endif %}
+                        </h5>
+                        <p class="form-note">
+                            id <code>{{ book.id }}</code>
+                            {% if book.slug %}· <a href="https://hardcover.app/books/{{ book.slug }}" target="_blank" rel="noopener"><code>{{ book.slug }}</code></a>{% endif %}
+                            · {{ book.edition_count }} edition(s)
+                        </p>
+
+                        {% if book.editions is empty %}
+                            <p class="form-note">No editions returned.</p>
+                        {% else %}
+                            <table class="dev-hc-editions">
+                                <thead>
+                                    <tr>
+                                        <th>reading_format</th>
+                                        <th>edition_format</th>
+                                        <th>audio?</th>
+                                        <th>isbn_13</th>
+                                        <th>isbn_10</th>
+                                        <th>users</th>
+                                        <th>lang</th>
+                                        <th>country</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for ed in book.editions %}
+                                        <tr class="{{ ed.audio ? 'is-audio' : '' }}">
+                                            <td>{{ ed.reading_format }}</td>
+                                            <td>{{ ed.edition_format ?? '∅' }}</td>
+                                            <td>{{ ed.audio ? '✓' : '' }}</td>
+                                            <td>{{ ed.isbn_13 ?? '' }}</td>
+                                            <td>{{ ed.isbn_10 ?? '' }}</td>
+                                            <td>{{ ed.users_count }}</td>
+                                            <td>{{ ed.language ?? '' }}</td>
+                                            <td>{{ ed.country ?? '' }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </section>
+{% endblock %}

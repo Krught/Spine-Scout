@@ -7,6 +7,14 @@ namespace App\Controller;
 use App\Dev\DevTools;
 use App\Download\Client\HttpDownloadClient;
 use App\Download\Progress\CollectingDownloadProgressReporter;
+use App\Entity\Integration;
+use App\Integration\Grimmory\GrimmoryClient;
+use App\Integration\Grimmory\GrimmoryException;
+use App\Entity\Book;
+use App\Integration\Hardcover\HardcoverClient;
+use App\Integration\Hardcover\HardcoverException;
+use App\Integration\Prowlarr\ProwlarrClient;
+use App\Repository\BookRepository;
 use App\Repository\DownloadJobRepository;
 use App\Repository\FulfillmentEventRepository;
 use App\Repository\IntegrationRepository;
@@ -14,6 +22,8 @@ use App\Search\DirectDownload\DirectDownloadProbe;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\Match\MatchScorer;
 use App\Search\Source\ReleaseCandidate;
+use App\Search\Source\ReleaseSearchPlan;
+use App\Search\Torrent\TorrentMatchScorer;
 use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
@@ -34,6 +44,8 @@ final class DevController extends AbstractController
         private readonly DirectDownloadProbe $probe,
         private readonly MatchScorer $scorer,
         private readonly IntegrationRepository $integrations,
+        private readonly ProwlarrClient $prowlarr,
+        private readonly TorrentMatchScorer $torrentScorer,
     ) {
     }
 
@@ -216,6 +228,173 @@ final class DevController extends AbstractController
         }
 
         return $this->json(['results' => $results]);
+    }
+
+    /**
+     * Hardcover Inspector: load the live trending feed and dump, per book, the raw editions and
+     * their `physical_format` so you can see exactly what drives the trending list and whether an
+     * audiobook edition exists (the signal behind the Browse Books/Audiobooks toggle).
+     */
+    #[Route('/development/hardcover', name: 'dev_hardcover')]
+    public function hardcover(Request $request, HardcoverClient $hardcover): Response
+    {
+        $this->assertAvailable();
+
+        $limit  = max(1, min(100, $request->query->getInt('limit', 25)));
+        $offset = max(0, $request->query->getInt('offset', 0));
+        $load   = $request->query->has('load');
+
+        $integration = $this->integrations->findByKind(Integration::KIND_HARDCOVER);
+        $configured = $integration !== null && $integration->isEnabled() && $integration->hasCredentials();
+
+        $books = null;
+        $error = null;
+        $audiobookCount = 0;
+        if ($load) {
+            if (!$configured) {
+                $error = 'Hardcover integration is not configured/enabled — add a token in Settings → Integrations.';
+            } else {
+                try {
+                    $books = $hardcover->fetchTrendingDebug($integration, $limit, $offset);
+                    foreach ($books as $b) {
+                        if ($b['audiobook']) {
+                            $audiobookCount++;
+                        }
+                    }
+                } catch (HardcoverException $e) {
+                    $error = $e->getMessage();
+                }
+            }
+        }
+
+        return $this->render('dev/hardcover.html.twig', [
+            'active_tab'      => 'hardcover',
+            'branch'          => $this->devTools->currentBranch(),
+            'environment'     => $this->devTools->environment(),
+            'configured'      => $configured,
+            'limit'           => $limit,
+            'offset'          => $offset,
+            'loaded'          => $load,
+            'books'           => $books,
+            'error'           => $error,
+            'audiobook_count' => $audiobookCount,
+        ]);
+    }
+
+    /**
+     * Komga Inspector: list owned books and show, per file, the resolved `format` (what the
+     * Grimmory sync derives from Komga's media type) and its classification — audiobook, book,
+     * or unknown. Use this to confirm why something is (or isn't) treated as an audiobook.
+     */
+    #[Route('/development/komga', name: 'dev_komga')]
+    public function komga(Request $request, GrimmoryClient $grimmory): Response
+    {
+        $this->assertAvailable();
+
+        $limit = max(1, min(100, $request->query->getInt('limit', 50)));
+        $load  = $request->query->has('load');
+
+        $integration = $this->integrations->findByKind(Integration::KIND_GRIMMORY);
+        $configured = $integration !== null && $integration->isEnabled() && $integration->hasCredentials();
+
+        $books = null;
+        $error = null;
+        $counts = ['audiobook' => 0, 'book' => 0, 'unknown' => 0];
+        if ($load) {
+            if (!$configured) {
+                $error = 'Komga (Grimmory) integration is not configured/enabled — set it up in Settings → Integrations.';
+            } else {
+                try {
+                    $libraryIds = $integration->getSelectedLibraries();
+                    $books = $grimmory->fetchBooksDebug($integration, $libraryIds === [] ? null : $libraryIds, $limit);
+                    foreach ($books as $b) {
+                        $counts[$b['classification']] = ($counts[$b['classification']] ?? 0) + 1;
+                    }
+                } catch (GrimmoryException $e) {
+                    $error = $e->getMessage();
+                }
+            }
+        }
+
+        return $this->render('dev/komga.html.twig', [
+            'active_tab'  => 'komga',
+            'branch'      => $this->devTools->currentBranch(),
+            'environment' => $this->devTools->environment(),
+            'configured'  => $configured,
+            'limit'       => $limit,
+            'loaded'      => $load,
+            'books'       => $books,
+            'error'       => $error,
+            'counts'      => $counts,
+        ]);
+    }
+
+    /**
+     * Indexer search inspector: run a live Prowlarr audiobook search for a
+     * title/author/ISBN and show the parsed torrent candidates with the exact
+     * weighted score (and per-axis breakdown) the fulfillment pipeline would use to
+     * pick the winner. Lets an operator tune min-seeders / weights before real runs.
+     */
+    #[Route('/development/indexers', name: 'dev_indexers')]
+    public function indexers(Request $request): Response
+    {
+        $this->assertAvailable();
+
+        $title  = trim((string) $request->query->get('title', ''));
+        $author = trim((string) $request->query->get('author', ''));
+        $isbn   = trim((string) $request->query->get('isbn', ''));
+        $submitted = $request->query->has('search') && ($title !== '' || $author !== '');
+
+        $integration = $this->integrations->findByKind(Integration::KIND_PROWLARR);
+        $configured = $integration !== null && $integration->isEnabled() && $integration->hasCredentials();
+
+        $scored = null;
+        $error = null;
+        $rawCount = 0;
+        if ($submitted) {
+            if (!$configured) {
+                $error = 'Indexers are not configured/enabled — set them up in Settings → Torrents.';
+            } else {
+                $plan = $this->buildAudiobookPlan($title, $author, $isbn);
+                $candidates = $this->prowlarr->search($plan);
+                $rawCount = \count($candidates);
+                $policy = $this->integrations->getProwlarrConfig()->matchPolicy();
+                $scored = $this->torrentScorer->scored($candidates, $plan, $policy);
+            }
+        }
+
+        return $this->render('dev/indexers.html.twig', [
+            'active_tab'  => 'indexers',
+            'branch'      => $this->devTools->currentBranch(),
+            'environment' => $this->devTools->environment(),
+            'configured'  => $configured,
+            'inputs'      => ['title' => $title, 'author' => $author, 'isbn' => $isbn],
+            'submitted'   => $submitted,
+            'scored'      => $scored,
+            'raw_count'   => $rawCount,
+            'policy'      => $this->integrations->getProwlarrConfig(),
+            'error'       => $error,
+        ]);
+    }
+
+    private function buildAudiobookPlan(string $title, string $author, string $isbn): ReleaseSearchPlan
+    {
+        $book = new Book('dev', 'dev-indexer-search', $title !== '' ? $title : 'Untitled');
+        if ($author !== '') {
+            $book->setAuthor($author);
+        }
+        $normalized = BookRepository::normalizeIsbn($isbn);
+        if ($normalized !== null) {
+            $book->setIsbns([$normalized]);
+        }
+
+        return new ReleaseSearchPlan(
+            book: $book,
+            isbnCandidates: $normalized !== null ? [$normalized] : [],
+            author: $author,
+            titleVariants: [$title],
+            contentType: ReleaseCandidate::CONTENT_AUDIOBOOK,
+        );
     }
 
     #[Route('/development/downloads', name: 'dev_downloads')]

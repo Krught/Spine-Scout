@@ -6,6 +6,7 @@ namespace App\Repository;
 
 use App\Entity\BookRequest;
 use App\Entity\DownloadJob;
+use App\Search\Source\ReleaseCandidate;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
 
@@ -40,12 +41,18 @@ final class DownloadJobRepository extends ServiceEntityRepository
     {
         $cutoff = (new \DateTimeImmutable())->modify("-{$olderThanSeconds} seconds");
 
+        // Torrent jobs are excluded: they legitimately stay in-flight for a long time
+        // while downloading, and the torrent poller owns their lifecycle (progress,
+        // completion, and manual-removal detection). Only the synchronous HTTP path
+        // can truly orphan a job here.
         /** @var list<DownloadJob> $jobs */
         $jobs = $this->createQueryBuilder('j')
             ->where('j.status IN (:active)')
             ->andWhere('j.updatedAt < :cutoff')
+            ->andWhere('j.protocol != :torrent')
             ->setParameter('active', DownloadJob::ACTIVE_STATUSES)
             ->setParameter('cutoff', $cutoff)
+            ->setParameter('torrent', ReleaseCandidate::PROTOCOL_TORRENT)
             ->getQuery()
             ->getResult();
 
@@ -59,6 +66,30 @@ final class DownloadJobRepository extends ServiceEntityRepository
         }
 
         return $jobs;
+    }
+
+    /**
+     * In-flight torrent jobs (resolving/downloading), request + book eager-loaded.
+     * The torrent poller walks these each tick to advance progress and finalize
+     * finished torrents. HTTP jobs are excluded by the protocol filter.
+     *
+     * @return list<DownloadJob>
+     */
+    public function activeTorrentJobs(): array
+    {
+        /** @var list<DownloadJob> $rows */
+        $rows = $this->createQueryBuilder('j')
+            ->leftJoin('j.bookRequest', 'r')->addSelect('r')
+            ->leftJoin('r.book', 'b')->addSelect('b')
+            ->where('j.protocol = :torrent')
+            ->andWhere('j.status IN (:active)')
+            ->setParameter('torrent', ReleaseCandidate::PROTOCOL_TORRENT)
+            ->setParameter('active', DownloadJob::ACTIVE_STATUSES)
+            ->orderBy('j.createdAt', 'ASC')
+            ->getQuery()
+            ->getResult();
+
+        return $rows;
     }
 
     /**

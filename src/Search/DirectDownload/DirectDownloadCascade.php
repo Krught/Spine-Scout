@@ -69,6 +69,11 @@ final class DirectDownloadCascade
                 continue;
             }
             $id = $row['id'];
+            // Torrent isn't an HTTP mirror source — it's fulfilled out-of-band by the
+            // torrent pipeline (ProcessDownloadJobHandler handles it around this cascade).
+            if (DirectDownloadSource::tryFromId($id)?->usesMirrors() === false) {
+                continue;
+            }
             $label = DirectDownloadSource::tryFromId($id)?->label() ?? $id;
             $source = $byId[$id] ?? null;
 

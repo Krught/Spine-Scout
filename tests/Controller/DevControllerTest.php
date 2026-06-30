@@ -89,6 +89,68 @@ final class DevControllerTest extends WebTestCase
         self::assertSelectorExists('.dev-activity__pane[data-pane="log"]');
     }
 
+    public function testHardcoverInspectorRendersFormAndTab(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/development/hardcover');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('.settings-tabs', 'Hardcover Inspector');
+        self::assertSelectorExists('input[name="limit"]');
+        self::assertSelectorExists('button[name="load"]');
+    }
+
+    public function testHardcoverInspectorShowsErrorWhenNotConfigured(): void
+    {
+        // setUp() wipes integrations, so Hardcover is absent — loading must report that.
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/development/hardcover', ['load' => '1']);
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('.flash-error', 'not configured');
+    }
+
+    public function testKomgaInspectorRendersFormAndTab(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/development/komga');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('.settings-tabs', 'Komga Inspector');
+        self::assertSelectorExists('input[name="limit"]');
+        self::assertSelectorExists('button[name="load"]');
+    }
+
+    public function testKomgaInspectorShowsErrorWhenNotConfigured(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/development/komga', ['load' => '1']);
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('.flash-error', 'not configured');
+    }
+
+    public function testIndexerInspectorRendersFormAndTab(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/development/indexers');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('.settings-tabs', 'Indexer Search');
+        self::assertSelectorExists('input[name="title"]');
+        self::assertSelectorExists('input[name="author"]');
+        self::assertSelectorExists('button[name="search"]');
+    }
+
+    public function testIndexerInspectorShowsErrorWhenNotConfigured(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/development/indexers', ['search' => '1', 'title' => 'Dungeon Crawler Carl']);
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('.flash-error', 'not configured');
+    }
+
     private function seedAdmin(): void
     {
         $hasher = self::getContainer()->get('security.user_password_hasher');

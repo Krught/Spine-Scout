@@ -43,6 +43,10 @@ class BookRequest
     #[ORM\Column(length: 16, options: ['default' => self::STATUS_PENDING])]
     private string $status = self::STATUS_PENDING;
 
+    /** True when this request targets the audiobook edition rather than the book/ebook. */
+    #[ORM\Column(options: ['default' => false])]
+    private bool $audiobook = false;
+
     /**
      * Mirrors the latest associated DownloadJob.status when one exists.
      * ProcessDownloadJobHandler keeps it in sync.
@@ -77,6 +81,9 @@ class BookRequest
     public function setBook(Book $book): self { $this->book = $book; return $this; }
 
     public function getRequestedBy(): User { return $this->requestedBy; }
+
+    public function isAudiobook(): bool { return $this->audiobook; }
+    public function setAudiobook(bool $audiobook): self { $this->audiobook = $audiobook; return $this; }
 
     public function getStatus(): string { return $this->status; }
     public function setStatus(string $status): self

@@ -19,9 +19,11 @@ use App\Mirror\MirrorListNormalizer;
 use App\Repository\BookRepository;
 use App\Repository\BookSectionEntryRepository;
 use App\Repository\IntegrationRepository;
+use App\Download\Torrent\TorrentClientConfig;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\DirectDownload\DirectDownloadSource;
+use App\Search\Torrent\ProwlarrConfig;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
@@ -403,10 +405,10 @@ final class SettingsController extends AbstractController
                 }
             }
 
-            // Mirrors: one free-text blob per source (newline/tab/comma separated).
+            // Mirrors: one free-text blob per HTTP source (torrent has none).
             $blobs = $request->request->all('mirrors');
             $mirrors = [];
-            foreach (DirectDownloadSource::ids() as $id) {
+            foreach (DirectDownloadSource::mirrorIds() as $id) {
                 $blob = is_string($blobs[$id] ?? null) ? $blobs[$id] : '';
                 $mirrors[$id] = $normalizer->normalizeBlob($blob);
             }
@@ -460,12 +462,17 @@ final class SettingsController extends AbstractController
             $source = DirectDownloadSource::from($id);
             $priorityRows[] = ['id' => $id, 'enabled' => $enabledById[$id] ?? true];
             $sourceLabels[$id] = $source->label();
-            $mirrorSections[] = [
-                'id'    => $id,
-                'label' => $source->label(),
-                'help'  => $source->help(),
-                'urls'  => $config->mirrorsFor($id)->toArray(),
-            ];
+            // Torrent has no operator-supplied mirror URLs (it uses the indexers +
+            // download client from Settings → Torrents), so it gets a priority row but
+            // no mirror textarea.
+            if ($source->usesMirrors()) {
+                $mirrorSections[] = [
+                    'id'    => $id,
+                    'label' => $source->label(),
+                    'help'  => $source->help(),
+                    'urls'  => $config->mirrorsFor($id)->toArray(),
+                ];
+            }
         }
 
         return $this->render('settings/direct_download.html.twig', [
@@ -480,6 +487,155 @@ final class SettingsController extends AbstractController
             'bypass_mode'           => $config->bypassMode,
             'bypass_flaresolverr_url' => $config->bypassFlaresolverrUrl,
         ]);
+    }
+
+    #[Route('/audiobooks', name: 'audiobooks')]
+    public function audiobooks(
+        Request $request,
+        IntegrationRepository $integrations,
+        EntityManagerInterface $em,
+    ): Response {
+        $prowlarr = $integrations->getOrCreate(Integration::KIND_PROWLARR);
+        $qbittorrent = $integrations->getOrCreate(Integration::KIND_QBITTORRENT);
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isCsrfTokenValid('settings_audiobooks', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+                return $this->redirectToRoute('settings_audiobooks');
+            }
+
+            $req = $request->request;
+
+            // -- Prowlarr: connection on the entity, tuning in the config blob.
+            $prowlarr->setAuthType(Integration::AUTH_API_KEY);
+            $prowlarr->setBaseUrl(self::blankToNull((string) $req->get('prowlarr_base_url', '')));
+            $this->applyApiToken($prowlarr, (string) $req->get('prowlarr_api_key', ''));
+            $prowlarrConfig = ProwlarrConfig::fromArray([
+                'categories'   => self::parseIntCsv((string) $req->get('prowlarr_categories', '')),
+                'minSeeders'   => $req->get('prowlarr_min_seeders', ''),
+                'maxSizeBytes' => self::gbToBytes((string) $req->get('prowlarr_max_size_gb', '')),
+                'weights'      => [
+                    'match'   => $req->get('prowlarr_weight_match', ''),
+                    'seeders' => $req->get('prowlarr_weight_seeders', ''),
+                    'size'    => $req->get('prowlarr_weight_size', ''),
+                    'format'  => $req->get('prowlarr_weight_format', ''),
+                ],
+            ]);
+            $prowlarr->setEnabled(
+                $req->getBoolean('prowlarr_enabled')
+                && $prowlarr->getBaseUrl() !== null && $prowlarr->getBaseUrl() !== ''
+                && $prowlarr->hasCredentials(),
+            );
+            $prowlarr->setOptions(['config' => $prowlarrConfig->toArray()]);
+            $this->persistOrTouch($em, $prowlarr);
+
+            // -- qBittorrent: connection on the entity, destination in the config blob.
+            $qbittorrent->setAuthType(Integration::AUTH_BASIC);
+            $qbittorrent->setBaseUrl(self::blankToNull((string) $req->get('qbittorrent_base_url', '')));
+            $this->applyBasicCreds(
+                $qbittorrent,
+                (string) $req->get('qbittorrent_username', ''),
+                (string) $req->get('qbittorrent_password', ''),
+            );
+            $clientConfig = TorrentClientConfig::fromArray([
+                'category'             => (string) $req->get('qbittorrent_category', ''),
+                'audioOutputDirectory' => (string) $req->get('audio_output_directory', ''),
+                'useEbookLibraryDir'   => $req->getBoolean('use_ebook_library_dir'),
+                'stagingSubdir'        => (string) $req->get('staging_subdir', ''),
+                'filenameTemplate'     => (string) $req->get('torrent_filename_template', ''),
+            ]);
+            $qbittorrent->setEnabled(
+                $req->getBoolean('qbittorrent_enabled')
+                && $qbittorrent->getBaseUrl() !== null && $qbittorrent->getBaseUrl() !== '',
+            );
+            $qbittorrent->setOptions(['config' => $clientConfig->toArray()]);
+            $this->persistOrTouch($em, $qbittorrent);
+
+            $em->flush();
+            $this->addFlash('success', 'Audiobook settings saved.');
+            return $this->redirectToRoute('settings_audiobooks');
+        }
+
+        $prowlarrConfig = $integrations->getProwlarrConfig();
+        $clientConfig = $integrations->getTorrentClientConfig();
+
+        return $this->render('settings/audiobooks.html.twig', [
+            'active_tab'      => 'audiobooks',
+            'prowlarr'        => $prowlarr,
+            'qbittorrent'     => $qbittorrent,
+            'prowlarr_config' => $prowlarrConfig,
+            'client_config'   => $clientConfig,
+            'ebook_output_directory' => $integrations->getDirectDownloadConfig()->outputDirectory,
+        ]);
+    }
+
+    #[Route('/audiobooks/test/prowlarr', name: 'audiobooks_test_prowlarr', methods: ['POST'])]
+    public function testProwlarr(Request $request, \App\Integration\Prowlarr\ProwlarrClient $prowlarr): Response
+    {
+        if (!$this->isCsrfTokenValid('settings_audiobooks_test', (string) $request->request->get('_token'))) {
+            return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
+        }
+        [$ok, $message] = $prowlarr->testConnection();
+
+        return $this->json(['ok' => $ok, 'message' => $message]);
+    }
+
+    #[Route('/audiobooks/test/qbittorrent', name: 'audiobooks_test_qbittorrent', methods: ['POST'])]
+    public function testQbittorrent(Request $request, \App\Download\Client\QbittorrentDownloadClient $qbittorrent): Response
+    {
+        if (!$this->isCsrfTokenValid('settings_audiobooks_test', (string) $request->request->get('_token'))) {
+            return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
+        }
+        [$ok, $message] = $qbittorrent->testConnection();
+
+        return $this->json(['ok' => $ok, 'message' => $message]);
+    }
+
+    private static function blankToNull(string $value): ?string
+    {
+        $v = trim($value);
+        return $v === '' ? null : $v;
+    }
+
+    /** @return list<int> */
+    private static function parseIntCsv(string $raw): array
+    {
+        $out = [];
+        foreach (preg_split('/[\s,]+/', trim($raw)) ?: [] as $part) {
+            if ($part !== '' && ctype_digit($part)) {
+                $out[] = (int) $part;
+            }
+        }
+        return array_values(array_unique($out));
+    }
+
+    /** Convert a (possibly fractional) gigabyte string to bytes, or null when blank/invalid. */
+    private static function gbToBytes(string $raw): ?int
+    {
+        $v = trim($raw);
+        if ($v === '' || !is_numeric($v) || (float) $v <= 0) {
+            return null;
+        }
+        return (int) round((float) $v * 1024 * 1024 * 1024);
+    }
+
+    /** Apply an API-key token, keeping the stored one when the field is left blank. */
+    private function applyApiToken(Integration $integration, string $token): void
+    {
+        $existing = $integration->getCredentials();
+        $next = ['token' => $token !== '' ? $token : ($existing['token'] ?? null)];
+        $integration->setCredentials(array_filter($next, static fn ($v) => $v !== null && $v !== ''));
+    }
+
+    /** Apply basic credentials, keeping stored values when a field is left blank. */
+    private function applyBasicCreds(Integration $integration, string $username, string $password): void
+    {
+        $existing = $integration->getCredentials();
+        $next = [
+            'username' => $username !== '' ? $username : ($existing['username'] ?? null),
+            'password' => $password !== '' ? $password : ($existing['password'] ?? null),
+        ];
+        $integration->setCredentials(array_filter($next, static fn ($v) => $v !== null && $v !== ''));
     }
 
     /**

@@ -19,6 +19,10 @@ class Integration
     public const KIND_OPENLIBRARY     = 'openlibrary';
     public const KIND_DIRECT_DOWNLOAD = 'direct_download';
     public const KIND_BEST_MATCH      = 'best_match';
+    /** Prowlarr indexer aggregator — audiobook torrent search (baseUrl + API-key token). */
+    public const KIND_PROWLARR        = 'prowlarr';
+    /** qBittorrent download client — audiobook torrent fulfillment (baseUrl + basic auth). */
+    public const KIND_QBITTORRENT     = 'qbittorrent';
     /** Singleton row holding app-wide ("General" tab) preferences in its options blob. */
     public const KIND_APP             = 'app';
 

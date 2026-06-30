@@ -10,6 +10,8 @@ use App\Download\FilenameTemplate;
 use App\Download\FulfillmentLog;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Progress\FulfillmentDownloadProgressReporter;
+use App\Download\Torrent\TorrentFulfillmentInterface;
+use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Entity\Book;
 use App\Entity\DownloadJob;
 use App\Message\ProcessDownloadJob;
@@ -55,6 +57,7 @@ final class ProcessDownloadJobHandler
         private readonly FileMover $mover,
         private readonly FilenameTemplate $filenames,
         private readonly EbookMetadataInjector $metadataInjector,
+        private readonly TorrentFulfillmentInterface $torrents,
         private readonly FulfillmentLog $log,
         private readonly LoggerInterface $logger,
     ) {
@@ -76,6 +79,17 @@ final class ProcessDownloadJobHandler
 
         $subject = $this->baseName($job);
         $plan = $this->planFor($request->getBook());
+
+        // "Torrent" is one entry in the operator's Source priority. If it's the
+        // highest-priority enabled source, try it before the HTTP cascade; otherwise
+        // it runs as a fallback after the HTTP sources (below). A successful add hands
+        // the job to the async torrent poller and we stop here.
+        $ddConfig = $this->settings->getDirectDownloadConfig();
+        $torrentEnabled = $ddConfig->isIndexerEnabled(DirectDownloadSource::Torrent->value) && $this->torrents->isAvailable();
+        $torrentFirst = $torrentEnabled && $this->firstEnabledSource($ddConfig) === DirectDownloadSource::Torrent->value;
+        if ($torrentFirst && $this->tryTorrent($job, $plan, $subject)) {
+            return;
+        }
 
         $staged = null;
         $picked = null;
@@ -113,6 +127,11 @@ final class ProcessDownloadJobHandler
         }
 
         if ($staged === null || $picked === null) {
+            // HTTP cascade produced nothing. If torrent is enabled but wasn't already
+            // tried first, try it now as a fallback before giving up.
+            if ($torrentEnabled && !$torrentFirst && $this->tryTorrent($job, $plan, $subject)) {
+                return;
+            }
             $this->fail($job, 'All sources/mirrors/items failed: ' . $lastError);
 
             return;
@@ -162,6 +181,42 @@ final class ProcessDownloadJobHandler
 
         $this->log->info('Downloaded → ' . basename($finalPath) . ' (awaiting library import)', $subject);
         $this->logger->info('Download complete', ['job' => $job->getId(), 'path' => $finalPath, 'source' => $picked->sourceId]);
+    }
+
+    /**
+     * Try the torrent source: search indexers, add the best match to the download
+     * client, and hand the job to the async poller. Returns true when a torrent was
+     * added (the caller stops here); false when nothing matched or the add failed.
+     */
+    private function tryTorrent(DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool
+    {
+        try {
+            $added = $this->torrents->tryFulfill($job, $plan, $subject);
+        } catch (\Throwable $e) {
+            $this->log->warn('Torrent add failed: ' . $e->getMessage(), $subject);
+
+            return false;
+        }
+        if (!$added) {
+            return false;
+        }
+        $this->em->flush();
+        $this->log->info('Handed to download client; awaiting completion', $subject);
+        $this->logger->info('Book torrent queued', ['job' => $job->getId(), 'hash' => $job->getClientRef()]);
+
+        return true;
+    }
+
+    /** Id of the highest-priority enabled source, or null when none are enabled. */
+    private function firstEnabledSource(DirectDownloadConfig $config): ?string
+    {
+        foreach ($config->indexerPriority as $row) {
+            if ($row['enabled'] ?? false) {
+                return $row['id'];
+            }
+        }
+
+        return null;
     }
 
     /**

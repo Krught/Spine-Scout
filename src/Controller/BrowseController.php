@@ -36,8 +36,9 @@ final class BrowseController extends AbstractController
     /** Hard ceiling on how deep we paginate trending upstream. Matches roughly Hardcover's own UI. */
     private const UPSTREAM_MAX_ITEMS = 2000;
     private const CACHE_TTL = 300;
-    private const CACHE_KEY = 'browse.trending.v2';
-    private const SEARCH_CACHE_PREFIX = 'browse.search.v3.';
+    // v3/v4: pool entries now carry an `audiobook` (Hardcover availability) flag.
+    private const CACHE_KEY = 'browse.trending.v3';
+    private const SEARCH_CACHE_PREFIX = 'browse.search.v4.';
     /** Hardcover's `search` caps per_page at 25 — must match this or the "short page = exhausted" signal misfires. */
     private const SEARCH_PAGE_SIZE = 25;
     /** Hard ceiling on how deep we paginate search upstream. */
@@ -69,17 +70,27 @@ final class BrowseController extends AbstractController
         $limit  = min(self::MAX_LIMIT, max(1, $request->query->getInt('limit', 100)));
         $sort   = (string) $request->query->get('sort', 'trending');
         $dir    = strtoupper((string) $request->query->get('dir', 'asc')) === 'DESC' ? 'DESC' : 'ASC';
+        $audiobookOnly = $request->query->get('format') === 'audiobook';
+
+        // Owned/"downloaded" matching follows the toggle: in audiobook mode only owned audio
+        // copies count; in book mode any owned format counts (current behavior).
+        $libraryIsbns = $books->downloadedIsbns($audiobookOnly ? true : null);
+        $libraryKeys  = $books->downloadedTitleAuthorKeys($audiobookOnly ? true : null);
+        $statusMaps = $this->statusMaps($requests, $audiobookOnly ? true : null);
 
         // For trending sort: only fetch as much upstream as we need to satisfy this slice.
         // For non-trending sorts (title/author): fetch *everything* up to the cap so the
         // sort is over the full pool — otherwise sort order would shift as the user scrolls.
-        $needed = $sort === 'trending' ? ($offset + $limit) : self::UPSTREAM_MAX_ITEMS;
-        $pool = $this->ensureUpstream($integrations, $needed);
-
-        $libraryIsbns = $books->downloadedIsbns();
-        $libraryKeys  = $books->downloadedTitleAuthorKeys();
-        $statusMaps = $this->statusMaps($requests);
-        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps);
+        [$cards, $pool] = $this->loadFilteredCards(
+            fn (int $n) => $this->ensureUpstream($integrations, $n),
+            $sort === 'trending' ? ($offset + $limit) : self::UPSTREAM_MAX_ITEMS,
+            self::UPSTREAM_MAX_ITEMS,
+            $offset + $limit,
+            $audiobookOnly,
+            $libraryIsbns,
+            $libraryKeys,
+            $statusMaps,
+        );
 
         $this->sortCards($cards, $sort, $dir);
 
@@ -114,20 +125,28 @@ final class BrowseController extends AbstractController
         if (!in_array($type, self::SEARCH_TYPES, true)) {
             $type = 'title';
         }
+        $audiobookOnly = $request->query->get('format') === 'audiobook';
 
         if ($q === '') {
             return new JsonResponse(['items' => [], 'next_offset' => 0, 'has_more' => false]);
         }
 
+        $libraryIsbns = $books->downloadedIsbns($audiobookOnly ? true : null);
+        $libraryKeys  = $books->downloadedTitleAuthorKeys($audiobookOnly ? true : null);
+        $statusMaps = $this->statusMaps($requests, $audiobookOnly ? true : null);
+
         // For non-trending sorts we need the full pool to sort over it; trending/relevance
         // only needs enough rows to satisfy the current slice.
-        $needed = $sort === 'trending' ? ($offset + $limit) : self::SEARCH_MAX_ITEMS;
-        $pool = $this->ensureSearchPool($integrations, $q, $type, $needed);
-
-        $libraryIsbns = $books->downloadedIsbns();
-        $libraryKeys  = $books->downloadedTitleAuthorKeys();
-        $statusMaps = $this->statusMaps($requests);
-        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps);
+        [$cards, $pool] = $this->loadFilteredCards(
+            fn (int $n) => $this->ensureSearchPool($integrations, $q, $type, $n),
+            $sort === 'trending' ? ($offset + $limit) : self::SEARCH_MAX_ITEMS,
+            self::SEARCH_MAX_ITEMS,
+            $offset + $limit,
+            $audiobookOnly,
+            $libraryIsbns,
+            $libraryKeys,
+            $statusMaps,
+        );
 
         // Trending sort is meaningless on a search pool — fall back to the upstream
         // result order, which is relevance.
@@ -168,6 +187,7 @@ final class BrowseController extends AbstractController
         $seedId = $request->query->getInt('seed', 0);
         $offset = max(0, $request->query->getInt('offset', 0));
         $limit  = min(self::MAX_LIMIT, max(1, $request->query->getInt('limit', 100)));
+        $audiobookOnly = $request->query->get('format') === 'audiobook';
 
         if ($seedId <= 0) {
             return new JsonResponse(['items' => [], 'next_offset' => 0, 'has_more' => false]);
@@ -177,12 +197,15 @@ final class BrowseController extends AbstractController
             return new JsonResponse(['items' => [], 'next_offset' => 0, 'has_more' => false]);
         }
 
+        // The recommendation pool is pre-built and fully loaded, so no upstream top-up here —
+        // just filter and slice. Persisted (DB-backed) recommendations carry no Hardcover
+        // audiobook flag, so they won't appear in audiobook mode (known limitation).
         $pool = $recommendations->poolFor($seed);
 
-        $libraryIsbns = $books->downloadedIsbns();
-        $libraryKeys  = $books->downloadedTitleAuthorKeys();
-        $statusMaps = $this->statusMaps($requests);
-        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps);
+        $libraryIsbns = $books->downloadedIsbns($audiobookOnly ? true : null);
+        $libraryKeys  = $books->downloadedTitleAuthorKeys($audiobookOnly ? true : null);
+        $statusMaps = $this->statusMaps($requests, $audiobookOnly ? true : null);
+        $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps, $audiobookOnly);
 
         $slice = array_slice($cards, $offset, $limit);
         $total = count($cards);
@@ -296,6 +319,44 @@ final class BrowseController extends AbstractController
     }
 
     /**
+     * Fetch a pool and shape it into cards, growing the pool until it yields enough *filtered*
+     * cards or the upstream is exhausted. The filter (audiobook-only) is applied at the card
+     * layer, so each upstream page can return fewer cards than rows; in audiobook mode we keep
+     * paging until `$wanted` audiobook cards exist (or we hit the cap / exhaust the feed).
+     *
+     * @param callable(int): array{source: string, books: list<array<string, mixed>>, exhausted: bool, errored?: bool} $fetchPool
+     * @param array<string, true> $libraryIsbns
+     * @param array<string, true> $libraryKeys
+     * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $statusMaps
+     * @return array{0: list<array<string, mixed>>, 1: array<string, mixed>}
+     */
+    private function loadFilteredCards(
+        callable $fetchPool,
+        int $baseNeeded,
+        int $maxItems,
+        int $wanted,
+        bool $audiobookOnly,
+        array $libraryIsbns,
+        array $libraryKeys,
+        array $statusMaps,
+    ): array {
+        $needed = $baseNeeded;
+        while (true) {
+            $pool = $fetchPool($needed);
+            $cards = $this->normalizeCards($pool, $libraryIsbns, $libraryKeys, $statusMaps, $audiobookOnly);
+            if (!$audiobookOnly
+                || count($cards) >= $wanted
+                || ($pool['exhausted'] ?? false)
+                || ($pool['errored'] ?? false)
+                || $needed >= $maxItems
+            ) {
+                return [$cards, $pool];
+            }
+            $needed = min($maxItems, $needed + self::UPSTREAM_PAGE_SIZE);
+        }
+    }
+
+    /**
      * Loads (and caches) at least $needed items from the upstream trending feed.
      * Appends pages incrementally so we never re-fetch what's already in the pool.
      *
@@ -390,12 +451,17 @@ final class BrowseController extends AbstractController
      * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $statusMaps
      * @return list<array<string, mixed>>
      */
-    private function normalizeCards(array $pool, array $libraryIsbns, array $libraryKeys, array $statusMaps): array
+    private function normalizeCards(array $pool, array $libraryIsbns, array $libraryKeys, array $statusMaps, bool $audiobookOnly = false): array
     {
         $source = $pool['source'] ?? '';
         $out = [];
         foreach ($pool['books'] as $b) {
             if (empty($b['title'])) {
+                continue;
+            }
+            $audiobook = (bool) ($b['audiobook'] ?? false);
+            // Audiobook mode: drop works Hardcover doesn't list an audio edition for.
+            if ($audiobookOnly && !$audiobook) {
                 continue;
             }
             $title = (string) $b['title'];
@@ -444,6 +510,7 @@ final class BrowseController extends AbstractController
                 'external_url' => $externalUrl,
                 'meta_source' => $metaSource,
                 'meta_external_id' => $metaExternalId,
+                'audiobook' => $audiobook,
             ];
         }
         return $out;
@@ -452,11 +519,11 @@ final class BrowseController extends AbstractController
     /**
      * @return array{isbns: array<string, string>, titleAuthor: array<string, string>}
      */
-    private function statusMaps(BookRequestRepository $requests): array
+    private function statusMaps(BookRequestRepository $requests, ?bool $audiobook = null): array
     {
         $user = $this->getUser();
         return $user instanceof User
-            ? $requests->statusMapsForUser($user)
+            ? $requests->statusMapsForUser($user, $audiobook)
             : ['isbns' => [], 'titleAuthor' => []];
     }
 
@@ -509,6 +576,7 @@ final class BrowseController extends AbstractController
                 coverUrl: $b->coverUrl,
                 rawIsbns: $b->isbns,
                 now: $now,
+                audiobookAvailable: $b->audiobook,
             );
             if ($book->getId() === null) {
                 $this->em->flush();

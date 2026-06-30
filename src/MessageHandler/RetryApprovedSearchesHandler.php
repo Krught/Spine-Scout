@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\MessageHandler;
 
 use App\Message\DispatchReleaseSearch;
+use App\Message\DispatchTorrentSearch;
 use App\Message\RetryApprovedSearches;
 use App\Repository\BookRequestRepository;
 use App\Repository\DownloadJobRepository;
@@ -35,7 +36,10 @@ final class RetryApprovedSearchesHandler
         $this->jobs->reclaimStale();
 
         foreach ($this->requests->findApprovedNeedingSearch() as $request) {
-            $this->bus->dispatch(new DispatchReleaseSearch((int) $request->getId()));
+            // Audiobooks retry through the torrent pipeline; everything else via HTTP.
+            $this->bus->dispatch($request->isAudiobook()
+                ? new DispatchTorrentSearch((int) $request->getId())
+                : new DispatchReleaseSearch((int) $request->getId()));
         }
     }
 }

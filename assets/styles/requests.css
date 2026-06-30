@@ -136,6 +136,20 @@
     align-items: center;
     min-width: 0;
 }
+/* The cover/title block opens the book detail popup. */
+.request-left-clickable {
+    cursor: pointer;
+    border-radius: 8px;
+}
+.request-left-clickable:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+/* No interactive-search panel on the requests page — admins use the per-row button — so
+   hide the modal's own Interactive Search button (keep "More like this"). */
+.requests-section .book-modal-search:not(.book-modal-recommend) {
+    display: none;
+}
 .request-cover {
     width: 64px;
     height: 96px;
@@ -221,6 +235,28 @@
     border-radius: 999px;
     color: #fff;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+/* Book vs Audiobook pill — same shape as the status pill, app-wide format colors
+   (Book = golden accent, Audiobook = teal). */
+.request-format {
+    display: inline-block;
+    align-self: flex-start;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.request-format-book {
+    background: var(--accent);
+    color: var(--accent-fg, #1a1a1a);
+}
+.request-format-audiobook {
+    background: #008080;
+    color: #fff;
 }
 .request-status-pending   { background: rgba(240, 180, 41, 0.9); color: #1a1a1a; }
 .request-status-approved  { background: rgba(99, 102, 241, 0.85); }

@@ -56,8 +56,10 @@ final class SyncGrimmoryLibraryHandler
         // Close out any approved request whose book just landed in the library
         // (e.g. a download we delivered to the watch folder got imported).
         $flipped = $this->requests->markAvailableForDownloaded(
-            $this->books->downloadedIsbns(),
-            $this->books->downloadedTitleAuthorKeys(),
+            $this->books->downloadedIsbns(true),
+            $this->books->downloadedTitleAuthorKeys(true),
+            $this->books->downloadedIsbns(false),
+            $this->books->downloadedTitleAuthorKeys(false),
         );
         if ($flipped > 0) {
             $this->fulfillmentLog->info(sprintf('%d request(s) now available after library import', $flipped));

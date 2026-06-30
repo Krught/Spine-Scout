@@ -55,6 +55,30 @@ class Book
     #[ORM\Column(length: 64, nullable: true)]
     private ?string $komgaLibraryId = null;
 
+    /**
+     * Owned file format token, lowercased (e.g. "epub", "pdf", "m4b", "mp3"), captured from
+     * Komga during library sync. Null for metadata-only rows (Hardcover/OL trending). Used to
+     * tell an owned audiobook apart from an ebook — see {@see \App\Support\AudioFormat}.
+     */
+    #[ORM\Column(length: 32, nullable: true)]
+    private ?string $format = null;
+
+    /**
+     * True when the upstream provider (Hardcover) lists an audiobook edition for this work.
+     * Drives the Book/Audiobook toggle in the detail modal. This is *availability* (an audio
+     * edition exists), distinct from {@see $format} which is the *owned* file's format.
+     */
+    #[ORM\Column(options: ['default' => false])]
+    private bool $audiobookAvailable = false;
+
+    /** Audiobook narrator(s), comma-joined. Null when unknown / not an audiobook. */
+    #[ORM\Column(length: 500, nullable: true)]
+    private ?string $narrator = null;
+
+    /** Audiobook runtime in seconds (from the Hardcover audiobook edition). Null when unknown. */
+    #[ORM\Column(nullable: true)]
+    private ?int $audioSeconds = null;
+
     /** Normalized (digits only, trailing 'X' for ISBN-10). Canonical "have" key for trending matches. */
     #[ORM\Column(length: 20, nullable: true)]
     private ?string $isbn = null;
@@ -160,6 +184,18 @@ class Book
 
     public function getKomgaLibraryId(): ?string { return $this->komgaLibraryId; }
     public function setKomgaLibraryId(?string $id): self { $this->komgaLibraryId = $id; return $this; }
+
+    public function getFormat(): ?string { return $this->format; }
+    public function setFormat(?string $format): self { $this->format = $format !== null ? strtolower($format) : null; return $this; }
+
+    public function isAudiobookAvailable(): bool { return $this->audiobookAvailable; }
+    public function setAudiobookAvailable(bool $available): self { $this->audiobookAvailable = $available; return $this; }
+
+    public function getNarrator(): ?string { return $this->narrator; }
+    public function setNarrator(?string $narrator): self { $this->narrator = $narrator; return $this; }
+
+    public function getAudioSeconds(): ?int { return $this->audioSeconds; }
+    public function setAudioSeconds(?int $seconds): self { $this->audioSeconds = $seconds; return $this; }
 
     public function getIsbn(): ?string { return $this->isbn; }
     public function setIsbn(?string $isbn): self { $this->isbn = $isbn; return $this; }

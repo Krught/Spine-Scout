@@ -2,6 +2,7 @@
 
 namespace App;
 
+use App\Message\PollTorrentJobs;
 use App\Message\PruneFulfillmentEvents;
 use App\Message\PurgeExpiredSessions;
 use App\Message\RefreshHardcoverTrending;
@@ -33,6 +34,7 @@ class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::every('1 hour', new PurgeExpiredSessions()))
             ->add(RecurringMessage::every('10 minutes', new PruneFulfillmentEvents()))
             ->add(RecurringMessage::every('3 hours', new RetryApprovedSearches()))
+            ->add(RecurringMessage::every('1 minute', new PollTorrentJobs()))
         ;
     }
 }

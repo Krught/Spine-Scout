@@ -86,6 +86,14 @@ class DownloadJob
     #[ORM\Column(length: 16, nullable: true)]
     private ?string $format = null;
 
+    /**
+     * The download client's native handle for an async job — the qBittorrent
+     * torrent hash. Null for synchronous HTTP jobs; set by the torrent dispatcher
+     * and read by the poller to query status / issue the final move.
+     */
+    #[ORM\Column(length: 64, nullable: true)]
+    private ?string $clientRef = null;
+
     #[ORM\Column(type: Types::BIGINT, nullable: true)]
     private ?string $sizeBytes = null;
 
@@ -150,6 +158,9 @@ class DownloadJob
 
     public function getFormat(): ?string { return $this->format; }
     public function setFormat(?string $format): self { $this->format = $format; return $this; }
+
+    public function getClientRef(): ?string { return $this->clientRef; }
+    public function setClientRef(?string $ref): self { $this->clientRef = $ref; return $this; }
 
     public function getSizeBytes(): ?int
     {

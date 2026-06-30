@@ -154,6 +154,7 @@ final class GrimmoryLibrarySync
         $book->setExternalUrl($s->externalUrl);
         $book->setKomgaLibraryId($s->libraryId);
         $book->setIsbn($s->isbn);
+        $book->setFormat($s->format);
         $book->setLastModifiedAt($s->lastModifiedAt);
         $book->setLastSeenAt($now);
     }

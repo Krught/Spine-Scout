@@ -11,6 +11,7 @@ use App\Download\FilenameTemplate;
 use App\Download\FulfillmentLog;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Metadata\EpubMetadataWriter;
+use App\Download\Torrent\TorrentFulfillmentInterface;
 use App\Service\AppSettingsProvider;
 use App\Service\BookCoverProvider;
 use Doctrine\DBAL\Connection;
@@ -163,7 +164,7 @@ final class ProcessDownloadJobHandlerTest extends TestCase
      * @param list<\App\Download\Client\DownloadClientInterface> $clients
      * @param list<string>                                       $links  links the (single) cascade attempt offers
      */
-    private function handler(array $clients, string $outputDir, array $links, string $format): ProcessDownloadJobHandler
+    private function handler(array $clients, string $outputDir, array $links, string $format, ?TorrentFulfillmentInterface $torrent = null, ?array $priority = null): ProcessDownloadJobHandler
     {
         $em = $this->createStub(EntityManagerInterface::class);
         $em->method('wrapInTransaction')->willReturnCallback(fn (callable $cb) => $cb());
@@ -172,7 +173,7 @@ final class ProcessDownloadJobHandlerTest extends TestCase
         // Built via the constructor (not fromArray) so an empty $outputDir stays
         // empty — fromArray would substitute the default output directory.
         $config = new DirectDownloadConfig(
-            [['id' => 'libgen', 'enabled' => true]],
+            $priority ?? [['id' => 'libgen', 'enabled' => true]],
             ['libgen' => \App\Mirror\MirrorList::fromRaw(['https://m.test'], new \App\Mirror\MirrorListNormalizer())],
             false,
             $outputDir,
@@ -207,9 +208,57 @@ final class ProcessDownloadJobHandlerTest extends TestCase
             new FileMover(),
             new FilenameTemplate(),
             $injector,
+            $torrent ?? $this->noTorrent(),
             $log,
             new NullLogger(),
         );
+    }
+
+    public function testTorrentFirstSourceHandsJobToPollerWithoutHttp(): void
+    {
+        // Torrent is the highest-priority enabled source and is available → the book
+        // is handed to the torrent poller (DOWNLOADING + client_ref) and the HTTP
+        // cascade is never reached.
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+
+        $torrent = new class implements TorrentFulfillmentInterface {
+            public function isAvailable(): bool
+            {
+                return true;
+            }
+
+            public function tryFulfill(DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool
+            {
+                $job->setProtocol(ReleaseCandidate::PROTOCOL_TORRENT)
+                    ->setClientRef('deadbeefdeadbeef')
+                    ->setStatus(DownloadJob::STATUS_DOWNLOADING);
+
+                return true;
+            }
+        };
+
+        $handler = $this->handler([], $this->root . '/library', [], 'epub', $torrent, [['id' => 'torrent', 'enabled' => true], ['id' => 'libgen', 'enabled' => true]]);
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_DOWNLOADING, $job->getStatus());
+        self::assertSame('deadbeefdeadbeef', $job->getClientRef());
+        self::assertSame(ReleaseCandidate::PROTOCOL_TORRENT, $job->getProtocol());
+    }
+
+    /** Torrent fulfillment that is never available — these tests exercise the HTTP cascade. */
+    private function noTorrent(): TorrentFulfillmentInterface
+    {
+        return new class implements TorrentFulfillmentInterface {
+            public function isAvailable(): bool
+            {
+                return false;
+            }
+
+            public function tryFulfill(DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool
+            {
+                return false;
+            }
+        };
     }
 
     /** No-op bypass resolver (mode none): the download client never invokes a bypasser. */

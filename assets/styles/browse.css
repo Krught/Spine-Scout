@@ -38,7 +38,7 @@
     border-radius: 8px;
     font-size: 0.9rem;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .browse-select:hover,
 .browse-dir:hover,
@@ -65,6 +65,78 @@
 }
 .browse-dir-asc svg {
     transform: rotate(180deg);
+}
+
+/* Books / Audiobooks segmented toggle: both labels always shown; a lit "thumb"
+   slides between the two equal-width segments to show what's active. The two
+   columns are 1fr/1fr so labels of different lengths still align the slide. */
+.browse-format {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.browse-format__thumb {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 50%;
+    /* Golden on Books; teal on Audiobooks. Colour cross-fades as it slides. */
+    background-color: var(--accent);
+    transform: translateX(0);
+    transition: transform 0.22s ease, background-color 0.32s ease;
+    z-index: 0;
+}
+.browse-format[data-format="audiobook"] .browse-format__thumb {
+    transform: translateX(100%);
+    background-color: #008080;
+}
+/* Brief dissolve when the user toggles, layered over the slide + colour blend. */
+/* TEMP: dissolve disabled for comparison — re-enable by uncommenting.
+.browse-format.is-switching .browse-format__thumb {
+    animation: browse-format-dissolve 0.34s ease;
+}
+*/
+@keyframes browse-format-dissolve {
+    0%   { opacity: 1; filter: saturate(1); }
+    45%  { opacity: 0.4; filter: saturate(1.7) blur(1px); }
+    100% { opacity: 1; filter: saturate(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .browse-format.is-switching .browse-format__thumb { animation: none; }
+}
+.browse-format__option {
+    position: relative;
+    z-index: 1;
+    background: transparent;
+    border: none;
+    color: var(--fg-dim);
+    padding: 0.4rem 0.85rem;
+    font-size: 0.85rem;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.18s ease;
+}
+.browse-format__option:hover {
+    color: var(--fg);
+}
+.browse-format__option.is-active {
+    color: #fff;
+}
+.browse-format__option:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .browse-format__thumb {
+        transition: none;
+    }
 }
 
 .book-grid {

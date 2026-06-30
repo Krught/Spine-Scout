@@ -132,6 +132,16 @@ final class BookMetadataService
     }
 
     /**
+     * Force a re-fetch from upstream regardless of when metadata was last refreshed — backs the
+     * modal's manual "refresh metadata" button. Silent on upstream failure (see {@see refresh()}).
+     */
+    public function forceRefresh(Book $book): void
+    {
+        $this->refresh($book);
+        $this->em->flush();
+    }
+
+    /**
      * Silent on upstream failure: row stays untouched (metadataFetchedAt null) so a future click retries.
      */
     private function refresh(Book $book): void
@@ -207,6 +217,16 @@ final class BookMetadataService
         }
         if (array_key_exists('seriesTotal', $data)) {
             $book->setSeriesTotal(is_int($data['seriesTotal']) ? $data['seriesTotal'] : null);
+        }
+        // Availability only flips on — a provider that omits it shouldn't erase a known edition.
+        if (!empty($data['audiobookAvailable'])) {
+            $book->setAudiobookAvailable(true);
+        }
+        if (array_key_exists('narrator', $data)) {
+            $book->setNarrator($data['narrator'] !== null ? (string) $data['narrator'] : null);
+        }
+        if (array_key_exists('audioSeconds', $data)) {
+            $book->setAudioSeconds(is_int($data['audioSeconds']) ? $data['audioSeconds'] : null);
         }
         $book->setMetadataFetchedAt(new \DateTimeImmutable());
     }

@@ -6,9 +6,11 @@ namespace App\Repository;
 
 use App\Entity\Integration;
 use App\Mirror\MirrorListNormalizer;
+use App\Download\Torrent\TorrentClientConfig;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\SearchSettingsProvider;
+use App\Search\Torrent\ProwlarrConfig;
 use App\Service\AppSettingsProvider;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\ORM\EntityManagerInterface;
@@ -93,6 +95,64 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
     ): Integration {
         $integration = $this->getOrCreate(Integration::KIND_DIRECT_DOWNLOAD);
         $integration->setAuthType(Integration::AUTH_NONE);
+        $integration->setEnabled($enabled);
+        $integration->setOptions(['config' => $config->toArray()]);
+        if ($integration->getId() === null) {
+            $em->persist($integration);
+        } else {
+            $integration->touch();
+        }
+        return $integration;
+    }
+
+    // -- prowlarr (audiobook torrent search) ------------------------------------
+
+    public function getProwlarrConfig(): ProwlarrConfig
+    {
+        $row = $this->findByKind(Integration::KIND_PROWLARR);
+        if ($row === null) {
+            return ProwlarrConfig::default();
+        }
+        $raw = $row->getOptions()['config'] ?? null;
+        return ProwlarrConfig::fromArray(is_array($raw) ? $raw : null);
+    }
+
+    public function saveProwlarrConfig(
+        ProwlarrConfig $config,
+        bool $enabled,
+        EntityManagerInterface $em,
+    ): Integration {
+        $integration = $this->getOrCreate(Integration::KIND_PROWLARR);
+        $integration->setAuthType(Integration::AUTH_API_KEY);
+        $integration->setEnabled($enabled);
+        $integration->setOptions(['config' => $config->toArray()]);
+        if ($integration->getId() === null) {
+            $em->persist($integration);
+        } else {
+            $integration->touch();
+        }
+        return $integration;
+    }
+
+    // -- qbittorrent (audiobook torrent download client) ------------------------
+
+    public function getTorrentClientConfig(): TorrentClientConfig
+    {
+        $row = $this->findByKind(Integration::KIND_QBITTORRENT);
+        if ($row === null) {
+            return TorrentClientConfig::default();
+        }
+        $raw = $row->getOptions()['config'] ?? null;
+        return TorrentClientConfig::fromArray(is_array($raw) ? $raw : null);
+    }
+
+    public function saveTorrentClientConfig(
+        TorrentClientConfig $config,
+        bool $enabled,
+        EntityManagerInterface $em,
+    ): Integration {
+        $integration = $this->getOrCreate(Integration::KIND_QBITTORRENT);
+        $integration->setAuthType(Integration::AUTH_BASIC);
         $integration->setEnabled($enabled);
         $integration->setOptions(['config' => $config->toArray()]);
         if ($integration->getId() === null) {

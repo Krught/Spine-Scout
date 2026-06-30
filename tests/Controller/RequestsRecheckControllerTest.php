@@ -69,6 +69,43 @@ final class RequestsRecheckControllerTest extends WebTestCase
         self::assertSelectorExists('.request-btn-recheck');
     }
 
+    public function testRequestRowOpensBookModal(): void
+    {
+        $job = $this->seedJob(DownloadJob::STATUS_DOWNLOADING, staleMinutes: 1);
+        $bookId = $job->getBookRequest()?->getBook()->getId();
+
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/requests');
+
+        self::assertResponseIsSuccessful();
+        // The cover/title block opens the book modal, carrying the book id.
+        self::assertSelectorExists('.request-left[data-action*="book-modal#open"]');
+        self::assertSelectorExists('.request-left[data-book-modal-id-param="' . $bookId . '"]');
+        // The modal dialog is present on the page.
+        self::assertSelectorExists('[data-book-modal-target="modal"]');
+    }
+
+    public function testAudiobookRequestRowShowsAudiobookBadgeAndFormatData(): void
+    {
+        $book = new Book('grimmory', 'ext-' . bin2hex(random_bytes(4)), 'The Audio Work');
+        $book->setAuthor('Matt Dinniman');
+        $request = new BookRequest($this->loadAdmin(), $book);
+        $request->setStatus(BookRequest::STATUS_PENDING);
+        $request->setAudiobook(true);
+        $this->em->persist($book);
+        $this->em->persist($request);
+        $this->em->flush();
+
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/requests');
+
+        self::assertResponseIsSuccessful();
+        // The row is tagged with its format for the client-side filter…
+        self::assertSelectorExists('.request-row[data-format="audiobook"]');
+        // …and carries a visible Audiobook badge.
+        self::assertSelectorTextContains('.request-format-audiobook', 'Audiobook');
+    }
+
     public function testRecheckCancelsTheActiveJob(): void
     {
         $job = $this->seedJob(DownloadJob::STATUS_DOWNLOADING, staleMinutes: 120);

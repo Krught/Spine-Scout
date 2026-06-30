@@ -58,8 +58,12 @@ final class BookRequestRepository extends ServiceEntityRepository
         return $rows;
     }
 
-    public function findOneByUserAndBook(User $user, Book $book): ?BookRequest
+    public function findOneByUserAndBook(User $user, Book $book, ?bool $audiobook = null): ?BookRequest
     {
+        if ($audiobook !== null) {
+            return $this->findOneBy(['requestedBy' => $user, 'book' => $book, 'audiobook' => $audiobook]);
+        }
+
         return $this->findOneBy(['requestedBy' => $user, 'book' => $book]);
     }
 
@@ -100,17 +104,29 @@ final class BookRequestRepository extends ServiceEntityRepository
 
     /**
      * Flip APPROVED requests to AVAILABLE once their book is present in the
-     * downloaded library — matched by ISBN (any edition) first, then by
-     * normalized title|author. Called after a library sync so a freshly imported
-     * file closes out the request that asked for it.
+     * downloaded library — matched by ISBN (any edition) first, then by normalized
+     * title|author. Called after a library sync so a freshly imported file closes
+     * out the request that asked for it.
      *
-     * @param array<string, true> $downloadedIsbns       map of normalized ISBN => true
-     * @param array<string, true> $downloadedTitleAuthor map of "title|author" => true
+     * Format-aware: an audiobook request is only satisfied by an owned AUDIO file,
+     * and a book request only by an owned non-audio (ebook) file. This is what stops
+     * an owned ebook from falsely marking the audiobook request "In Library" (and
+     * vice-versa) — the request carries the format, the owned copy's
+     * {@see \App\Entity\Book::$format} is the authoritative signal.
+     *
+     * @param array<string, true> $audioIsbns       owned-audiobook ISBNs => true
+     * @param array<string, true> $audioTitleAuthor owned-audiobook "title|author" => true
+     * @param array<string, true> $ebookIsbns       owned-ebook ISBNs => true
+     * @param array<string, true> $ebookTitleAuthor owned-ebook "title|author" => true
      * @return int number of requests flipped
      */
-    public function markAvailableForDownloaded(array $downloadedIsbns, array $downloadedTitleAuthor): int
-    {
-        if ($downloadedIsbns === [] && $downloadedTitleAuthor === []) {
+    public function markAvailableForDownloaded(
+        array $audioIsbns,
+        array $audioTitleAuthor,
+        array $ebookIsbns,
+        array $ebookTitleAuthor,
+    ): int {
+        if ($audioIsbns === [] && $audioTitleAuthor === [] && $ebookIsbns === [] && $ebookTitleAuthor === []) {
             return 0;
         }
 
@@ -125,7 +141,10 @@ final class BookRequestRepository extends ServiceEntityRepository
 
         $flipped = 0;
         foreach ($approved as $request) {
-            if ($this->isDownloaded($request->getBook(), $downloadedIsbns, $downloadedTitleAuthor)) {
+            $isAudio = $request->isAudiobook();
+            $isbns = $isAudio ? $audioIsbns : $ebookIsbns;
+            $titleAuthor = $isAudio ? $audioTitleAuthor : $ebookTitleAuthor;
+            if ($this->isDownloaded($request->getBook(), $isbns, $titleAuthor)) {
                 $request->setStatus(BookRequest::STATUS_AVAILABLE);
                 ++$flipped;
             }
@@ -161,18 +180,29 @@ final class BookRequestRepository extends ServiceEntityRepository
      * either by ISBN (preferred) or by normalized title|author (fallback for cached
      * remote rows without ISBNs).
      *
+     * When $audiobook is non-null the overlay becomes format-aware off the request's own
+     * {@see BookRequest::$audiobook} flag: audiobook mode (true) keeps audiobook requests,
+     * book mode (false) keeps the rest. This is what lets an approved/pending audiobook
+     * request show its status badge in the Browse audiobook view before any file exists —
+     * the flag is the format intent, independent of whether a download has completed yet.
+     * A null $audiobook leaves the overlay unfiltered.
+     *
      * @return array{isbns: array<string, string>, titleAuthor: array<string, string>}
      */
-    public function statusMapsForUser(User $user): array
+    public function statusMapsForUser(User $user, ?bool $audiobook = null): array
     {
-        /** @var list<array{status: string, deliveryStatus: ?string, isbn: ?string, title: ?string, author: ?string}> $rows */
-        $rows = $this->createQueryBuilder('r')
+        $qb = $this->createQueryBuilder('r')
             ->select('r.status AS status', 'r.deliveryStatus AS deliveryStatus', 'b.isbn AS isbn', 'b.title AS title', 'b.author AS author')
             ->leftJoin('r.book', 'b')
             ->where('r.requestedBy = :u')
-            ->setParameter('u', $user)
-            ->getQuery()
-            ->getArrayResult();
+            ->setParameter('u', $user);
+
+        if ($audiobook !== null) {
+            $qb->andWhere('r.audiobook = :audiobook')->setParameter('audiobook', $audiobook);
+        }
+
+        /** @var list<array{status: string, deliveryStatus: ?string, isbn: ?string, title: ?string, author: ?string}> $rows */
+        $rows = $qb->getQuery()->getArrayResult();
 
         $isbns = [];
         $titleAuthor = [];

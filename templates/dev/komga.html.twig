@@ -1,0 +1,81 @@
+{% extends 'dev/_layout.html.twig' %}
+
+{% block dev_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Komga library inspector</h2>
+    </div>
+
+    <section class="dev-test">
+        <p class="form-note">
+            Lists owned books from Komga and shows the <code>format</code> the Grimmory sync derives
+            from each file's <code>media.mediaType</code>, plus how it classifies: 🎧 <strong>Audiobook</strong>
+            (an audio format), <strong>Book</strong> (any other format), or <strong>?</strong> Unknown
+            (no derivable format). This is the exact <code>format</code> stored on each book and used
+            by the Browse “downloaded” badge.
+        </p>
+
+        {% if not configured %}
+            <p class="flash flash-error">Komga (Grimmory) integration is not configured/enabled. Set it up in Settings → Integrations.</p>
+        {% endif %}
+
+        <form method="get" action="{{ path('dev_komga') }}" class="settings-form dev-form">
+            <div class="dev-form__grid">
+                <label class="field">
+                    <span>Limit <em>(1–100)</em></span>
+                    <input type="number" name="limit" value="{{ limit }}" min="1" max="100" autocomplete="off">
+                </label>
+            </div>
+            <div class="form-actions">
+                <button type="submit" name="load" value="1" class="btn btn-primary"{{ configured ? '' : ' disabled' }}>Load library</button>
+            </div>
+        </form>
+
+        {% if error %}
+            <p class="flash flash-error">{{ error }}</p>
+        {% endif %}
+
+        {% if loaded and not error %}
+            <div class="dev-result">
+                <h4>
+                    {{ books|length }} book(s) —
+                    <span class="dev-hc-badge dev-hc-badge--audio">🎧 {{ counts.audiobook }} audiobook</span>
+                    <span class="dev-hc-badge dev-hc-badge--none">{{ counts.book }} book</span>
+                    <span class="dev-hc-badge dev-hc-badge--unknown">? {{ counts.unknown }} unknown</span>
+                </h4>
+
+                {% if books is empty %}
+                    <p class="form-note">No books returned.</p>
+                {% else %}
+                    <table class="dev-hc-editions">
+                        <thead>
+                            <tr>
+                                <th>title</th>
+                                <th>author</th>
+                                <th>format</th>
+                                <th>class</th>
+                                <th>media_type</th>
+                                <th>media_profile</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for book in books %}
+                                <tr class="{{ book.classification == 'audiobook' ? 'is-audio' : '' }}">
+                                    <td>{{ book.title }}</td>
+                                    <td>{{ book.author ?? '' }}</td>
+                                    <td>{{ book.format ?? '∅' }}</td>
+                                    <td>
+                                        {% if book.classification == 'audiobook' %}🎧 Audiobook
+                                        {% elseif book.classification == 'book' %}Book
+                                        {% else %}? Unknown{% endif %}
+                                    </td>
+                                    <td>{{ book.media_type ?? '' }}</td>
+                                    <td>{{ book.media_profile ?? '' }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% endif %}
+            </div>
+        {% endif %}
+    </section>
+{% endblock %}

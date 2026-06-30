@@ -29,3 +29,6 @@ framework:
             App\Message\DispatchReleaseSearch: async
             App\Message\ProcessDownloadJob: async
             App\Message\RetryApprovedSearches: async
+            App\Message\DispatchTorrentSearch: async
+            App\Message\ProcessTorrentJob: async
+            App\Message\PollTorrentJobs: async

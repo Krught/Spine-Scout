@@ -137,6 +137,14 @@
     gap: 0.75rem 1rem;
 }
 
+/* Paired/short inputs (e.g. user+password, remote-path from/to, the weight knobs)
+   laid out in responsive columns. */
+.field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 0.5rem 1rem;
+}
+
 .field-checkbox,
 .field-radio {
     display: flex;
@@ -598,6 +606,58 @@
 }
 .dev-dl-test__steps li.dev-dl-test__warn {
     color: var(--danger, #c62828);
+}
+
+/* --- Dev: Hardcover trending inspector -------------------------------- */
+.dev-hc-book {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+.dev-hc-book__title {
+    margin: 0 0 0.2rem;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.dev-hc-badge {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+.dev-hc-badge--audio {
+    background: var(--accent);
+    color: #fff;
+}
+.dev-hc-badge--none {
+    background: var(--bg-elev-2);
+    color: var(--fg-dim);
+}
+.dev-hc-badge--unknown {
+    background: var(--bg-elev-2);
+    color: var(--fg-muted, var(--fg-dim));
+    border: 1px dashed var(--border);
+}
+.dev-hc-editions {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    margin-top: 0.4rem;
+}
+.dev-hc-editions th,
+.dev-hc-editions td {
+    text-align: left;
+    padding: 0.3rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+.dev-hc-editions tr.is-audio td {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    font-weight: 600;
 }
 
 /* --- Dev: downloads activity / live log ------------------------------- */

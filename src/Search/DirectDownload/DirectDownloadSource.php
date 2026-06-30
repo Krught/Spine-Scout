@@ -29,6 +29,8 @@ enum DirectDownloadSource: string
     case LibGen = 'libgen';
     case ZLibrary = 'zlibrary';
     case Welib = 'welib';
+    /** BitTorrent: search the configured indexers and hand the best match to the download client. */
+    case Torrent = 'torrent';
 
     public function label(): string
     {
@@ -37,6 +39,7 @@ enum DirectDownloadSource: string
             self::LibGen => 'LibGen',
             self::ZLibrary => 'Z-Library',
             self::Welib => 'Welib',
+            self::Torrent => 'Torrent',
         };
     }
 
@@ -48,7 +51,18 @@ enum DirectDownloadSource: string
             self::LibGen => 'LibGen mirror base URLs (search.php results table, ads.php?md5=… → get.php download link).',
             self::ZLibrary => 'Z-Library mirror base URLs (/s/{query} results, book page → /dl/ download link). Publicly accessible — no login required.',
             self::Welib => 'Welib mirror base URLs (Anna’s-Archive-style /search and /md5/{hash} pages).',
+            self::Torrent => 'Searches your configured indexers and sends the best match to your download client (Settings → Torrents). No mirror URLs needed.',
         };
+    }
+
+    /**
+     * Whether this source is configured with operator-supplied mirror URLs. Torrent
+     * is not — it uses the indexers + download client configured under Settings →
+     * Torrents — so the mirror-URL UI and the HTTP cascade skip it.
+     */
+    public function usesMirrors(): bool
+    {
+        return $this !== self::Torrent;
     }
 
     /**
@@ -69,7 +83,7 @@ enum DirectDownloadSource: string
      */
     public static function defaultOrder(): array
     {
-        return [self::AnnasArchive, self::LibGen, self::ZLibrary, self::Welib];
+        return [self::AnnasArchive, self::LibGen, self::ZLibrary, self::Welib, self::Torrent];
     }
 
     public static function tryFromId(string $id): ?self
@@ -81,5 +95,20 @@ enum DirectDownloadSource: string
     public static function ids(): array
     {
         return array_map(static fn (self $s): string => $s->value, self::defaultOrder());
+    }
+
+    /**
+     * Ids of the HTTP mirror sources only (excludes Torrent). Used by the mirror-URL
+     * UI, the manual interactive search, and the HTTP probe — none of which apply to
+     * the torrent source.
+     *
+     * @return list<string>
+     */
+    public static function mirrorIds(): array
+    {
+        return array_values(array_map(
+            static fn (self $s): string => $s->value,
+            array_filter(self::defaultOrder(), static fn (self $s): bool => $s->usesMirrors()),
+        ));
     }
 }
