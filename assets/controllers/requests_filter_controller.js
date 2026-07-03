@@ -33,6 +33,42 @@ export default class extends Controller {
         this.apply();
     }
 
+    /**
+     * Recount the chips and re-apply the filters after request-actions mutates
+     * rows in place (status swap or removal). Chips whose count drops to zero
+     * are hidden — mirroring the server omitting empty categories at render —
+     * and if the active chip vanishes, fall back to "all" rather than leaving
+     * an unde-selectable empty view.
+     */
+    refresh() {
+        const rows = this.rowTargets;
+        this.chipTargets.forEach((chip) => {
+            const key = chip.dataset.statusKey || 'all';
+            const count = key === 'all' ? rows.length : rows.filter((r) => r.dataset.statusKey === key).length;
+            this.updateChip(chip, key, count);
+        });
+        this.formatChipTargets.forEach((chip) => {
+            const key = chip.dataset.formatKey || 'all';
+            const count = key === 'all' ? rows.length : rows.filter((r) => r.dataset.format === key).length;
+            this.updateChip(chip, key, count);
+        });
+        if (this.currentValue !== 'all'
+            && !this.chipTargets.some((c) => !c.hidden && c.dataset.statusKey === this.currentValue)) {
+            this.currentValue = 'all';
+        }
+        if (this.currentFormatValue !== 'all'
+            && !this.formatChipTargets.some((c) => !c.hidden && c.dataset.formatKey === this.currentFormatValue)) {
+            this.currentFormatValue = 'all';
+        }
+        this.apply();
+    }
+
+    updateChip(chip, key, count) {
+        const badge = chip.querySelector('.requests-filter-count');
+        if (badge) badge.textContent = count;
+        chip.hidden = key !== 'all' && count === 0;
+    }
+
     apply() {
         const key = this.currentValue;
         const fmt = this.currentFormatValue;

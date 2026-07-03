@@ -123,6 +123,63 @@ final class RequestsRecheckControllerTest extends WebTestCase
         self::assertSame(DownloadJob::STATUS_CANCELLED, $fresh->getStatus());
     }
 
+    public function testRecheckAnswersJsonWithReRenderedRowWhenAsked(): void
+    {
+        $job = $this->seedJob(DownloadJob::STATUS_DOWNLOADING, staleMinutes: 120);
+        $this->client->loginUser($this->loadAdmin());
+
+        $crawler = $this->client->request('GET', '/requests');
+        $token = $crawler->filter('form[action$="/recheck"] input[name="_csrf_token"]')->attr('value');
+        $reqId = $job->getBookRequest()?->getId();
+
+        $this->client->request(
+            'POST',
+            '/requests/' . $reqId . '/recheck',
+            ['_csrf_token' => $token],
+            [],
+            ['HTTP_ACCEPT' => 'application/json'],
+        );
+
+        self::assertResponseIsSuccessful();
+        $data = json_decode((string) $this->client->getResponse()->getContent(), true);
+        self::assertTrue($data['ok']);
+        self::assertSame('Re-checking for a release…', $data['message']);
+        // The re-rendered row carries the filter hooks and a fresh CSRF token
+        // so it can be swapped in place and re-submitted.
+        self::assertStringContainsString('data-requests-filter-target="row"', $data['row']);
+        self::assertStringContainsString('_csrf_token', $data['row']);
+
+        $this->em->clear();
+        $fresh = $this->em->find(DownloadJob::class, $job->getId());
+        self::assertSame(DownloadJob::STATUS_CANCELLED, $fresh->getStatus());
+    }
+
+    public function testDeleteAnswersJsonRemovedWhenAsked(): void
+    {
+        $job = $this->seedJob(DownloadJob::STATUS_DOWNLOADING, staleMinutes: 1);
+        $this->client->loginUser($this->loadAdmin());
+
+        $crawler = $this->client->request('GET', '/requests');
+        $token = $crawler->filter('form[action$="/delete"] input[name="_csrf_token"]')->attr('value');
+        $reqId = $job->getBookRequest()?->getId();
+
+        $this->client->request(
+            'POST',
+            '/requests/' . $reqId . '/delete',
+            ['_csrf_token' => $token],
+            [],
+            ['HTTP_ACCEPT' => 'application/json'],
+        );
+
+        self::assertResponseIsSuccessful();
+        $data = json_decode((string) $this->client->getResponse()->getContent(), true);
+        self::assertTrue($data['ok']);
+        self::assertTrue($data['removed']);
+
+        $this->em->clear();
+        self::assertNull($this->em->find(BookRequest::class, $reqId));
+    }
+
     private function seedJob(string $status, int $staleMinutes): DownloadJob
     {
         $book = new Book('grimmory', 'ext-' . bin2hex(random_bytes(4)), 'A Parade of Horribles');

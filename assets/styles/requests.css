@@ -31,6 +31,9 @@
     gap: 0.5rem;
     margin-bottom: 1rem;
 }
+/* display:inline-flex below beats the UA [hidden] rule, so restate it — chips
+   are hidden by requests-filter#refresh when their count drops to zero. */
+.requests-filter[hidden] { display: none; }
 .requests-filter {
     appearance: none;
     display: inline-flex;
@@ -333,4 +336,51 @@
         gap: 0.75rem;
     }
     .request-actions { align-items: flex-start; }
+}
+
+/* --- background row actions --- */
+.request-btn.is-busy {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+/* Toasts for the fetch-based row actions: bottom-right stack, one per action,
+   auto-dismissed. Colors mirror the .flash-success/.flash-error banners. */
+.toast-host {
+    position: fixed;
+    bottom: 1.25rem;
+    right: 1.25rem;
+    z-index: 1100; /* above the book/search modals (1000) */
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+    pointer-events: none;
+}
+.toast {
+    max-width: 22rem;
+    padding: 0.65rem 1rem;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: var(--bg-elev);
+    color: var(--fg);
+    font-size: 0.9rem;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.toast.is-visible {
+    opacity: 1;
+    transform: none;
+}
+.toast-success {
+    background: rgba(34, 197, 94, 0.15);
+    border-color: rgba(34, 197, 94, 0.35);
+    color: #86efac;
+}
+.toast-error {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
 }

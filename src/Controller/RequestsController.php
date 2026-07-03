@@ -92,39 +92,73 @@ final class RequestsController extends AbstractController
         $latestJobs = $jobs->latestByRequestIds($ids);
 
         $now = new \DateTimeImmutable();
-        $staleBefore = $now->modify('-' . DownloadJobRepository::STALE_AFTER_SECONDS . ' seconds');
         $items = [];
         foreach ($rows as $r) {
-            $job = $latestJobs[$r->getId()] ?? null;
-            // A job idle in an in-flight state past the stale window is orphaned
-            // (worker died mid-download) — surface a re-check so it's recoverable.
-            $stalled = $job !== null
-                && in_array($job->getStatus(), DownloadJob::ACTIVE_STATUSES, true)
-                && $job->getUpdatedAt() < $staleBefore;
-            // A completed job is terminal, so its updatedAt is effectively the
-            // moment the download finished — surface it as "Downloaded … ago".
-            $downloadedAt = $job !== null && $job->getStatus() === DownloadJob::STATUS_COMPLETE
-                ? $job->getUpdatedAt()
-                : null;
-            $statusKey = self::displayStatusKey($r);
-            $items[] = [
-                'entity'         => $r,
-                'ago'            => self::humanAgo($now, $r->getCreatedAt()),
-                'downloaded_at'  => $downloadedAt,
-                'downloaded_ago' => $downloadedAt !== null ? self::humanAgo($now, $downloadedAt) : null,
-                'cover_url'      => $metadata->ensureCoverProxyUrl($r->getBook()),
-                'job'            => $job,
-                'stalled'        => $stalled,
-                'status_key'     => $statusKey,
-                'status_label'   => self::STATUS_LABELS[$statusKey] ?? $r->getStatusLabel(),
-                'format_key'     => $r->isAudiobook() ? 'audiobook' : 'book',
-            ];
+            $items[] = $this->buildItem($r, $latestJobs[$r->getId()] ?? null, $metadata, $now);
         }
 
         return $this->render('requests/index.html.twig', [
             'items'          => $items,
             'filters'        => $this->buildFilters($items),
             'format_filters' => $this->buildFormatFilters($items),
+        ]);
+    }
+
+    /**
+     * The view-model array `requests/_row.html.twig` renders — built the same way
+     * for the initial page and for the JSON action responses that re-render a
+     * single row in place.
+     *
+     * @return array<string, mixed>
+     */
+    private function buildItem(BookRequest $r, ?DownloadJob $job, BookMetadataService $metadata, \DateTimeImmutable $now): array
+    {
+        $staleBefore = $now->modify('-' . DownloadJobRepository::STALE_AFTER_SECONDS . ' seconds');
+        // A job idle in an in-flight state past the stale window is orphaned
+        // (worker died mid-download) — surface a re-check so it's recoverable.
+        $stalled = $job !== null
+            && in_array($job->getStatus(), DownloadJob::ACTIVE_STATUSES, true)
+            && $job->getUpdatedAt() < $staleBefore;
+        // A completed job is terminal, so its updatedAt is effectively the
+        // moment the download finished — surface it as "Downloaded … ago".
+        $downloadedAt = $job !== null && $job->getStatus() === DownloadJob::STATUS_COMPLETE
+            ? $job->getUpdatedAt()
+            : null;
+        $statusKey = self::displayStatusKey($r);
+
+        return [
+            'entity'         => $r,
+            'ago'            => self::humanAgo($now, $r->getCreatedAt()),
+            'downloaded_at'  => $downloadedAt,
+            'downloaded_ago' => $downloadedAt !== null ? self::humanAgo($now, $downloadedAt) : null,
+            'cover_url'      => $metadata->ensureCoverProxyUrl($r->getBook()),
+            'job'            => $job,
+            'stalled'        => $stalled,
+            'status_key'     => $statusKey,
+            'status_label'   => self::STATUS_LABELS[$statusKey] ?? $r->getStatusLabel(),
+            'format_key'     => $r->isAudiobook() ? 'audiobook' : 'book',
+        ];
+    }
+
+    /** Whether the client asked for a JSON answer (the request-actions fetch) instead of the redirect flow. */
+    private static function wantsJson(Request $request): bool
+    {
+        return str_contains((string) $request->headers->get('Accept'), 'application/json');
+    }
+
+    /**
+     * The JSON answer to a successful row action: a toast message plus the row's
+     * re-rendered HTML so the client can swap it in place with fresh status,
+     * buttons and CSRF tokens.
+     */
+    private function rowActionResponse(BookRequest $entity, string $message, DownloadJobRepository $jobs, BookMetadataService $metadata): JsonResponse
+    {
+        $item = $this->buildItem($entity, $jobs->findLatestForRequest($entity), $metadata, new \DateTimeImmutable());
+
+        return new JsonResponse([
+            'ok'      => true,
+            'message' => $message,
+            'row'     => $this->renderView('requests/_row.html.twig', ['item' => $item]),
         ]);
     }
 
@@ -303,7 +337,7 @@ final class RequestsController extends AbstractController
 
     #[Route('/requests/{id}/approve', name: 'requests_approve', methods: ['POST'], requirements: ['id' => '\d+'])]
     #[IsGranted('ROLE_ADMIN')]
-    public function approve(int $id, Request $request, BookRequestRepository $requests, EntityManagerInterface $em, MessageBusInterface $bus): Response
+    public function approve(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, EntityManagerInterface $em, MessageBusInterface $bus): Response
     {
         $entity = $requests->find($id);
         if ($entity === null) {
@@ -319,12 +353,16 @@ final class RequestsController extends AbstractController
         // Kick off the async fulfillment loop: search → best match → download.
         $this->dispatchFulfillment($entity, $bus);
 
+        if (self::wantsJson($request)) {
+            return $this->rowActionResponse($entity, 'Approved — searching for a release…', $jobs, $metadata);
+        }
+
         return $this->redirectToRoute('requests');
     }
 
     #[Route('/requests/{id}/recheck', name: 'requests_recheck', methods: ['POST'], requirements: ['id' => '\d+'])]
     #[IsGranted('ROLE_ADMIN')]
-    public function recheck(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, MessageBusInterface $bus): Response
+    public function recheck(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, MessageBusInterface $bus): Response
     {
         $entity = $requests->find($id);
         if ($entity === null) {
@@ -337,9 +375,21 @@ final class RequestsController extends AbstractController
         // Only approved requests are in the fulfillment pipeline. Cancel any
         // in-flight job first (it may be an orphaned/stalled one) so the dispatch —
         // idempotent via hasActiveJobForRequest() — can start a fresh attempt.
-        if ($entity->getStatus() === BookRequest::STATUS_APPROVED) {
+        $recheckable = $entity->getStatus() === BookRequest::STATUS_APPROVED;
+        if ($recheckable) {
             $jobs->cancelActiveForRequest($entity);
             $this->dispatchFulfillment($entity, $bus);
+        }
+
+        if (self::wantsJson($request)) {
+            if (!$recheckable) {
+                return new JsonResponse(['ok' => false, 'message' => 'Only approved requests can be re-checked.'], 409);
+            }
+
+            return $this->rowActionResponse($entity, 'Re-checking for a release…', $jobs, $metadata);
+        }
+
+        if ($recheckable) {
             $this->addFlash('success', 'Re-checking for a release…');
         }
 
@@ -348,7 +398,7 @@ final class RequestsController extends AbstractController
 
     #[Route('/requests/{id}/rewrite-sidecar', name: 'requests_rewrite_sidecar', methods: ['POST'], requirements: ['id' => '\d+'])]
     #[IsGranted('ROLE_ADMIN')]
-    public function rewriteSidecar(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, MessageBusInterface $bus): Response
+    public function rewriteSidecar(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, MessageBusInterface $bus): Response
     {
         $entity = $requests->find($id);
         if ($entity === null) {
@@ -362,12 +412,19 @@ final class RequestsController extends AbstractController
         // a sidecar beside; its path lives on the latest job's filePath.
         $job = $jobs->findLatestForRequest($entity);
         if (!$entity->isAudiobook() || $job === null || $job->getStatus() !== DownloadJob::STATUS_COMPLETE || $job->getFilePath() === null) {
+            if (self::wantsJson($request)) {
+                return new JsonResponse(['ok' => false, 'message' => 'No downloaded audiobook to rewrite for this request.'], 409);
+            }
             $this->addFlash('error', 'No downloaded audiobook to rewrite for this request.');
 
             return $this->redirectToRoute('requests');
         }
 
         $bus->dispatch(new RewriteAudiobookSidecar((int) $job->getId()));
+
+        if (self::wantsJson($request)) {
+            return $this->rowActionResponse($entity, 'Metadata sidecar rewrite queued.', $jobs, $metadata);
+        }
         $this->addFlash('success', 'Metadata sidecar rewrite queued.');
 
         return $this->redirectToRoute('requests');
@@ -393,6 +450,10 @@ final class RequestsController extends AbstractController
 
         $em->remove($entity);
         $em->flush();
+
+        if (self::wantsJson($request)) {
+            return new JsonResponse(['ok' => true, 'message' => 'Request removed.', 'removed' => true]);
+        }
 
         return $this->redirectToRoute('requests');
     }

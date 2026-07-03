@@ -1,0 +1,104 @@
+{# One request row. Rendered by the index loop and re-rendered by the JSON action
+   endpoints so request-actions can swap a row in place (approve/recheck/rewrite)
+   without a page reload. Expects `item` — see RequestsController::buildItem(). #}
+{% set _cover_gradients = [
+    'linear-gradient(135deg,#3a4a6b,#5c6f99)',
+    'linear-gradient(135deg,#7a3a5f,#a85b85)',
+    'linear-gradient(135deg,#2f5a4e,#508a76)',
+    'linear-gradient(135deg,#6b4a2a,#a3754a)',
+    'linear-gradient(135deg,#3d3d6b,#6a6ab0)',
+    'linear-gradient(135deg,#5a2a3d,#8a4a60)',
+] %}
+{% set r = item.entity %}
+{% set status = r.status %}
+{% set is_owner = app.user and app.user.id == r.requestedBy.id %}
+{% set can_approve = is_granted('ROLE_ADMIN') and status == 'pending' %}
+{% set can_recheck = is_granted('ROLE_ADMIN') and status == 'approved' and (r.deliveryStatus is null or r.deliveryStatus in ['error', 'cancelled'] or item.stalled) %}
+{% set can_delete = is_granted('ROLE_ADMIN') or is_owner %}
+{% set is_fulfilled = status == 'available' or (status == 'approved' and r.deliveryStatus == 'complete') %}
+{% set can_search = is_granted('ROLE_ADMIN') and not is_fulfilled %}
+{% set _dur = random(900, 3600) %}
+<li class="request-row" data-controller="cover-palette" data-cover-palette-target-value=".request-cover"
+    data-requests-filter-target="row" data-status-key="{{ item.status_key }}"
+    data-format="{{ item.format_key }}"
+    style="--row-fill-duration: {{ _dur }}ms;">
+    <div class="request-left request-left-clickable" role="button" tabindex="0"
+         data-action="click->book-modal#open keydown.enter->book-modal#open keydown.space->book-modal#open"
+         data-book-modal-id-param="{{ r.book.id }}"
+         data-book-modal-title-param="{{ r.book.title }}"
+         data-book-modal-author-param="{{ r.book.author ?? '' }}"
+         data-book-modal-cover-param="{{ item.cover_url ?? '' }}"
+         data-book-modal-downloaded-param="{{ is_fulfilled ? '1' : '0' }}"
+         data-book-modal-request-status-param="{{ item.status_key }}"
+         data-book-modal-audiobook-param="{{ r.book.audiobookAvailable ? '1' : '0' }}"
+         data-book-modal-mode-param="{{ r.audiobook ? 'audiobook' : 'book' }}">
+        {% if item.cover_url %}
+            <img class="request-cover" src="{{ item.cover_url }}" alt="" loading="lazy">
+        {% else %}
+            <div class="request-cover request-cover-placeholder" aria-hidden="true"
+                 style="background: {{ _cover_gradients[(r.id ?? 0) % 6] }};">
+                <span class="request-cover-title">{{ r.book.title|slice(0, 24) }}</span>
+            </div>
+        {% endif %}
+        <div class="request-titleblock">
+            <div class="request-booktitle">{{ r.book.title }}</div>
+            {% if r.book.author %}
+                <div class="request-bookauthor">{{ r.book.author }}</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="request-meta">
+        <span class="request-format request-format-{{ item.format_key }}">{{ item.format_key == 'audiobook' ? 'Audiobook' : 'Book' }}</span>
+        <span class="request-status request-status-{{ item.status_key }}">{{ item.status_label }}</span>
+        <span class="request-when">
+            Requested {{ item.ago }} by <strong>{{ r.requestedBy.username }}</strong>
+        </span>
+        {% if item.downloaded_ago %}
+            <span class="request-when request-when-downloaded" title="{{ item.downloaded_at|date('M j, Y g:i A') }}">
+                Downloaded {{ item.downloaded_ago }}
+            </span>
+        {% endif %}
+    </div>
+
+    <div class="request-actions">
+        {% if can_search %}
+            <button type="button" class="request-btn request-btn-search"
+                    data-action="request-search#open"
+                    data-request-search-book-id-param="{{ r.book.id }}"
+                    data-request-search-title-param="{{ r.book.title }}"
+                    data-request-search-author-param="{{ r.book.author ?? '' }}"
+                    data-request-search-isbn-param="{{ r.book.isbn ?? '' }}"
+                    title="Manually search sources and download a version">Interactive Search</button>
+        {% endif %}
+        {% if can_approve %}
+            <form method="post" action="{{ path('requests_approve', {id: r.id}) }}"
+                  data-action="submit->request-actions#submit">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('approve-request-' ~ r.id) }}">
+                <button type="submit" class="request-btn request-btn-approve">Approve</button>
+            </form>
+        {% endif %}
+        {% if can_recheck %}
+            <form method="post" action="{{ path('requests_recheck', {id: r.id}) }}"
+                  data-action="submit->request-actions#submit">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('recheck-request-' ~ r.id) }}">
+                <button type="submit" class="request-btn request-btn-recheck" title="Search and download again now">Recheck now</button>
+            </form>
+        {% endif %}
+        {% if is_granted('ROLE_ADMIN') and is_fulfilled and item.format_key == 'audiobook' %}
+            <form method="post" action="{{ path('requests_rewrite_sidecar', {id: r.id}) }}"
+                  data-action="submit->request-actions#submit">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('rewrite-sidecar-request-' ~ r.id) }}">
+                <button type="submit" class="request-btn request-btn-sidecar" title="Re-write the metadata.json and cover.jpg sidecar beside this audiobook">Rewrite sidecar</button>
+            </form>
+        {% endif %}
+        {% if can_delete %}
+            <form method="post" action="{{ path('requests_delete', {id: r.id}) }}"
+                  data-action="submit->request-actions#submit"
+                  data-request-actions-confirm-param="Remove this request?">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('delete-request-' ~ r.id) }}">
+                <button type="submit" class="request-btn request-btn-delete">Remove Request</button>
+            </form>
+        {% endif %}
+    </div>
+</li>
