@@ -187,12 +187,18 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
                 'timeout' => self::TIMEOUT_SECONDS,
             ]);
             $rows = $response->toArray(false);
-        } catch (HttpExceptionInterface | \JsonException $e) {
+        } catch (HttpExceptionInterface | \JsonException | \RuntimeException $e) {
+            // The client couldn't be reached/authenticated at all — this says nothing
+            // about whether the torrent still exists, so it must NOT be treated as a
+            // removal signal (that would orphan a torrent that's still downloading
+            // behind a transient network/auth hiccup).
             return new DownloadStatus(DownloadStatus::STATE_UNKNOWN, 0.0, 'Download client query failed: ' . $e->getMessage());
         }
 
         if (!is_array($rows) || $rows === [] || !is_array($rows[0] ?? null)) {
-            return new DownloadStatus(DownloadStatus::STATE_UNKNOWN, 0.0, 'Torrent not found in the download client yet.');
+            // A successful, authenticated query that confirms the hash isn't present —
+            // this alone is trustworthy evidence of removal.
+            return new DownloadStatus(DownloadStatus::STATE_MISSING, 0.0, 'Torrent not found in the download client.');
         }
 
         return self::mapTorrentRow($rows[0]);

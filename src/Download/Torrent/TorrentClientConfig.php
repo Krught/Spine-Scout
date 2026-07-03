@@ -25,6 +25,7 @@ final class TorrentClientConfig
     public const DEFAULT_FILENAME_TEMPLATE = '{Author} - {Title}';
     public const DEFAULT_STAGING_SUBDIR = 'torrents';
     public const DEFAULT_AUDIO_OUTPUT_DIRECTORY = '/var/www/html/audiobooks';
+    public const DEFAULT_RECONCILE_INTERVAL_HOURS = 6;
 
     /**
      * Fixed in-container mount for the download client's completed-downloads folder.
@@ -42,6 +43,9 @@ final class TorrentClientConfig
      * @param string $filenameTemplate     Naming template with {Author}/{Title}/{Year}/{ISBN} tokens
      * @param bool   $removeOnComplete     After a successful import, remove the torrent from the download client and
      *                                      delete its original files. Disable to keep seeding (e.g. private trackers).
+     * @param int    $reconcileIntervalHours How often to automatically re-link errored torrent jobs back to a
+     *                                        torrent still present in the download client (see TorrentJobReconciler).
+     *                                        0 disables the automatic run; the "Run now" button always works.
      */
     public function __construct(
         public readonly string $category = self::DEFAULT_CATEGORY,
@@ -50,6 +54,7 @@ final class TorrentClientConfig
         public readonly string $stagingSubdir = self::DEFAULT_STAGING_SUBDIR,
         public readonly string $filenameTemplate = self::DEFAULT_FILENAME_TEMPLATE,
         public readonly bool $removeOnComplete = true,
+        public readonly int $reconcileIntervalHours = self::DEFAULT_RECONCILE_INTERVAL_HOURS,
     ) {
     }
 
@@ -79,6 +84,7 @@ final class TorrentClientConfig
             $str($raw['stagingSubdir'] ?? null, self::DEFAULT_STAGING_SUBDIR),
             $str($raw['filenameTemplate'] ?? null, self::DEFAULT_FILENAME_TEMPLATE),
             (bool) ($raw['removeOnComplete'] ?? true),
+            max(0, (int) ($raw['reconcileIntervalHours'] ?? self::DEFAULT_RECONCILE_INTERVAL_HOURS)),
         );
     }
 
@@ -86,12 +92,13 @@ final class TorrentClientConfig
     public function toArray(): array
     {
         return [
-            'category'             => $this->category,
-            'audioOutputDirectory' => $this->audioOutputDirectory,
-            'useEbookLibraryDir'   => $this->useEbookLibraryDir,
-            'stagingSubdir'        => $this->stagingSubdir,
-            'filenameTemplate'     => $this->filenameTemplate,
-            'removeOnComplete'     => $this->removeOnComplete,
+            'category'                => $this->category,
+            'audioOutputDirectory'    => $this->audioOutputDirectory,
+            'useEbookLibraryDir'      => $this->useEbookLibraryDir,
+            'stagingSubdir'           => $this->stagingSubdir,
+            'filenameTemplate'        => $this->filenameTemplate,
+            'removeOnComplete'        => $this->removeOnComplete,
+            'reconcileIntervalHours'  => $this->reconcileIntervalHours,
         ];
     }
 

@@ -16,7 +16,10 @@ final class DownloadStatus
     public const STATE_ERROR       = 'error';
     public const STATE_PAUSED      = 'paused';
     public const STATE_SEEDING     = 'seeding';
+    /** The client couldn't be queried at all (transport/auth failure) — not proof the torrent is gone. */
     public const STATE_UNKNOWN     = 'unknown';
+    /** The client responded successfully and confirmed the torrent isn't there. */
+    public const STATE_MISSING     = 'missing';
 
     public const STATES = [
         self::STATE_QUEUED,
@@ -26,6 +29,7 @@ final class DownloadStatus
         self::STATE_PAUSED,
         self::STATE_SEEDING,
         self::STATE_UNKNOWN,
+        self::STATE_MISSING,
     ];
 
     public function __construct(

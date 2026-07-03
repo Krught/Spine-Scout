@@ -11,6 +11,7 @@ use App\Form\HardcoverIntegrationType;
 use App\Form\OpenLibraryIntegrationType;
 use App\Entity\BookSectionEntry;
 use App\Message\PurgeStaleBooks;
+use App\Message\ReconcileTorrents;
 use App\Message\RefreshHardcoverTrending;
 use App\Message\RefreshOpenLibraryTrending;
 use App\Message\RewriteAllAudiobookSidecars;
@@ -546,6 +547,7 @@ final class SettingsController extends AbstractController
                 'stagingSubdir'        => (string) $req->get('staging_subdir', ''),
                 'filenameTemplate'     => (string) $req->get('torrent_filename_template', ''),
                 'removeOnComplete'     => $req->getBoolean('remove_on_complete'),
+                'reconcileIntervalHours' => $req->get('reconcile_interval_hours', ''),
             ]);
             $qbittorrent->setEnabled(
                 $req->getBoolean('qbittorrent_enabled')
@@ -590,6 +592,21 @@ final class SettingsController extends AbstractController
 
         $bus->dispatch(new RewriteAllAudiobookSidecars());
         $this->addFlash('success', sprintf('Queued metadata sidecar rewrite for %d audiobook(s). Refresh in a moment.', $count));
+
+        return $this->redirectToRoute('settings_audiobooks');
+    }
+
+    #[Route('/audiobooks/reconcile-torrents', name: 'audiobooks_reconcile_torrents', methods: ['POST'])]
+    public function audiobooksReconcileTorrents(Request $request, MessageBusInterface $bus): Response
+    {
+        if (!$this->isCsrfTokenValid('audiobooks_reconcile_torrents', (string) $request->request->get('_token'))) {
+            $this->addFlash('error', 'Invalid CSRF token.');
+
+            return $this->redirectToRoute('settings_audiobooks');
+        }
+
+        $bus->dispatch(new ReconcileTorrents(force: true));
+        $this->addFlash('success', 'Torrent reconcile queued. Refresh in a moment to see results.');
 
         return $this->redirectToRoute('settings_audiobooks');
     }

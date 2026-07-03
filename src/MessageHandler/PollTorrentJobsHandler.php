@@ -89,10 +89,24 @@ final class PollTorrentJobsHandler
                 continue;
             }
 
-            // The client doesn't have this torrent. Just after the add it may not be
-            // registered yet (tolerate briefly); past the grace window it means the
-            // torrent was removed from the client — fail so the request re-attempts.
+            // The client couldn't be queried at all (transport/auth failure). This is
+            // NOT evidence the torrent was removed — it's just as likely a transient
+            // network blip, a qBittorrent restart, or a login lockout. Leave the job
+            // active and retry next tick; only a confirmed STATE_MISSING response
+            // below counts as removal.
             if ($status->state === DownloadStatus::STATE_UNKNOWN) {
+                $this->logger->warning('Download client query failed while polling torrent job; will retry', [
+                    'job'   => $job->getId(),
+                    'error' => $status->message,
+                ]);
+                continue;
+            }
+
+            // The client confirmed this torrent isn't there. Just after the add it may
+            // not be registered yet (tolerate briefly); past the grace window it means
+            // the torrent was actually removed from the client — fail so the request
+            // re-attempts.
+            if ($status->state === DownloadStatus::STATE_MISSING) {
                 if ($this->ageSeconds($job) > self::REMOVAL_GRACE_SECONDS) {
                     $this->fail($job, 'Torrent is no longer in the download client (removed); will search again.');
                 }

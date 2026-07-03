@@ -143,6 +143,31 @@ final class DownloadJobRepository extends ServiceEntityRepository
     }
 
     /**
+     * Errored torrent jobs that still carry a client hash — candidates for
+     * reconciliation, since the download client may still have the torrent (it was
+     * only the app's tracking that was lost, e.g. to a transient poll failure).
+     *
+     * @return list<DownloadJob>
+     */
+    public function erroredTorrentJobsWithClientRef(): array
+    {
+        /** @var list<DownloadJob> $rows */
+        $rows = $this->createQueryBuilder('j')
+            ->leftJoin('j.bookRequest', 'r')->addSelect('r')
+            ->leftJoin('r.book', 'b')->addSelect('b')
+            ->where('j.protocol = :torrent')
+            ->andWhere('j.status = :error')
+            ->andWhere('j.clientRef IS NOT NULL')
+            ->setParameter('torrent', ReleaseCandidate::PROTOCOL_TORRENT)
+            ->setParameter('error', DownloadJob::STATUS_ERROR)
+            ->orderBy('j.updatedAt', 'DESC')
+            ->getQuery()
+            ->getResult();
+
+        return $rows;
+    }
+
+    /**
      * True when the request already has a download job that hasn't reached a
      * terminal state — used to avoid spawning a duplicate search/download when
      * approve is double-clicked or the message is redelivered.

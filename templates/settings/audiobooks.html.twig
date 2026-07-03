@@ -200,6 +200,20 @@
                 Once the import lands in your library, remove the finished torrent from qBittorrent and delete
                 the files it downloaded. Untick to keep seeding (e.g. on a private tracker).
             </p>
+            <div class="field">
+                <label for="reconcile_interval_hours">Reconcile orphaned torrents every (hours)</label>
+                <input type="number" id="reconcile_interval_hours" name="reconcile_interval_hours" min="0" step="1"
+                       value="{{ client_config.reconcileIntervalHours }}">
+                <p class="form-note">
+                    A torrent job that failed can sometimes still be present and finishing in qBittorrent (e.g.
+                    after a transient connection blip). This automatically re-links such jobs back so they get
+                    imported normally — no need to remove and re-add the torrent. Set to 0 to disable the
+                    automatic run; the button below always works.
+                    {% if qbittorrent.lastSyncAt %}
+                        · Last run {{ qbittorrent.lastSyncAt|date('Y-m-d H:i') }}
+                    {% endif %}
+                </p>
+            </div>
         </fieldset>
 
         <div class="form-actions">
@@ -217,6 +231,19 @@
         <form method="post" action="{{ path('settings_audiobooks_rewrite_sidecars') }}" class="inline-form">
             <input type="hidden" name="_token" value="{{ csrf_token('audiobooks_rewrite_sidecars') }}">
             <button type="submit" class="btn btn-secondary">Rewrite all audiobook sidecars</button>
+        </form>
+    </fieldset>
+
+    <fieldset class="settings-fieldset">
+        <legend>Orphaned torrents</legend>
+        <p class="form-note">
+            Re-links any errored torrent job whose torrent is still present in qBittorrent (e.g. after a
+            transient connection blip falsely marked it removed) back into the normal download pipeline,
+            so it's picked up and imported on the next poll — including torrents that already finished.
+        </p>
+        <form method="post" action="{{ path('settings_audiobooks_reconcile_torrents') }}" class="inline-form">
+            <input type="hidden" name="_token" value="{{ csrf_token('audiobooks_reconcile_torrents') }}">
+            <button type="submit" class="btn btn-secondary">Run reconcile now</button>
         </form>
     </fieldset>
 {% endblock %}
