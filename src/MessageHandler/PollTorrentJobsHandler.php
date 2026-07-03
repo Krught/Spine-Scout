@@ -131,9 +131,11 @@ final class PollTorrentJobsHandler
     private function finalize(DownloadJob $job, DownloadStatus $status, string $subject, DownloadClientInterface $client): void
     {
         $rawPath = (string) $status->filePath;
-        // Resolve under the fixed /downloads mount by basename — the client's own save
-        // path doesn't matter, only that its completed-downloads folder is mounted there.
-        $sourcePath = TorrentClientConfig::localContentPath($rawPath);
+        // Resolve under the fixed /downloads mount using the client's save path (see
+        // TorrentClientConfig::localContentPath) — the bind mount covers that save
+        // directory, so content_path must be resolved relative to it, not just by
+        // basename (which drops any intermediate folder for e.g. single-file torrents).
+        $sourcePath = TorrentClientConfig::localContentPath($rawPath, $status->savePath);
 
         // The completed files must be readable INSIDE this container. If the path
         // doesn't resolve, the /downloads mount is missing or wrong — say so precisely.

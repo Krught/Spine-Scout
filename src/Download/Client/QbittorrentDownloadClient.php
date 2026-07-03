@@ -230,8 +230,10 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
     /**
      * Map one qBittorrent torrents/info row to a DownloadStatus. A finished torrent
      * (progress complete or in a seeding state) reports STATE_SEEDING and carries
-     * its content_path so the poller can move the files out — we keep it seeding
-     * rather than removing it, so the torrent stays healthy.
+     * its content_path (and save_path, needed to resolve content_path under the
+     * bind-mounted /downloads root — see TorrentClientConfig::localContentPath) so
+     * the poller can move the files out — we keep it seeding rather than removing
+     * it, so the torrent stays healthy.
      *
      * @param array<string, mixed> $t
      */
@@ -240,6 +242,7 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
         $state = (string) ($t['state'] ?? 'unknown');
         $progress = (float) ($t['progress'] ?? 0.0);
         $contentPath = is_string($t['content_path'] ?? null) ? $t['content_path'] : null;
+        $savePath = is_string($t['save_path'] ?? null) ? $t['save_path'] : null;
         $speed = isset($t['dlspeed']) && is_numeric($t['dlspeed']) ? (int) $t['dlspeed'] : null;
         $eta = isset($t['eta']) && is_numeric($t['eta']) ? (int) $t['eta'] : null;
 
@@ -247,7 +250,7 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
             return DownloadStatus::error('Download client reported state "' . $state . '".');
         }
         if ($progress >= 1.0 || in_array($state, self::SEEDING_STATES, true)) {
-            return new DownloadStatus(DownloadStatus::STATE_SEEDING, 100.0, 'Download complete; seeding.', $contentPath);
+            return new DownloadStatus(DownloadStatus::STATE_SEEDING, 100.0, 'Download complete; seeding.', $contentPath, null, null, $savePath);
         }
         if ($state === 'pausedDL') {
             return new DownloadStatus(DownloadStatus::STATE_PAUSED, $progress * 100, 'Paused.', null, $speed, $eta);

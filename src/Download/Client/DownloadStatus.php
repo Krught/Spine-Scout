@@ -39,6 +39,8 @@ final class DownloadStatus
         public readonly ?string $filePath = null,
         public readonly ?int $downloadSpeedBytesPerSec = null,
         public readonly ?int $etaSeconds = null,
+        /** The client's save/download-root path for this torrent (e.g. qBittorrent's save_path). */
+        public readonly ?string $savePath = null,
     ) {
     }
 

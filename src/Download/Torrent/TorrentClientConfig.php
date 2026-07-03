@@ -104,12 +104,29 @@ final class TorrentClientConfig
 
     /**
      * Map a content path reported by the download client to the path Spine Scout
-     * reads it at: the basename under the fixed /downloads mount. The client's own
-     * absolute save path (e.g. /mnt/videos/torr/<name>) doesn't matter — only that
-     * the operator mounts that completed-downloads folder at /downloads.
+     * reads it at under the fixed /downloads mount. The operator bind-mounts the
+     * client's save/download-root directory (e.g. /mnt/videos/torr) at /downloads,
+     * so the correct mapping is content_path with that root prefix stripped — NOT
+     * just the content path's basename. A single-file torrent's content_path can sit
+     * more than one level below the save path (e.g. the client still nests it in a
+     * folder), and taking only the basename would drop that intermediate folder,
+     * producing a path that doesn't exist.
+     *
+     * Falls back to the basename-only mapping when $savePath is unknown or doesn't
+     * actually prefix $clientContentPath (e.g. a client reporting paths in a
+     * different style) — the same behaviour this method always had.
      */
-    public static function localContentPath(string $clientContentPath): string
+    public static function localContentPath(string $clientContentPath, ?string $savePath = null): string
     {
+        if ($savePath !== null) {
+            $root = rtrim($savePath, '/');
+            if ($root !== '' && str_starts_with($clientContentPath, $root . '/')) {
+                $relative = substr($clientContentPath, strlen($root) + 1);
+
+                return self::DOWNLOADS_MOUNT . '/' . $relative;
+            }
+        }
+
         $name = basename(rtrim($clientContentPath, '/'));
 
         return self::DOWNLOADS_MOUNT . '/' . $name;

@@ -25,6 +25,27 @@ final class TorrentClientConfigTest extends TestCase
         self::assertSame('/downloads/book.m4b', TorrentClientConfig::localContentPath('/data/done/book.m4b'));
     }
 
+    public function testLocalContentPathResolvesRelativeToSavePathWhenKnown(): void
+    {
+        // A single-file torrent whose content sits in an intermediate folder below
+        // save_path — basename-only would drop that folder and miss the file.
+        self::assertSame(
+            '/downloads/Brave New World/Brave New World - Audiobook.mp3',
+            TorrentClientConfig::localContentPath(
+                '/mnt/videos/torr/Brave New World/Brave New World - Audiobook.mp3',
+                '/mnt/videos/torr',
+            ),
+        );
+    }
+
+    public function testLocalContentPathFallsBackToBasenameWhenSavePathDoesNotMatch(): void
+    {
+        self::assertSame(
+            '/downloads/Book',
+            TorrentClientConfig::localContentPath('/mnt/videos/torr/Book', '/some/other/root'),
+        );
+    }
+
     public function testConfigRoundTripsWithoutPathFields(): void
     {
         $config = TorrentClientConfig::fromArray([
