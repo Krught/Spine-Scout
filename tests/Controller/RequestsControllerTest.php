@@ -220,30 +220,57 @@ final class RequestsControllerTest extends WebTestCase
         self::assertCount(self::PER_PAGE, $page1->filter('li.request-row'));
         // Newest first: the three oldest are *not* on page 1.
         self::assertStringNotContainsString('Paged Work 1<', $this->html());
-        self::assertStringContainsString('Page 1 of 2', $this->html());
-        self::assertStringContainsString('53 requests', $this->html());
+        self::assertStringContainsString('data-requests-scroll-page-value="1"', $this->html());
+        self::assertStringContainsString('data-requests-scroll-pages-value="2"', $this->html());
+        // More pages remain, so the endless-scroll sentinel is present.
+        self::assertCount(1, $page1->filter('.requests-scroll-sentinel'));
 
         $page2 = $this->client->request('GET', '/requests?page=2');
         self::assertResponseIsSuccessful();
         self::assertCount(3, $page2->filter('li.request-row'));
         self::assertStringContainsString('Paged Work 1<', $this->html());
-        self::assertStringContainsString('Page 2 of 2', $this->html());
+        // Last page: nothing left to scroll into.
+        self::assertCount(0, $page2->filter('.requests-scroll-sentinel'));
 
         // Out-of-range and junk page values clamp into the valid range.
         $this->client->request('GET', '/requests?page=99');
         self::assertResponseIsSuccessful();
-        self::assertStringContainsString('Page 2 of 2', $this->html());
+        self::assertStringContainsString('data-requests-scroll-page-value="2"', $this->html());
 
         $this->client->request('GET', '/requests?page=0');
         self::assertResponseIsSuccessful();
-        self::assertStringContainsString('Page 1 of 2', $this->html());
+        self::assertStringContainsString('data-requests-scroll-page-value="1"', $this->html());
 
         $this->client->request('GET', '/requests?page=not-a-number');
         self::assertResponseIsSuccessful();
-        self::assertStringContainsString('Page 1 of 2', $this->html());
+        self::assertStringContainsString('data-requests-scroll-page-value="1"', $this->html());
     }
 
-    public function testIndexHidesThePagerWhenEverythingFitsOnOnePage(): void
+    /**
+     * The endless-scroll fetch: asking the index route for application/json
+     * answers the requested page as row HTML plus paging facts, instead of a
+     * full document.
+     */
+    public function testIndexAnswersJsonRowsForTheEndlessScrollFetch(): void
+    {
+        for ($i = 1; $i <= self::PER_PAGE + 3; $i++) {
+            $this->seedRequest('Paged Work ' . $i);
+        }
+        $this->client->loginUser($this->loadUser('admin-pipeline'));
+
+        $this->client->request('GET', '/requests?page=2', [], [], ['HTTP_ACCEPT' => 'application/json']);
+
+        self::assertResponseIsSuccessful();
+        $data = $this->json();
+        self::assertTrue($data['ok']);
+        self::assertSame(2, $data['page']);
+        self::assertSame(2, $data['pages']);
+        self::assertSame(self::PER_PAGE + 3, $data['total']);
+        self::assertSame(3, substr_count($data['rows'], 'request-row'), 'Page 2 holds exactly the three oldest rows.');
+        self::assertStringContainsString('Paged Work 1<', $data['rows']);
+    }
+
+    public function testIndexHidesTheScrollSentinelWhenEverythingFitsOnOnePage(): void
     {
         $this->seedRequest('Only Work');
         $this->client->loginUser($this->loadUser('admin-pipeline'));
@@ -252,7 +279,7 @@ final class RequestsControllerTest extends WebTestCase
 
         self::assertResponseIsSuccessful();
         self::assertCount(1, $crawler->filter('li.request-row'));
-        self::assertCount(0, $crawler->filter('.requests-pager'));
+        self::assertCount(0, $crawler->filter('.requests-scroll-sentinel'));
     }
 
     /**

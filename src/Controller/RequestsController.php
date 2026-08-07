@@ -16,6 +16,7 @@ use App\Download\Client\QbittorrentDownloadClient;
 use App\Integration\Prowlarr\ProwlarrClient;
 use App\Message\DispatchReleaseSearch;
 use App\Message\DispatchTorrentSearch;
+use App\Message\PollTorrentJobs;
 use App\Message\RewriteAudiobookSidecar;
 use App\Repository\DownloadJobRepository;
 use App\Search\SearchSettingsProvider;
@@ -113,6 +114,23 @@ final class RequestsController extends AbstractController
         $items = [];
         foreach ($rows as $r) {
             $items[] = $this->buildItem($r, $latestJobs[$r->getId()] ?? null, $metadata, $now);
+        }
+
+        // The endless-scroll fetch: the same page query, answered as rendered row
+        // HTML for the client to append instead of a full document.
+        if (self::wantsJson($request)) {
+            $html = '';
+            foreach ($items as $item) {
+                $html .= $this->renderView('requests/_row.html.twig', ['item' => $item]);
+            }
+
+            return new JsonResponse([
+                'ok'    => true,
+                'rows'  => $html,
+                'page'  => $page,
+                'pages' => $pages,
+                'total' => $total,
+            ]);
         }
 
         return $this->render('requests/index.html.twig', [
@@ -556,7 +574,7 @@ final class RequestsController extends AbstractController
      */
     #[Route('/requests/{id}/link-torrent', name: 'requests_link_torrent', methods: ['POST'], requirements: ['id' => '\d+'])]
     #[IsGranted('ROLE_ADMIN')]
-    public function linkTorrent(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, EntityManagerInterface $em): Response
+    public function linkTorrent(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, EntityManagerInterface $em, MessageBusInterface $bus): Response
     {
         $entity = $requests->find($id);
         if ($entity === null) {
@@ -609,8 +627,20 @@ final class RequestsController extends AbstractController
         $em->persist($job);
         $em->flush();
 
+        // An already-finished torrent (downloaded, now seeding) shouldn't wait for
+        // the next scheduled tick: kick the poller now so it finalizes the job —
+        // sanity checks, move into the library, sidecar/metadata — immediately.
+        $alreadyComplete = !empty($torrent['completed']);
+        if ($alreadyComplete) {
+            $bus->dispatch(new PollTorrentJobs());
+        }
+
         if (self::wantsJson($request)) {
-            return $this->rowActionResponse($entity, 'Linked to torrent — will import when the download completes.', $jobs, $metadata);
+            $message = $alreadyComplete
+                ? 'Linked to torrent — already downloaded, importing into the library now…'
+                : 'Linked to torrent — will import when the download completes.';
+
+            return $this->rowActionResponse($entity, $message, $jobs, $metadata);
         }
 
         return $this->redirectToRoute('requests');

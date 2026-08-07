@@ -1,29 +1,22 @@
 import { Controller } from '@hotwired/stimulus';
 
 /**
- * "Link torrent" per-row action on the Requests page: lists the torrents
- * currently in the download client's category in a small popover under the
- * button, and POSTs the picked hash to the link endpoint — which creates a
- * DOWNLOADING job the torrent poller then finalizes into the library exactly
- * like an automatic grab. The response is the same toast + re-rendered row
- * contract the request-actions controller uses, so the row swaps in place.
+ * "Link torrent" per-row action on the Requests page: opens a centered modal
+ * listing the torrents currently in the download client's category, and POSTs
+ * the picked hash to the link endpoint — which creates a DOWNLOADING job the
+ * torrent poller then finalizes into the library exactly like an automatic
+ * grab. The response is the same toast + re-rendered row contract the
+ * request-actions controller uses, so the row swaps in place.
  */
 /* stimulusFetch: 'lazy' */
 export default class extends Controller {
     disconnect() {
-        this.closePanel();
+        this.closeModal();
     }
 
     async open(event) {
         const button = event.currentTarget;
         const { optionsUrl, linkUrl, token } = event.params;
-
-        // Second click on the same button closes the open panel instead of re-fetching.
-        if (this.panel) {
-            const reopen = this.panelButton !== button;
-            this.closePanel();
-            if (!reopen) return;
-        }
 
         if (button.disabled) return;
         button.disabled = true;
@@ -44,7 +37,7 @@ export default class extends Controller {
                 this.toast('No torrents found in the download client.', 'error');
                 return;
             }
-            this.openPanel(button, data.torrents, linkUrl, token);
+            this.openModal(button.closest('.request-row'), data.torrents, linkUrl, token);
         } catch (e) {
             this.toast('Network error — could not list torrents.', 'error');
         } finally {
@@ -53,10 +46,39 @@ export default class extends Controller {
         }
     }
 
-    openPanel(button, torrents, linkUrl, token) {
-        const panel = document.createElement('div');
-        panel.className = 'link-torrent-panel';
-        panel.setAttribute('role', 'listbox');
+    openModal(row, torrents, linkUrl, token) {
+        this.closeModal();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'link-torrent-modal';
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) this.closeModal();
+        });
+
+        const dialog = document.createElement('div');
+        dialog.className = 'link-torrent-dialog';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-label', 'Link a torrent');
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'link-torrent-close';
+        close.setAttribute('aria-label', 'Close');
+        close.innerHTML = '&times;';
+        close.addEventListener('click', () => this.closeModal());
+
+        const title = document.createElement('h3');
+        title.className = 'link-torrent-title';
+        title.textContent = 'Link a torrent';
+
+        const hint = document.createElement('p');
+        hint.className = 'link-torrent-hint';
+        hint.textContent = 'Pick the torrent in the download client that belongs to this request.';
+
+        const list = document.createElement('div');
+        list.className = 'link-torrent-list';
+        list.setAttribute('role', 'listbox');
 
         for (const t of torrents) {
             const item = document.createElement('button');
@@ -80,43 +102,36 @@ export default class extends Controller {
                 item.disabled = true;
                 item.classList.add('is-linked');
             } else {
-                item.addEventListener('click', () => this.link(t.id, linkUrl, token));
+                item.addEventListener('click', () => this.link(t.id, row, linkUrl, token));
             }
-            panel.appendChild(item);
+            list.appendChild(item);
         }
 
-        // Anchor under the button: the actions column is the positioning context.
-        button.parentElement.appendChild(panel);
-        this.panel = panel;
-        this.panelButton = button;
+        dialog.append(close, title, hint, list);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+        document.body.classList.add('link-torrent-modal-open');
+        this.modal = overlay;
 
-        this.onDocumentClick = (e) => {
-            if (!panel.contains(e.target) && e.target !== button) this.closePanel();
-        };
         this.onDocumentKeydown = (e) => {
-            if (e.key === 'Escape') this.closePanel();
+            if (e.key === 'Escape') this.closeModal();
         };
-        document.addEventListener('click', this.onDocumentClick);
         document.addEventListener('keydown', this.onDocumentKeydown);
+        close.focus();
     }
 
-    closePanel() {
-        this.panel?.remove();
-        this.panel = null;
-        this.panelButton = null;
-        if (this.onDocumentClick) {
-            document.removeEventListener('click', this.onDocumentClick);
-            this.onDocumentClick = null;
-        }
+    closeModal() {
+        this.modal?.remove();
+        this.modal = null;
+        document.body.classList.remove('link-torrent-modal-open');
         if (this.onDocumentKeydown) {
             document.removeEventListener('keydown', this.onDocumentKeydown);
             this.onDocumentKeydown = null;
         }
     }
 
-    async link(hash, linkUrl, token) {
-        const row = this.panel?.closest('.request-row');
-        this.closePanel();
+    async link(hash, row, linkUrl, token) {
+        this.closeModal();
 
         const body = new FormData();
         body.append('hash', hash);

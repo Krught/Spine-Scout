@@ -184,6 +184,19 @@ final class ProwlarrClientMapTest extends TestCase
         }
     }
 
+    /**
+     * Subcategory-only filters (the default [3030] scope) silently exclude
+     * releases indexers file under the broad parent category, so the search
+     * scope is widened with each id's Torznab parent before querying.
+     */
+    public function testWithParentCategoriesAddsEachIdsParentOnce(): void
+    {
+        self::assertSame([3030, 3000], ProwlarrClient::withParentCategories([3030]));
+        self::assertSame([7000, 7020], ProwlarrClient::withParentCategories([7000, 7020]));
+        self::assertSame([3030, 3040, 3000], ProwlarrClient::withParentCategories([3030, 3040]));
+        self::assertSame([], ProwlarrClient::withParentCategories([]));
+    }
+
     public function testLeechersAreNullWhenAbsentOrNonNumeric(): void
     {
         $rows = [

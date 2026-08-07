@@ -64,7 +64,7 @@ final class ProwlarrClient
         }
         $config = $this->integrations->getProwlarrConfig();
         $isAudiobook = $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK;
-        $categories = $isAudiobook ? $config->categories : self::EBOOK_CATEGORIES;
+        $categories = self::withParentCategories($isAudiobook ? $config->categories : self::EBOOK_CATEGORIES);
 
         try {
             $response = $this->httpClient->request('GET', $this->baseUrl($row) . self::SEARCH_PATH, [
@@ -85,6 +85,31 @@ final class ProwlarrClient
         }
 
         return self::mapResults($rows, $plan->contentType);
+    }
+
+    /**
+     * Widen a Torznab category filter with each id's parent (3030 → 3000, 7020 →
+     * 7000). Many indexers file releases only under the broad parent category, so
+     * a subcategory-only filter silently excludes them — searching for the
+     * default [3030] scope alone can return nothing while the same query
+     * unfiltered shows plenty of audiobooks. The scorer downstream separates the
+     * right book from the broader category's noise.
+     *
+     * @param list<int> $categories
+     *
+     * @return list<int>
+     */
+    public static function withParentCategories(array $categories): array
+    {
+        $out = $categories;
+        foreach ($categories as $id) {
+            $parent = intdiv($id, 1000) * 1000;
+            if ($parent > 0 && !in_array($parent, $out, true)) {
+                $out[] = $parent;
+            }
+        }
+
+        return $out;
     }
 
     /**
