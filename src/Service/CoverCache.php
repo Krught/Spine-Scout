@@ -18,7 +18,7 @@ use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpExceptionIn
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
- * Disk-backed cover image cache. The directory at {projectDir}/var/cache/covers
+ * Disk-backed cover image cache. The directory at {projectDir}/book-covers
  * is intentionally throwaway: deleting it (or any individual file) is safe and
  * the contents will be re-fetched on demand from the upstream source recorded
  * in each entry's .meta sidecar.
@@ -28,6 +28,20 @@ final class CoverCache implements BookCoverProvider
     private const KIND_REMOTE = 'remote';
     private const KIND_KOMGA  = 'komga';
     private const WEBP_QUALITY = 82;
+
+    /**
+     * Negative-cache window: after a failed upstream fetch the failure instant is recorded
+     * in the sidecar (`failedAt`) and re-fetching is skipped until the window elapses.
+     * Without it, every rendered card whose cover cannot be fetched re-hits the upstream
+     * (e.g. a Komga that 409s every thumbnail) on every single page load.
+     */
+    private const FETCH_BACKOFF_SECONDS = 900;
+
+    /** Verdicts from komgaFingerprintStatus() — see that method for the semantics. */
+    private const FP_VALID    = 'valid';
+    private const FP_MISSING  = 'missing-fp'; // pre-stamp entry: trust the image, stamp it now
+    private const FP_RESTAMP  = 'restamp';    // ta-form stamp, ISBN since backfilled: same book, upgrade stamp
+    private const FP_MISMATCH = 'mismatch';   // id reassigned to a different book: drop + refetch
 
     public function __construct(
         private readonly string $cacheDir,
@@ -194,7 +208,7 @@ final class CoverCache implements BookCoverProvider
         if ($this->imageReady($hash)) {
             return true;
         }
-        if ($this->fetch($meta, $this->imagePath($hash))) {
+        if ($this->fetch($hash, $meta, $this->imagePath($hash))) {
             return true;
         }
         $this->logger->info('Cover warm failed', ['kind' => $kind, 'key' => $key]);
@@ -202,25 +216,29 @@ final class CoverCache implements BookCoverProvider
     }
 
     /**
-     * A cached image is "ready" when it is present, non-empty, and — for Komga covers,
-     * whose ids are reassigned by library resets — still belongs to the book that owns
-     * its external id. A stale Komga cover is deleted here so callers re-fetch it.
-     * Identity is checked against the on-disk sidecar (the source of truth for the
-     * `fp` stamp), not any caller-supplied meta.
+     * Non-destructive readiness probe: the image is present, non-empty, and — for Komga
+     * covers, whose ids are reassigned by library resets — its identity stamp does not
+     * positively identify a *different* book. Never deletes or writes anything, so
+     * warmAll() can safely use it as its "needs warming?" check; acting on a missing or
+     * stale stamp (stamping / dropping) is resolve()'s job.
      */
     private function imageReady(string $hash): bool
     {
-        $imagePath = $this->imagePath($hash);
-        if (!is_file($imagePath) || filesize($imagePath) <= 0) {
+        if (!$this->imageFileReady($hash)) {
             return false;
         }
         $meta = $this->readMeta($hash);
-        if ($meta !== null && ($meta['kind'] ?? null) === self::KIND_KOMGA && !$this->komgaCacheStillValid($meta)) {
-            @unlink($imagePath);
-            $this->logger->info('Dropped stale Komga cover', ['id' => $meta['id'] ?? null]);
-            return false;
+        if ($meta !== null && ($meta['kind'] ?? null) === self::KIND_KOMGA) {
+            return $this->komgaFingerprintStatus($meta) !== self::FP_MISMATCH;
         }
         return true;
+    }
+
+    /** The cached .webp exists on disk and is non-empty. */
+    private function imageFileReady(string $hash): bool
+    {
+        $imagePath = $this->imagePath($hash);
+        return is_file($imagePath) && filesize($imagePath) > 0;
     }
 
     /**
@@ -235,37 +253,78 @@ final class CoverCache implements BookCoverProvider
             return null;
         }
         $imagePath = $this->imagePath($hash);
-        // imageReady() drops a Komga cover that a library reset has reassigned to a
-        // different book, so the chain below re-resolves it to the correct cover.
-        if ($this->imageReady($hash)) {
-            return ['path' => $imagePath, 'contentType' => 'image/webp'];
-        }
         $meta = $this->readMeta($hash);
+        if ($this->imageFileReady($hash)) {
+            $status = ($meta !== null && ($meta['kind'] ?? null) === self::KIND_KOMGA)
+                ? $this->komgaFingerprintStatus($meta)
+                : self::FP_VALID;
+            if ($status === self::FP_MISSING || $status === self::FP_RESTAMP) {
+                // The image itself is trusted (pre-stamp legacy entry, or the same book whose
+                // ISBN the sync just backfilled) — adopt the current identity rather than
+                // deleting a cover we may not be able to re-fetch.
+                $this->stampKomgaMeta($meta['id']);
+                $status = self::FP_VALID;
+            }
+            if ($status === self::FP_VALID) {
+                return ['path' => $imagePath, 'contentType' => 'image/webp'];
+            }
+            // FP_MISMATCH: a library reset reassigned this Komga id to a different book, so
+            // the cached cover is genuinely wrong — drop it and re-resolve below.
+            @unlink($imagePath);
+            $this->logger->info('Dropped stale Komga cover', ['id' => $meta['id'] ?? null]);
+        }
         if ($meta === null) {
             return null;
         }
-        if (!$this->fetch($meta, $imagePath)) {
+        if (!$this->fetch($hash, $meta, $imagePath)) {
             return null;
         }
         return ['path' => $imagePath, 'contentType' => 'image/webp'];
     }
 
     /**
-     * True only when the cached Komga cover carries an identity stamp matching the book
-     * that currently owns its external id. A missing stamp (legacy entry, pre-dating this
-     * check) or a mismatch (id reassigned by a library reset) is treated as stale.
+     * Verdict on a cached Komga cover's identity stamp versus the book that currently owns
+     * its external id. Pure check — never touches disk — so both the request path and the
+     * warmAll() probe can call it without side effects.
+     *
+     * The stored stamp is compared against BOTH current identity forms (ISBN and
+     * title/author): the Grimmory sync backfills ISBNs onto existing books, so a cover
+     * stamped with the ta form must survive its book gaining an ISBN — that is the same
+     * book, and the stamp is merely due for an upgrade (FP_RESTAMP). Only failing every
+     * comparable form means the id now points at a different book (FP_MISMATCH). A missing
+     * stamp (entry pre-dating the fp check) is not evidence of staleness — the cover was
+     * fetched for this exact id — so it is trusted and stamped on first serve (FP_MISSING).
+     * A book we cannot find in the synced mirror proves nothing either way, so the cached
+     * cover keeps being served rather than destroying something we may not be able to
+     * re-fetch.
      *
      * @param array{kind: string, url?: string, id?: string, fp?: string} $meta
      */
-    private function komgaCacheStillValid(array $meta): bool
+    private function komgaFingerprintStatus(array $meta): string
     {
         $id = $meta['id'] ?? null;
         if (!is_string($id) || $id === '') {
-            return false;
+            return self::FP_MISMATCH;
         }
-        $current = $this->komgaIdentity($id);
         $stamped = $meta['fp'] ?? null;
-        return is_string($stamped) && $stamped !== '' && $stamped === $current;
+        if (!is_string($stamped) || $stamped === '') {
+            return self::FP_MISSING;
+        }
+        $book = $this->books->findOneBySourceAndExternalId(Book::SOURCE_GRIMMORY, $id);
+        if ($book === null) {
+            return self::FP_VALID;
+        }
+        [$isbnForm, $taForm] = $this->identityFormsFor($book);
+        if ($isbnForm === null && $taForm === null) {
+            return self::FP_VALID; // no identity computable — nothing to compare against
+        }
+        if ($isbnForm !== null && $stamped === $isbnForm) {
+            return self::FP_VALID;
+        }
+        if ($taForm !== null && $stamped === $taForm) {
+            return $isbnForm !== null ? self::FP_RESTAMP : self::FP_VALID;
+        }
+        return self::FP_MISMATCH;
     }
 
     /**
@@ -281,28 +340,42 @@ final class CoverCache implements BookCoverProvider
         if ($book === null) {
             return null;
         }
-        $isbn = BookRepository::normalizeIsbn($book->getIsbn());
-        if ($isbn !== null) {
-            return 'isbn:' . $isbn;
-        }
-        $titleAuthor = BookRepository::normalizeTitleAuthor($book->getTitle(), $book->getAuthor());
-        return $titleAuthor !== null ? 'ta:' . $titleAuthor : null;
+        [$isbnForm, $taForm] = $this->identityFormsFor($book);
+        return $isbnForm ?? $taForm;
     }
 
-    /** Re-write a Komga sidecar with the current identity stamp after a fresh fetch. */
+    /**
+     * Both identity forms for a book: the ISBN form (null when the book has no plausible
+     * ISBN) and the normalized title/author form (null when the title normalizes away).
+     *
+     * @return array{0: ?string, 1: ?string} [isbn form, title/author form]
+     */
+    private function identityFormsFor(Book $book): array
+    {
+        $isbn = BookRepository::normalizeIsbn($book->getIsbn());
+        $titleAuthor = BookRepository::normalizeTitleAuthor($book->getTitle(), $book->getAuthor());
+        return [
+            $isbn !== null ? 'isbn:' . $isbn : null,
+            $titleAuthor !== null ? 'ta:' . $titleAuthor : null,
+        ];
+    }
+
+    /**
+     * Stamp a Komga sidecar with the book's current identity. Merges into the existing
+     * sidecar rather than rewriting it: an unknown identity (book not in the DB right
+     * now) must never erase a previously written fp — the old stamp stays until a real
+     * identity replaces it. Stamping also doubles as the "this entry is good" signal,
+     * so any failure-backoff marker is cleared here.
+     */
     private function stampKomgaMeta(string $externalId): void
     {
-        $meta = ['kind' => self::KIND_KOMGA, 'id' => $externalId];
+        $updates = ['kind' => self::KIND_KOMGA, 'id' => $externalId];
         $fp = $this->komgaIdentity($externalId);
         if ($fp !== null) {
-            $meta['fp'] = $fp;
+            $updates['fp'] = $fp;
         }
         $hash = $this->hashFor(self::KIND_KOMGA, $externalId);
-        $metaPath = $this->metaPath($hash);
-        $this->ensureDir(\dirname($metaPath));
-        // A failed sidecar write must never break cover serving — the worst case is the
-        // entry re-resolves next time rather than serving from a validated cache hit.
-        @file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_SLASHES) ?: '');
+        $this->mergeMeta($hash, $updates, ['failedAt']);
     }
 
     private function hashFor(string $kind, string $key): string
@@ -321,7 +394,28 @@ final class CoverCache implements BookCoverProvider
         @file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_SLASHES) ?: '');
     }
 
-    /** @return array{kind: string, url?: string, id?: string}|null */
+    /**
+     * Read-merge-write a sidecar: apply $updates over whatever is already stored, then
+     * drop $removeKeys. Merging (instead of clobbering) keeps keys the caller does not
+     * own — e.g. a stamp write must not erase `failedAt` bookkeeping and vice versa.
+     * A failed write must never break cover serving — the worst case is the entry
+     * re-resolves next time rather than serving from a validated cache hit.
+     *
+     * @param array<string, mixed> $updates
+     * @param list<string> $removeKeys
+     */
+    private function mergeMeta(string $hash, array $updates, array $removeKeys = []): void
+    {
+        $meta = array_merge($this->readMeta($hash) ?? [], $updates);
+        foreach ($removeKeys as $key) {
+            unset($meta[$key]);
+        }
+        $metaPath = $this->metaPath($hash);
+        $this->ensureDir(\dirname($metaPath));
+        @file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_SLASHES) ?: '');
+    }
+
+    /** @return array{kind: string, url?: string, id?: string, fp?: string, failedAt?: int}|null */
     private function readMeta(string $hash): ?array
     {
         $metaPath = $this->metaPath($hash);
@@ -343,20 +437,37 @@ final class CoverCache implements BookCoverProvider
      * cover cached under a *different* Komga id — index numbers are reassigned by reindexes/
      * resets, so a same-title cache can belong to an unrelated book.
      *
+     * Failed attempts are negative-cached: the failure instant lands in the sidecar as
+     * `failedAt` and further fetches short-circuit for FETCH_BACKOFF_SECONDS, so a dead
+     * upstream is not re-hit on every page render. A successful fetch clears the marker.
+     *
      * @param array{kind: string, url?: string, id?: string} $meta
      */
-    private function fetch(array $meta, string $destination): bool
+    private function fetch(string $hash, array $meta, string $destination): bool
     {
+        $stored = $this->readMeta($hash);
+        $failedAt = $stored['failedAt'] ?? null;
+        if (is_int($failedAt) && time() - $failedAt < self::FETCH_BACKOFF_SECONDS) {
+            return false;
+        }
+
         $isKomga = ($meta['kind'] ?? null) === self::KIND_KOMGA && !empty($meta['id']) && is_string($meta['id']);
 
         $ok = $this->fetchLive($meta, $destination);
         if (!$ok && $isKomga) {
             $ok = $this->komgaCoverFallback($meta['id'], $destination);
         }
-        if ($ok && $isKomga) {
-            // Stamp the entry with the book's current identity so a later reindex that reassigns
-            // this id is detected (stamp no longer matches) and the now-wrong cover is dropped.
-            $this->stampKomgaMeta($meta['id']);
+        if ($ok) {
+            if ($isKomga) {
+                // Stamp the entry with the book's current identity so a later reindex that
+                // reassigns this id is detected (stamp no longer matches) and the now-wrong
+                // cover is dropped. Stamping also clears the failure marker.
+                $this->stampKomgaMeta($meta['id']);
+            } else {
+                $this->mergeMeta($hash, [], ['failedAt']);
+            }
+        } else {
+            $this->mergeMeta($hash, ['failedAt' => time()]);
         }
         return $ok;
     }
@@ -372,7 +483,10 @@ final class CoverCache implements BookCoverProvider
         if ($book === null) {
             return false;
         }
-        $isbn = $book->getIsbn();
+        // Hardcover's editions lookup is an exact `_eq` match on the digits-only
+        // isbn_10/isbn_13 columns, so a hyphenated or spaced ISBN straight off the book
+        // row would never match — normalize it first.
+        $isbn = BookRepository::normalizeIsbn($book->getIsbn());
         return $isbn !== null && $this->fetchCoverFromHardcover($isbn, $destination);
     }
 

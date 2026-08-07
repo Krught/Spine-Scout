@@ -261,7 +261,7 @@ final class DirectHttpSource implements ReleaseSourceInterface, BatchDetailResol
             infoUrl: $this->protocol->buildDownloadsUrl($base, $record->id),
             protocol: ReleaseCandidate::PROTOCOL_HTTP,
             indexer: DirectDownloadSource::AnnasArchive->label(),
-            contentType: ReleaseCandidate::CONTENT_EBOOK,
+            contentType: ReleaseCandidate::contentTypeForFormat($record->format),
             author: $record->author,
             publisher: $record->publisher,
             year: $record->year,

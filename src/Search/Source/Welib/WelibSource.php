@@ -161,7 +161,7 @@ final class WelibSource extends AbstractDirectHttpSource
             infoUrl: $this->protocol->buildDownloadsUrl($base, $record->id),
             protocol: ReleaseCandidate::PROTOCOL_HTTP,
             indexer: $this->getDisplayName(),
-            contentType: ReleaseCandidate::CONTENT_EBOOK,
+            contentType: ReleaseCandidate::contentTypeForFormat($record->format),
             author: $record->author,
             publisher: $record->publisher,
             year: $record->year,

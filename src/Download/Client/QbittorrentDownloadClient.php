@@ -16,9 +16,15 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * submits the magnet/URL and returns immediately with the torrent hash, and the
  * torrent poller later calls getStatus() until the torrent finishes seeding.
  *
- * Connection (base URL + username/password) comes from the `qbittorrent`
- * Integration row. The login cookie is fetched lazily and cached for this
- * instance's lifetime (one worker invocation).
+ * Connection (base URL + credentials) comes from the `qbittorrent` Integration
+ * row. Two auth modes:
+ *  - AUTH_BASIC: username/password → cookie/SID login. The login cookie is
+ *    fetched lazily and cached for this instance's lifetime (one worker
+ *    invocation).
+ *  - AUTH_API_KEY: qBittorrent's native stateless API key (≥ v5.2.0 / WebAPI
+ *    2.14.1), sent as `Authorization: Bearer <key>` on every request. API keys
+ *    are rejected on the /auth/login and /auth/logout endpoints, so the SID
+ *    flow is skipped entirely in this mode.
  *
  * The dispatcher auto-selects this client because getProtocol() returns the
  * torrent protocol (see config/services.yaml `app.download_client` tag).
@@ -104,7 +110,14 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
 
             return [true, 'Connected to download client ' . trim($response->getContent()) . '.'];
         } catch (HttpExceptionInterface $e) {
+            // Covers TransportExceptionInterface too (network failures) — this must
+            // stay before the \RuntimeException catch, since Symfony's concrete
+            // TransportException extends \RuntimeException.
             return [false, 'Connection failed: ' . $e->getMessage()];
+        } catch (\RuntimeException $e) {
+            // login() failures — the message is already user-facing. testConnection()
+            // must never throw (see DownloadClientInterface::testConnection).
+            return [false, $e->getMessage()];
         }
     }
 
@@ -385,6 +398,11 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
         if ($this->sidCookie !== null) {
             return $this->sidCookie;
         }
+        // Native API-key auth is stateless and qBittorrent rejects the key on
+        // /auth/login — skip the cookie flow entirely; authHeaders() carries the key.
+        if ($row->getAuthType() === Integration::AUTH_API_KEY) {
+            return null;
+        }
         $creds = $row->getCredentials();
         $username = (string) ($creds['username'] ?? '');
         $password = (string) ($creds['password'] ?? '');
@@ -397,7 +415,12 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
             'body'    => ['username' => $username, 'password' => $password],
             'timeout' => self::TIMEOUT_SECONDS,
         ]);
-        if ($response->getStatusCode() !== 200 || stripos($response->getContent(false), 'fail') !== false) {
+        // qBittorrent answers a successful login with 200 (body "Ok.") or 204 No
+        // Content depending on version/proxy — accept any 2xx. Bad credentials come
+        // back as 200 with body "Fails." (a 204 has an empty body, so the check is
+        // harmless there).
+        $status = $response->getStatusCode();
+        if ($status < 200 || $status >= 300 || stripos($response->getContent(false), 'fail') !== false) {
             throw new \RuntimeException('Download client login failed — check the username and password.');
         }
 
@@ -417,6 +440,14 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
     private function authHeaders(Integration $row, ?string $sid): array
     {
         $headers = ['Referer' => $this->baseUrl($row)];
+        if ($row->getAuthType() === Integration::AUTH_API_KEY) {
+            $key = (string) ($row->getCredentials()['api_key'] ?? '');
+            if ($key !== '') {
+                $headers['Authorization'] = 'Bearer ' . $key;
+            }
+
+            return $headers;
+        }
         if ($sid !== null) {
             $headers['Cookie'] = $sid;
         }

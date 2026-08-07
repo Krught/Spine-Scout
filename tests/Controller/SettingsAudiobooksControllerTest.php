@@ -39,6 +39,9 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
         self::assertSelectorExists('input[name="prowlarr_base_url"]');
         self::assertSelectorExists('input[name="prowlarr_api_key"]');
         self::assertSelectorExists('input[name="qbittorrent_base_url"]');
+        self::assertSelectorExists('input[name="qbittorrent_auth_method"][value="basic"][checked]');
+        self::assertSelectorExists('input[name="qbittorrent_auth_method"][value="api_key"]');
+        self::assertSelectorExists('input[name="qbittorrent_api_key"][type="password"]');
         self::assertSelectorExists('input[name="use_ebook_library_dir"]');
         // Sections are labelled "Indexers" and "Download Client".
         self::assertSelectorTextContains('.settings-fieldset legend', 'Indexers');
@@ -123,6 +126,80 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
         $qbitRow = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
         self::assertNotNull($qbitRow);
         self::assertSame('admin', $qbitRow->getCredentials()['username'] ?? null);
+        self::assertSame(Integration::AUTH_BASIC, $qbitRow->getAuthType());
+    }
+
+    public function testQbittorrentApiKeyAuthMethodPersists(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'                  => $token,
+            'qbittorrent_enabled'     => '1',
+            'qbittorrent_base_url'    => 'http://qbittorrent:8080',
+            'qbittorrent_auth_method' => 'api_key',
+            'qbittorrent_api_key'     => 'qbt_abcdefghijklmnopqrstuvwxyz00',
+        ]);
+
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->em->clear();
+        $row = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
+        self::assertNotNull($row);
+        self::assertSame(Integration::AUTH_API_KEY, $row->getAuthType());
+        self::assertSame('qbt_abcdefghijklmnopqrstuvwxyz00', $row->getCredentials()['api_key'] ?? null);
+
+        // The saved page preselects the API-key radio.
+        $this->client->followRedirect();
+        self::assertSelectorExists('input[name="qbittorrent_auth_method"][value="api_key"][checked]');
+    }
+
+    public function testBlankQbittorrentApiKeyKeepsExisting(): void
+    {
+        $row = new Integration(Integration::KIND_QBITTORRENT);
+        $row->setAuthType(Integration::AUTH_API_KEY);
+        $row->setBaseUrl('http://qbittorrent:8080');
+        $row->setCredentials(['api_key' => 'qbt_original']);
+        $row->setEnabled(true);
+        $this->em->persist($row);
+        $this->em->flush();
+
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'                  => $token,
+            'qbittorrent_enabled'     => '1',
+            'qbittorrent_base_url'    => 'http://qbittorrent:8080',
+            'qbittorrent_auth_method' => 'api_key',
+            'qbittorrent_api_key'     => '', // blank — keep existing
+        ]);
+
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->em->clear();
+        $fresh = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
+        self::assertSame('qbt_original', $fresh?->getCredentials()['api_key'] ?? null);
+        self::assertSame(Integration::AUTH_API_KEY, $fresh?->getAuthType());
+    }
+
+    public function testUnknownQbittorrentAuthMethodFallsBackToBasic(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'                  => $token,
+            'qbittorrent_base_url'    => 'http://qbittorrent:8080',
+            'qbittorrent_auth_method' => 'something-else',
+            'qbittorrent_username'    => 'admin',
+            'qbittorrent_password'    => 'adminpass',
+        ]);
+
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->em->clear();
+        $row = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
+        self::assertSame(Integration::AUTH_BASIC, $row?->getAuthType());
+        self::assertSame('admin', $row?->getCredentials()['username'] ?? null);
     }
 
     public function testBlankSecretKeepsExistingCredential(): void

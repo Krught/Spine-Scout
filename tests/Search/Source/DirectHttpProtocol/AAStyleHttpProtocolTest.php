@@ -6,6 +6,7 @@ namespace App\Tests\Search\Source\DirectHttpProtocol;
 
 use App\Entity\Book;
 use App\Search\Source\DirectHttpProtocol\AAStyleHttpProtocol;
+use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -86,6 +87,38 @@ final class AAStyleHttpProtocolTest extends TestCase
         self::assertStringNotContainsString('&ext=mobi', $url);
         self::assertStringContainsString('&lang=en', $url);
         self::assertStringContainsString('&lang=de', $url);
+    }
+
+    /**
+     * An audiobook plan advertises the audio extension list instead of the ebook
+     * defaults — this is what makes the AA-style search return audio releases
+     * when the interactive search runs in audiobook mode.
+     */
+    public function testBuildSearchUrlAdvertisesAudioFormatsForAudiobookPlan(): void
+    {
+        $plan = $this->plan(isbns: [], title: 'Project Hail Mary', author: 'Andy Weir')
+            ->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
+
+        $url = $this->protocol->buildSearchUrl('https://mirror.invalid', $plan);
+
+        foreach (AAStyleHttpProtocol::AUDIO_FORMATS as $ext) {
+            self::assertStringContainsString('&ext=' . $ext, $url);
+        }
+        foreach (AAStyleHttpProtocol::DEFAULT_FORMATS as $ext) {
+            self::assertStringNotContainsString('&ext=' . $ext, $url);
+        }
+    }
+
+    /** An explicit $formats argument still overrides the plan-driven list. */
+    public function testBuildSearchUrlExplicitFormatsOverridePlanContentType(): void
+    {
+        $plan = $this->plan(isbns: [], title: 'Project Hail Mary', author: 'Andy Weir')
+            ->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
+
+        $url = $this->protocol->buildSearchUrl('https://mirror.invalid', $plan, ['epub']);
+
+        self::assertStringContainsString('&ext=epub', $url);
+        self::assertStringNotContainsString('&ext=mp3', $url);
     }
 
     public function testBuildSearchUrlSkipsBlankAndAllLanguageFilters(): void

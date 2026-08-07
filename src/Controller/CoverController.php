@@ -20,7 +20,14 @@ final class CoverController extends AbstractController
     {
         $resolved = $covers->resolve($hash);
         if ($resolved === null) {
-            return new Response('', Response::HTTP_NOT_FOUND);
+            // Misses come in storms while an upstream is down (e.g. Komga 409ing every
+            // thumbnail): a short public max-age lets the browser absorb repeat requests
+            // for the same missing cover without hiding a recovered one for long. Keep
+            // this short — long-lived negative caching would pin placeholders client-side.
+            $response = new Response('', Response::HTTP_NOT_FOUND);
+            $response->setPublic();
+            $response->setMaxAge(300);
+            return $response;
         }
 
         $response = new Response();

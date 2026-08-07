@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace App\Tests\Controller;
 
+use App\Download\Torrent\TorrentFulfillment;
+use App\Download\Torrent\TorrentFulfillmentInterface;
 use App\Entity\Book;
+use App\Entity\BookRequest;
+use App\Entity\DownloadJob;
 use App\Entity\Integration;
 use App\Entity\User;
 use App\Controller\InteractiveSearchController;
 use App\Mirror\MirrorListNormalizer;
+use PHPUnit\Framework\Attributes\DataProvider;
 use App\Repository\IntegrationRepository;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\Source\ReleaseCandidate;
@@ -30,6 +35,8 @@ final class InteractiveSearchControllerTest extends WebTestCase
         $this->em = $container->get(EntityManagerInterface::class);
         $this->integrations = $container->get(IntegrationRepository::class);
 
+        $this->em->createQuery('DELETE FROM '.DownloadJob::class)->execute();
+        $this->em->createQuery('DELETE FROM '.BookRequest::class)->execute();
         $this->em->createQuery('DELETE FROM '.Integration::class)->execute();
         $this->em->createQuery('DELETE FROM '.User::class)->execute();
         $this->seedUser();
@@ -294,6 +301,230 @@ final class InteractiveSearchControllerTest extends WebTestCase
         return $method->invoke(null, $scored, 80, $planContentType);
     }
 
+    // --- ebook/audiobook resolution ---------------------------------------
+
+    /**
+     * The payload's explicit `audiobook` flag wins over the owned copy's format;
+     * absent (legacy callers) or unparseable, the owned format decides, with a
+     * null book meaning ebook.
+     */
+    #[DataProvider('audiobookResolutionProvider')]
+    public function testResolveAudiobook(array $payload, ?string $bookFormat, bool $expected): void
+    {
+        $book = null;
+        if ($bookFormat !== 'NO_BOOK') {
+            $book = new Book('test', 'ext-resolve', 'Some Title');
+            $book->setFormat($bookFormat);
+        }
+
+        $method = new \ReflectionMethod(InteractiveSearchController::class, 'resolveAudiobook');
+
+        self::assertSame($expected, $method->invoke(null, $payload, static fn (): ?Book => $book));
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string|null, bool}> */
+    public static function audiobookResolutionProvider(): iterable
+    {
+        // Flag present: it wins, whatever the book says.
+        yield 'true beats ebook book'       => [['audiobook' => true], null, true];
+        yield 'false beats audiobook book'  => [['audiobook' => false], 'm4b', false];
+        yield 'int 1'                       => [['audiobook' => 1], null, true];
+        yield 'int 0'                       => [['audiobook' => 0], 'm4b', false];
+        yield 'string 1'                    => [['audiobook' => '1'], null, true];
+        yield 'string 0'                    => [['audiobook' => '0'], 'm4b', false];
+        yield 'string true'                 => [['audiobook' => 'true'], null, true];
+        yield 'string false'                => [['audiobook' => 'false'], 'm4b', false];
+        // Flag absent or unusable: fall back to the owned copy's format.
+        yield 'absent, owned audiobook'     => [[], 'm4b', true];
+        yield 'absent, owned ebook'         => [[], 'epub', false];
+        yield 'absent, format unknown'      => [[], null, false];
+        yield 'absent, no book'             => [[], 'NO_BOOK', false];
+        yield 'null value, owned audiobook' => [['audiobook' => null], 'm4b', true];
+        yield 'garbage value, no book'      => [['audiobook' => 'banana'], 'NO_BOOK', false];
+    }
+
+    /**
+     * Audiobook mode reaches the direct-HTTP sources as an audiobook plan: the
+     * advertised `ext=` facets switch to the audio list — even for a book that is
+     * not in the library at all (no bookId), where the old owned-format guess
+     * could only ever say "ebook".
+     */
+    public function testRunPayloadAudiobookFlagSwitchesDirectSearchToAudioFormats(): void
+    {
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+
+        $this->postJson('/interactive-search/run', [
+            '_token'    => $token,
+            'source'    => 'annas_archive',
+            'title'     => 'Red Rising',
+            'author'    => 'Pierce Brown',
+            'audiobook' => true,
+        ]);
+
+        self::assertResponseIsSuccessful();
+        $url = (string) $this->json()['searchUrl'];
+        self::assertStringContainsString('ext=mp3', $url);
+        self::assertStringContainsString('ext=m4b', $url);
+        self::assertStringNotContainsString('ext=epub', $url);
+    }
+
+    /** Without the flag, a legacy caller still gets the ebook search it always got. */
+    public function testRunWithoutFlagDefaultsToEbookFormats(): void
+    {
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+
+        $this->postJson('/interactive-search/run', [
+            '_token' => $token,
+            'source' => 'annas_archive',
+            'title'  => 'Red Rising',
+            'author' => 'Pierce Brown',
+        ]);
+
+        self::assertResponseIsSuccessful();
+        $url = (string) $this->json()['searchUrl'];
+        self::assertStringContainsString('ext=epub', $url);
+        self::assertStringNotContainsString('ext=mp3', $url);
+    }
+
+    /** Absent flag + owned audio file: the legacy format derivation still applies. */
+    public function testRunWithoutFlagFallsBackToOwnedAudiobookFormat(): void
+    {
+        $book = $this->seedBook(format: 'm4b');
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+
+        $this->postJson('/interactive-search/run', [
+            '_token' => $token,
+            'source' => 'annas_archive',
+            'bookId' => $book->getId(),
+            'title'  => 'Red Rising',
+        ]);
+
+        self::assertResponseIsSuccessful();
+        $url = (string) $this->json()['searchUrl'];
+        self::assertStringContainsString('ext=m4b', $url);
+        self::assertStringNotContainsString('ext=epub', $url);
+    }
+
+    /** An explicit false wins over an owned audio file — the user asked for the ebook. */
+    public function testRunPayloadFlagFalseWinsOverOwnedAudiobookFormat(): void
+    {
+        $book = $this->seedBook(format: 'm4b');
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+
+        $this->postJson('/interactive-search/run', [
+            '_token'    => $token,
+            'source'    => 'annas_archive',
+            'bookId'    => $book->getId(),
+            'title'     => 'Red Rising',
+            'audiobook' => false,
+        ]);
+
+        self::assertResponseIsSuccessful();
+        $url = (string) $this->json()['searchUrl'];
+        self::assertStringContainsString('ext=epub', $url);
+        self::assertStringNotContainsString('ext=m4b', $url);
+    }
+
+    /**
+     * The grab request lookup is scoped by the resolved flag: an audiobook grab
+     * for a book that already has an ebook request creates a SEPARATE audiobook
+     * request instead of hijacking the ebook one.
+     */
+    public function testGrabScopesRequestLookupByPayloadAudiobookFlag(): void
+    {
+        $this->client->disableReboot();
+        $this->stubTorrents();
+
+        $user = $this->loadUser();
+        $book = $this->seedBook();
+        $ebookRequest = new BookRequest($user, $book);
+        $this->em->persist($ebookRequest);
+        $this->em->flush();
+
+        $this->client->loginUser($user);
+        $token = $this->csrfToken();
+
+        $this->postJson('/interactive-search/grab', [
+            '_token'    => $token,
+            'bookId'    => $book->getId(),
+            'id'        => 'guid-1',
+            'title'     => 'Red Rising (Unabridged)',
+            'link'      => 'magnet:?xt=urn:btih:abc',
+            'audiobook' => true,
+        ]);
+
+        self::assertResponseIsSuccessful();
+        self::assertTrue($this->json()['queued']);
+
+        $this->em->clear();
+        $requests = $this->em->getRepository(BookRequest::class)
+            ->findBy(['requestedBy' => $user->getId(), 'book' => $book->getId()]);
+        self::assertCount(2, $requests);
+
+        $byFormat = [];
+        foreach ($requests as $r) {
+            $byFormat[$r->isAudiobook() ? 'audiobook' : 'ebook'] = $r;
+        }
+        // The new audiobook request was approved; the ebook one was left alone.
+        self::assertSame(BookRequest::STATUS_APPROVED, $byFormat['audiobook']->getStatus());
+        self::assertSame(BookRequest::STATUS_PENDING, $byFormat['ebook']->getStatus());
+    }
+
+    /**
+     * Without the flag a grab falls back to the owned-format derivation (ebook
+     * here) and reuses the existing ebook request rather than creating a second.
+     */
+    public function testGrabWithoutFlagReusesExistingEbookRequest(): void
+    {
+        $this->client->disableReboot();
+        $this->stubTorrents();
+
+        $user = $this->loadUser();
+        $book = $this->seedBook();
+        $ebookRequest = new BookRequest($user, $book);
+        $this->em->persist($ebookRequest);
+        $this->em->flush();
+
+        $this->client->loginUser($user);
+        $token = $this->csrfToken();
+
+        $this->postJson('/interactive-search/grab', [
+            '_token' => $token,
+            'bookId' => $book->getId(),
+            'id'     => 'guid-1',
+            'title'  => 'Red Rising',
+            'link'   => 'magnet:?xt=urn:btih:abc',
+        ]);
+
+        self::assertResponseIsSuccessful();
+        self::assertTrue($this->json()['queued']);
+
+        $this->em->clear();
+        $requests = $this->em->getRepository(BookRequest::class)
+            ->findBy(['requestedBy' => $user->getId(), 'book' => $book->getId()]);
+        self::assertCount(1, $requests);
+        self::assertFalse($requests[0]->isAudiobook());
+        self::assertSame(BookRequest::STATUS_APPROVED, $requests[0]->getStatus());
+    }
+
+    /**
+     * Replace the torrent stack with one that accepts every grab, under the
+     * concrete service id the compiled container wired into the controller.
+     */
+    private function stubTorrents(): void
+    {
+        $torrents = $this->createStub(TorrentFulfillmentInterface::class);
+        $torrents->method('isAvailable')->willReturn(true);
+        $torrents->method('grab')->willReturn(true);
+        self::getContainer()->set(TorrentFulfillment::class, $torrents);
+    }
+
     public function testGrabRejectsInvalidCsrf(): void
     {
         $this->client->loginUser($this->loadUser());
@@ -352,17 +583,23 @@ final class InteractiveSearchControllerTest extends WebTestCase
         self::assertSame('Torrent downloading is not configured.', $this->json()['error']);
     }
 
-    private function seedBook(): Book
+    /**
+     * The owned-copy format is always (re)stamped, because books survive between
+     * tests and test runs: a leftover format from another test must not leak into
+     * the audiobook-fallback derivation under test. Seeding happens before any
+     * client request — afterwards the kernel reboot resets Doctrine and a flush
+     * on the now-detached entity would be a silent no-op.
+     */
+    private function seedBook(?string $format = null): Book
     {
-        $existing = $this->em->getRepository(Book::class)
+        $book = $this->em->getRepository(Book::class)
             ->findOneBy(['source' => Book::SOURCE_OPENLIBRARY, 'externalId' => 'OL-interactive-1']);
-        if ($existing !== null) {
-            return $existing;
+        if ($book === null) {
+            $book = new Book(Book::SOURCE_OPENLIBRARY, 'OL-interactive-1', 'Red Rising');
+            $book->setAuthor('Pierce Brown');
+            $this->em->persist($book);
         }
-
-        $book = new Book(Book::SOURCE_OPENLIBRARY, 'OL-interactive-1', 'Red Rising');
-        $book->setAuthor('Pierce Brown');
-        $this->em->persist($book);
+        $book->setFormat($format);
         $this->em->flush();
 
         return $book;

@@ -175,6 +175,9 @@ final class InteractiveSearchController extends AbstractController
             trim((string) ($payload['year'] ?? '')),
             trim((string) ($payload['language'] ?? '')),
         );
+        if (self::resolveAudiobook($payload, fn (): ?Book => $this->resolveBook($payload))) {
+            $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
+        }
 
         $scored = $this->probe->searchScoredVia($sourceId, $mirror, $plan, $config);
         $rows = array_map(
@@ -208,9 +211,12 @@ final class InteractiveSearchController extends AbstractController
 
         // When the panel identifies a real book we can search as the pipeline does;
         // an audiobook needs the audiobook plan (indexer categories key off the
-        // plan's content type). Otherwise fall back to the free-text probe plan.
+        // plan's content type). Otherwise fall back to the free-text probe plan —
+        // stamped audiobook when that is what the user asked for, so even a book
+        // not yet in the library gets the audiobook categories.
         $book = $this->resolveBook($payload);
-        $plan = ($book !== null && self::isAudiobook($book))
+        $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
+        $plan = ($audiobook && $book !== null)
             ? self::audiobookPlanFor($book)
             : $this->probe->buildPlan(
                 trim((string) ($payload['isbn'] ?? '')),
@@ -220,6 +226,9 @@ final class InteractiveSearchController extends AbstractController
                 trim((string) ($payload['year'] ?? '')),
                 trim((string) ($payload['language'] ?? '')),
             );
+        if ($audiobook && $plan->contentType !== ReleaseCandidate::CONTENT_AUDIOBOOK) {
+            $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
+        }
 
         $scored = $this->scorer->scored(
             $this->prowlarr->search($plan),
@@ -272,7 +281,7 @@ final class InteractiveSearchController extends AbstractController
             return $this->json(['error' => 'Torrent downloading is not configured.'], 409);
         }
 
-        $audiobook = self::isAudiobook($book);
+        $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
 
         /** @var User $user */
         $user = $this->getUser();
@@ -375,6 +384,7 @@ final class InteractiveSearchController extends AbstractController
 
         $sourceId = trim((string) ($payload['source'] ?? ''));
         $format = $this->blankToNull($payload['format'] ?? null);
+        $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
         $subject = $book->getTitle();
 
         $client = $this->httpClient();
@@ -434,7 +444,7 @@ final class InteractiveSearchController extends AbstractController
         }
 
         $bytes = @filesize($finalPath) ?: null;
-        $this->recordDownload($book, $sourceId, $links, $finalPath, $format, $bytes);
+        $this->recordDownload($book, $sourceId, $links, $finalPath, $format, $bytes, $audiobook);
         $progress->step('Downloaded → ' . basename($finalPath) . ' (awaiting library import)');
         $this->logger->info('Interactive manual download complete', [
             'book' => $book->getId(), 'path' => $finalPath, 'source' => $sourceId,
@@ -459,13 +469,17 @@ final class InteractiveSearchController extends AbstractController
      *
      * @param list<string> $links
      */
-    private function recordDownload(Book $book, string $sourceId, array $links, string $finalPath, ?string $format, ?int $bytes): void
+    private function recordDownload(Book $book, string $sourceId, array $links, string $finalPath, ?string $format, ?int $bytes, bool $audiobook): void
     {
         /** @var User $user */
         $user = $this->getUser();
-        $request = $this->requests->findOneByUserAndBook($user, $book);
+        // Book and audiobook are independent requests for the same work, so the
+        // lookup is scoped to the edition this download fulfilled — an ebook
+        // download must never complete the audiobook request (or vice-versa).
+        $request = $this->requests->findOneByUserAndBook($user, $book, $audiobook);
         if ($request === null) {
             $request = new BookRequest($user, $book);
+            $request->setAudiobook($audiobook);
             $this->em->persist($request);
         }
         $request->setStatus(BookRequest::STATUS_APPROVED)->setDeliveryStatus(DownloadJob::STATUS_COMPLETE);
@@ -565,6 +579,9 @@ final class InteractiveSearchController extends AbstractController
             'matchPct'  => $sc->score->total,
             'qualifies' => $sc->qualifies,
             'links'     => $sc->detailLinks,
+            // What this row actually is (classified from its file extension by the
+            // source), mirroring the torrent rows' `torrent.type` label.
+            'type'      => $c->contentType,
         ];
     }
 
@@ -640,6 +657,33 @@ final class InteractiveSearchController extends AbstractController
     private static function isAudiobook(Book $book): bool
     {
         return AudioFormat::isAudio($book->getFormat());
+    }
+
+    /**
+     * Whether this interactive-search action targets the audiobook edition.
+     *
+     * The payload's explicit `audiobook` flag (the panel's format toggle) wins
+     * whenever it is present — parsed tolerantly (true/false, 1/0, '1'/'0',
+     * 'true'/'false'). Absent or unparseable, fall back to the legacy derivation
+     * from the owned copy's format via isAudiobook() — which reads "ebook" for
+     * any book without an owned audio file, including a null book.
+     *
+     * @param array<string, mixed>    $payload
+     * @param \Closure(): (Book|null) $book    resolved lazily — only invoked when
+     *                                         the payload doesn't say
+     */
+    private static function resolveAudiobook(array $payload, \Closure $book): bool
+    {
+        if (\array_key_exists('audiobook', $payload) && $payload['audiobook'] !== null) {
+            $parsed = filter_var($payload['audiobook'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($parsed !== null) {
+                return $parsed;
+            }
+        }
+
+        $resolved = $book();
+
+        return $resolved !== null && self::isAudiobook($resolved);
     }
 
     /** Audiobook search plan, mirroring ProcessTorrentJobHandler::planFor(). */

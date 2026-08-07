@@ -60,12 +60,35 @@ final class DirectHttpSourceTest extends TestCase
         self::assertSame('The Left Hand of Darkness', $first->title);
         self::assertSame('Ursula K. Le Guin', $first->author);
         self::assertSame(ReleaseCandidate::PROTOCOL_HTTP, $first->protocol);
+        // Classified from what came back (an epub row), not blindly stamped.
+        self::assertSame(ReleaseCandidate::CONTENT_EBOOK, $first->contentType);
         // Mapped against the mirror that actually answered (the second one).
         self::assertSame('https://mirror2.test', $first->extra['mirror']);
         self::assertSame('https://mirror2.test/md5/aaaa1111bbbb2222cccc3333dddd4444', $first->infoUrl);
         // Both mirrors were tried, in order.
         self::assertStringContainsString('mirror1.test', $requested[0]);
         self::assertStringContainsString('mirror2.test', $requested[1]);
+    }
+
+    /**
+     * An audiobook plan flips the advertised `ext=` facets to the audio list, so
+     * the mirror is asked for audio releases instead of the ebook defaults.
+     */
+    public function testSearchAdvertisesAudioFormatsForAudiobookPlan(): void
+    {
+        $requested = [];
+        $client = new MockHttpClient(function (string $method, string $url) use (&$requested): MockResponse {
+            $requested[] = $url;
+
+            return new MockResponse('No files found.');
+        });
+        $source = $this->source($this->config(true, ['https://m.test']), $client);
+
+        $source->search($this->plan()->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK));
+
+        self::assertStringContainsString('ext=mp3', $requested[0]);
+        self::assertStringContainsString('ext=m4b', $requested[0]);
+        self::assertStringNotContainsString('ext=epub', $requested[0]);
     }
 
     public function testSearchReturnsEmptyWhenAllMirrorsFail(): void

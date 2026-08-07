@@ -66,6 +66,7 @@ export default class extends Controller {
             title: p.title || '',
             author: p.author || '',
             isbn: p.isbn || '',
+            audiobook: p.audiobook,
         });
     }
 
@@ -187,6 +188,7 @@ export default class extends Controller {
             isbn: request.isbn || '',
             source: request.bookSource || null,
             externalId: request.externalId || null,
+            audiobook: request.audiobook,
         });
     }
 
@@ -236,17 +238,23 @@ export default class extends Controller {
     }
 
     seed(detail) {
+        const payload = {
+            bookId: detail.bookId,
+            title: detail.title || '',
+            author: detail.author || '',
+            isbn: detail.isbn || '',
+            source: detail.source || null,
+            externalId: detail.externalId || null,
+        };
+        // Only forward a real boolean — an absent flag stays absent so the
+        // panel (and ultimately the server) can fall back.
+        if (typeof detail.audiobook === 'boolean') {
+            payload.audiobook = detail.audiobook;
+        }
         this.dispatch('opensearch', {
             prefix: 'book-modal',
             bubbles: true,
-            detail: {
-                bookId: detail.bookId,
-                title: detail.title || '',
-                author: detail.author || '',
-                isbn: detail.isbn || '',
-                source: detail.source || null,
-                externalId: detail.externalId || null,
-            },
+            detail: payload,
         });
     }
 

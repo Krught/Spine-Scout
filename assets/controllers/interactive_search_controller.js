@@ -27,7 +27,7 @@ export default class extends Controller {
         'panel', 'sources', 'mirrors', 'mirrorRow',
         'title', 'author', 'isbn',
         'status', 'searchUrl', 'results',
-        'spinner', 'searchButton',
+        'spinner', 'searchButton', 'modeChip',
     ];
 
     static values = {
@@ -49,6 +49,10 @@ export default class extends Controller {
         this.searchBusy = false;
         this.hasRun = false;
         this.bookSeed = { source: null, externalId: null };
+        // Tri-state: true/false when the seed said which format the user wants,
+        // null when it didn't (older launch paths) — then the key is omitted from
+        // payloads so the server can fall back.
+        this.seedAudiobook = null;
     }
 
     disconnect() {
@@ -65,6 +69,8 @@ export default class extends Controller {
         const d = (event && event.detail) || {};
         this.bookIdValue = typeof d.bookId === 'number' ? d.bookId : (this.hasBookIdValue ? this.bookIdValue : 0);
         this.bookSeed = { source: d.source || null, externalId: d.externalId || null };
+        this.seedAudiobook = typeof d.audiobook === 'boolean' ? d.audiobook : null;
+        this.renderModeChip();
 
         // Re-seed the query fields only when this is a different book; reopening the
         // same book keeps whatever the user edited.
@@ -258,6 +264,7 @@ export default class extends Controller {
                 title: this.titleTarget.value.trim(),
                 author: this.authorTarget.value.trim(),
                 isbn: this.isbnTarget.value.trim(),
+                audiobook: this.seedAudiobook ?? undefined,
             });
             if (seq !== this.runSeq) return;
             this.resultsTarget.innerHTML = '';
@@ -446,6 +453,22 @@ export default class extends Controller {
     }
 
     /**
+     * Mode chip in the panel head: which format this search is running for.
+     * Reuses typeChip() so it looks exactly like the per-row chips. Hidden when
+     * the seed didn't say (then the server decides).
+     */
+    renderModeChip() {
+        if (!this.hasModeChipTarget) return;
+        if (this.seedAudiobook === null) {
+            this.modeChipTarget.hidden = true;
+            this.modeChipTarget.innerHTML = '';
+            return;
+        }
+        this.modeChipTarget.innerHTML = this.typeChip(this.seedAudiobook ? 'audiobook' : 'ebook');
+        this.modeChipTarget.hidden = false;
+    }
+
+    /**
      * Indexer category labels as a muted second line under the title. Only the
      * first few are drawn; when any are cut the cell carries the full list in its
      * tooltip so nothing is silently lost.
@@ -549,6 +572,7 @@ export default class extends Controller {
                 author: this.authorTarget.value.trim(),
                 isbn: this.isbnTarget.value.trim(),
                 links: this.selectedRow.links || [],
+                audiobook: this.seedAudiobook ?? undefined,
             });
             this.renderDownload(data);
             if (data.ok) {
@@ -593,6 +617,7 @@ export default class extends Controller {
                 sizeBytes: meta.sizeBytes,
                 indexer: meta.indexer,
                 seeders: meta.seeders,
+                audiobook: this.seedAudiobook ?? undefined,
             });
             this.renderGrab(data);
             if (data.ok && data.queued) {

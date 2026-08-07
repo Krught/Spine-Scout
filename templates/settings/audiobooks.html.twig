@@ -119,7 +119,20 @@
                 <input type="text" id="qbittorrent_base_url" name="qbittorrent_base_url" value="{{ qbittorrent.baseUrl }}"
                        spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="http://your-download-host:8080">
             </div>
-            <div class="field-grid">
+            <div class="field">
+                <label>Authentication</label>
+                <label class="field-checkbox">
+                    <input type="radio" name="qbittorrent_auth_method" value="basic"
+                           {{ qbittorrent.authType == 'api_key' ? '' : 'checked' }}>
+                    <span>Username / password</span>
+                </label>
+                <label class="field-checkbox">
+                    <input type="radio" name="qbittorrent_auth_method" value="api_key"
+                           {{ qbittorrent.authType == 'api_key' ? 'checked' : '' }}>
+                    <span>API key</span>
+                </label>
+            </div>
+            <div class="field-grid qb-auth-basic">
                 <div class="field">
                     <label for="qbittorrent_username">Username</label>
                     <input type="text" id="qbittorrent_username" name="qbittorrent_username"
@@ -130,9 +143,29 @@
                     <label for="qbittorrent_password">Password</label>
                     <input type="password" id="qbittorrent_password" name="qbittorrent_password" value=""
                            spellcheck="false" autocapitalize="off" autocomplete="off"
-                           placeholder="{{ qbittorrent.hasCredentials ? 'Leave blank to keep current' : '' }}">
+                           placeholder="{{ qbittorrent.credentials.password is defined ? 'Leave blank to keep current' : '' }}">
                 </div>
             </div>
+            <div class="field qb-auth-api-key">
+                <label for="qbittorrent_api_key">API key</label>
+                <input type="password" id="qbittorrent_api_key" name="qbittorrent_api_key" value=""
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="{{ qbittorrent.credentials.api_key is defined ? 'Leave blank to keep current key' : 'qbt_…' }}">
+                <p class="form-note">
+                    Requires qBittorrent 5.2.0 or newer. Generate the key in qBittorrent under
+                    Options → Web UI → API key; it is sent as an <code>Authorization: Bearer</code>
+                    header and no username/password login is performed.
+                </p>
+            </div>
+            <style>
+                /* No-JS toggle: hide whichever credential block the selected auth method
+                   doesn't use. Browsers without :has() show both — harmless, since blank
+                   fields keep the stored values. */
+                fieldset:has(input[name="qbittorrent_auth_method"][value="api_key"]:checked) .qb-auth-basic,
+                fieldset:has(input[name="qbittorrent_auth_method"][value="basic"]:checked) .qb-auth-api-key {
+                    display: none;
+                }
+            </style>
             <div class="field">
                 <label for="qbittorrent_category">Category</label>
                 <input type="text" id="qbittorrent_category" name="qbittorrent_category" value="{{ client_config.category }}"

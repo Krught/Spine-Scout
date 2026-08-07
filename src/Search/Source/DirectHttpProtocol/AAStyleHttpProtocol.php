@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Search\Source\DirectHttpProtocol;
 
 use App\Repository\BookRepository;
+use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
 use Symfony\Component\DomCrawler\Crawler;
 
@@ -39,6 +40,16 @@ final class AAStyleHttpProtocol
     public const DEFAULT_FORMATS = ['epub', 'mobi', 'azw3', 'pdf', 'cbz', 'cbr'];
 
     /**
+     * File extensions advertised when the plan targets an audiobook instead. The
+     * searchable subset of {@see \App\Support\AudioFormat::EXTENSIONS}: real
+     * audiobook file extensions only — the MIME-subtype aliases (mpeg/wave/oga)
+     * and the ambiguous mp4 are classifier inputs, not useful search facets.
+     *
+     * @var list<string>
+     */
+    public const AUDIO_FORMATS = ['mp3', 'm4b', 'm4a', 'aac', 'ogg', 'opus', 'flac'];
+
+    /**
      * Cap on how many ISBN candidates are embedded in the search query. A book
      * with many editions (e.g. "1984") can carry 300+ ISBNs, each expanding to
      * an ~80-char OR-group that URL-encodes to ~250 chars — a 20KB+ URL. The
@@ -70,11 +81,16 @@ final class AAStyleHttpProtocol
      * the title+author kept as a relevance hint); otherwise it falls back to a
      * title+author keyword query tightened with structured term filters.
      *
-     * @param string             $baseUrl Mirror base, already normalised (no trailing slash)
-     * @param list<string>       $formats Extensions to advertise on `ext=`
+     * @param string            $baseUrl Mirror base, already normalised (no trailing slash)
+     * @param list<string>|null $formats Extensions to advertise on `ext=`; null picks the
+     *                                   plan-driven list (audio when the plan targets an
+     *                                   audiobook, the ebook defaults otherwise)
      */
-    public function buildSearchUrl(string $baseUrl, ReleaseSearchPlan $plan, array $formats = self::DEFAULT_FORMATS): string
+    public function buildSearchUrl(string $baseUrl, ReleaseSearchPlan $plan, ?array $formats = null): string
     {
+        $formats ??= $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK
+            ? self::AUDIO_FORMATS
+            : self::DEFAULT_FORMATS;
         $keyword = trim($plan->primaryQuery());
 
         if ($plan->hasIsbn()) {

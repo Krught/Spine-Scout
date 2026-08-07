@@ -29,6 +29,24 @@ final class ReleaseSearchPlan
     ) {
     }
 
+    /**
+     * Copy of this plan targeting a different content type (ebook vs audiobook).
+     * Used when the caller resolves the wanted format after the plan was built —
+     * e.g. the interactive search building a probe plan and then applying the
+     * user's explicit audiobook toggle.
+     */
+    public function withContentType(string $contentType): self
+    {
+        return new self(
+            book: $this->book,
+            isbnCandidates: $this->isbnCandidates,
+            author: $this->author,
+            titleVariants: $this->titleVariants,
+            languages: $this->languages,
+            contentType: $contentType,
+        );
+    }
+
     public function hasIsbn(): bool
     {
         return $this->isbnCandidates !== [];

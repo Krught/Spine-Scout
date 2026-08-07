@@ -533,13 +533,22 @@ final class SettingsController extends AbstractController
             $this->persistOrTouch($em, $prowlarr);
 
             // -- qBittorrent: connection on the entity, destination in the config blob.
-            $qbittorrent->setAuthType(Integration::AUTH_BASIC);
+            // Auth method: cookie login (username/password) or the native stateless
+            // API key (qBittorrent ≥ 5.2.0). Unknown values fall back to basic.
+            $qbAuthMethod = $req->get('qbittorrent_auth_method') === Integration::AUTH_API_KEY
+                ? Integration::AUTH_API_KEY
+                : Integration::AUTH_BASIC;
+            $qbittorrent->setAuthType($qbAuthMethod);
             $qbittorrent->setBaseUrl(self::blankToNull((string) $req->get('qbittorrent_base_url', '')));
-            $this->applyBasicCreds(
-                $qbittorrent,
-                (string) $req->get('qbittorrent_username', ''),
-                (string) $req->get('qbittorrent_password', ''),
-            );
+            if ($qbAuthMethod === Integration::AUTH_API_KEY) {
+                $this->applyApiToken($qbittorrent, (string) $req->get('qbittorrent_api_key', ''), 'api_key');
+            } else {
+                $this->applyBasicCreds(
+                    $qbittorrent,
+                    (string) $req->get('qbittorrent_username', ''),
+                    (string) $req->get('qbittorrent_password', ''),
+                );
+            }
             $clientConfig = TorrentClientConfig::fromArray([
                 'category'             => (string) $req->get('qbittorrent_category', ''),
                 'audioOutputDirectory' => (string) $req->get('audio_output_directory', ''),
@@ -661,11 +670,11 @@ final class SettingsController extends AbstractController
         return (int) round((float) $v * 1024 * 1024 * 1024);
     }
 
-    /** Apply an API-key token, keeping the stored one when the field is left blank. */
-    private function applyApiToken(Integration $integration, string $token): void
+    /** Apply an API-key token under $key, keeping the stored one when the field is left blank. */
+    private function applyApiToken(Integration $integration, string $token, string $key = 'token'): void
     {
         $existing = $integration->getCredentials();
-        $next = ['token' => $token !== '' ? $token : ($existing['token'] ?? null)];
+        $next = [$key => $token !== '' ? $token : ($existing[$key] ?? null)];
         $integration->setCredentials(array_filter($next, static fn ($v) => $v !== null && $v !== ''));
     }
 

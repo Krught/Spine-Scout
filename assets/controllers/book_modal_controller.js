@@ -451,6 +451,7 @@ export default class extends Controller {
                 isbn: this.currentIsbn || '',
                 source: this.currentSeed ? this.currentSeed.source : null,
                 externalId: this.currentSeed ? this.currentSeed.externalId : null,
+                audiobook: this.currentMode === 'audiobook',
             },
         });
     }

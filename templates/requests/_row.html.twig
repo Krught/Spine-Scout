@@ -69,6 +69,7 @@
                     data-request-search-title-param="{{ r.book.title }}"
                     data-request-search-author-param="{{ r.book.author ?? '' }}"
                     data-request-search-isbn-param="{{ r.book.isbn ?? '' }}"
+                    data-request-search-audiobook-param="{{ r.audiobook ? 'true' : 'false' }}"
                     title="Manually search sources and download a version">Interactive Search</button>
         {% endif %}
         {% if can_approve %}

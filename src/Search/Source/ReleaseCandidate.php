@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Search\Source;
 
+use App\Support\AudioFormat;
+
 /**
  * A single downloadable release returned by a ReleaseSourceInterface.
  * Immutable. Sources fill what they know; everything else is null.
@@ -43,6 +45,17 @@ final class ReleaseCandidate
         public readonly ?string $year = null,
         public readonly array $extra = [],
     ) {
+    }
+
+    /**
+     * Classify a result's content type from its file extension: an audio format
+     * is an audiobook, anything else (epub/pdf/unknown) an ebook. Sources use
+     * this to label what a search actually returned instead of blindly stamping
+     * the plan's requested type onto every row.
+     */
+    public static function contentTypeForFormat(?string $format): string
+    {
+        return AudioFormat::isAudio($format) ? self::CONTENT_AUDIOBOOK : self::CONTENT_EBOOK;
     }
 
     /**
