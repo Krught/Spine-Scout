@@ -23,7 +23,6 @@ use App\Search\DirectDownload\DirectDownloadProbe;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\DirectDownload\ScoredCandidate;
 use App\Search\Source\ReleaseCandidate;
-use App\Search\Source\ReleaseSearchPlan;
 use App\Search\Torrent\ScoredRelease;
 use App\Search\Torrent\TorrentMatchScorer;
 use App\Service\BookMetadataService;
@@ -215,23 +214,20 @@ final class InteractiveSearchController extends AbstractController
             return $this->json(['error' => 'Torrent search is not configured.'], 409);
         }
 
-        // When the panel identifies a real book we can search as the pipeline does;
-        // an audiobook needs the audiobook plan (indexer categories key off the
-        // plan's content type). Otherwise fall back to the free-text probe plan —
-        // stamped audiobook when that is what the user asked for, so even a book
-        // not yet in the library gets the audiobook categories.
+        // The query is always what the user typed into the panel's title/author/
+        // ISBN fields — never the stored book metadata, so their edits actually
+        // drive the search. The audiobook toggle only stamps the plan's content
+        // type (indexer categories key off it), it never swaps the query.
         $book = $this->resolveBook($payload);
         $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
-        $plan = ($audiobook && $book !== null)
-            ? self::audiobookPlanFor($book)
-            : $this->probe->buildPlan(
-                trim((string) ($payload['isbn'] ?? '')),
-                trim((string) ($payload['author'] ?? '')),
-                trim((string) ($payload['title'] ?? '')),
-                trim((string) ($payload['publisher'] ?? '')),
-                trim((string) ($payload['year'] ?? '')),
-                trim((string) ($payload['language'] ?? '')),
-            );
+        $plan = $this->probe->buildPlan(
+            trim((string) ($payload['isbn'] ?? '')),
+            trim((string) ($payload['author'] ?? '')),
+            trim((string) ($payload['title'] ?? '')),
+            trim((string) ($payload['publisher'] ?? '')),
+            trim((string) ($payload['year'] ?? '')),
+            trim((string) ($payload['language'] ?? '')),
+        );
         if ($audiobook && $plan->contentType !== ReleaseCandidate::CONTENT_AUDIOBOOK) {
             $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
         }
@@ -707,28 +703,6 @@ final class InteractiveSearchController extends AbstractController
         $resolved = $book();
 
         return $resolved !== null && self::isAudiobook($resolved);
-    }
-
-    /** Audiobook search plan, mirroring ProcessTorrentJobHandler::planFor(). */
-    private static function audiobookPlanFor(Book $book): ReleaseSearchPlan
-    {
-        $isbns = [];
-        $seen = [];
-        foreach ([$book->getIsbn(), ...$book->getIsbns()] as $raw) {
-            $normalized = BookRepository::normalizeIsbn($raw);
-            if ($normalized !== null && !isset($seen[$normalized])) {
-                $seen[$normalized] = true;
-                $isbns[] = $normalized;
-            }
-        }
-
-        return new ReleaseSearchPlan(
-            book: $book,
-            isbnCandidates: $isbns,
-            author: (string) $book->getAuthor(),
-            titleVariants: [$book->getTitle()],
-            contentType: ReleaseCandidate::CONTENT_AUDIOBOOK,
-        );
     }
 
     /** Indexer sizes are raw byte counts; the mirror sources already ship a string. */
