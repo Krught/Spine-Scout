@@ -31,9 +31,14 @@ use Psr\Log\NullLogger;
  * {@see writeForAlbum()} counts the album's audio files (via {@see AudioFormat};
  * companion files like jpg/nfo/cue don't count) and picks the right placement.
  * The JSON is the {version, generatedAt, generatedBy, metadata{...}} envelope; only
- * non-null metadata fields are emitted. The cover is always written as ".cover.jpg"
- * (the only name Grimmory reads), transcoding to JPEG when the provider hands back
- * another format.
+ * non-null metadata fields are emitted, shaped exactly to Grimmory's sidecar DTOs
+ * (nested series object, float series number, strict Y-m-d publishedDate — a type
+ * mismatch makes Grimmory reject the whole file). The cover is written twice from
+ * one fetch: as ".cover.jpg" (the only sidecar name Grimmory reads) and as the
+ * album's root "cover.jpg" — Grimmory's sidecar import does NOT apply the cover
+ * file, so the scan-time cover.jpg is what actually shows; the release's own
+ * root-level artwork is removed so it can't win. Transcodes to JPEG when the
+ * provider hands back another format.
  *
  * Never throws — a sidecar hiccup must not lose an otherwise-good download — so the
  * caller can always treat the import as successful.
@@ -54,8 +59,47 @@ final class AudiobookSidecarWriter
      * for it: next to the single audio file (named after the file) for single-file
      * audiobooks, or beside $albumDir (named after the folder, dot-truncated) for
      * folder-based ones. With no audio files at all, nothing is written.
+     *
+     * The book's cover is written twice from a single fetch: as the sidecar
+     * "<base>.cover.jpg" (applied on import) and as the album's scan-time
+     * "cover.jpg", replacing whatever artwork the release shipped with — so the
+     * library shows Spine Scout's cover immediately, not the torrent's.
      */
     public function writeForAlbum(string $albumDir, Book $book): void
+    {
+        $placement = $this->resolvePlacement($albumDir);
+        if ($placement === null) {
+            return;
+        }
+
+        $coverJpeg = $this->coverJpegBytes($book);
+        $this->writeSidecar($placement['folder'], $placement['base'], $book, $coverJpeg);
+        $this->replaceAlbumCover($placement['coverDir'], $coverJpeg);
+    }
+
+    /**
+     * Write only the scan-time album cover ("cover.jpg" next to the audio),
+     * replacing the release's own artwork. For operators whose library server
+     * isn't Grimmory (sidecars disabled) — every scanner reads cover.jpg.
+     */
+    public function writeAlbumCover(string $albumDir, Book $book): void
+    {
+        $placement = $this->resolvePlacement($albumDir);
+        if ($placement === null) {
+            return;
+        }
+
+        $this->replaceAlbumCover($placement['coverDir'], $this->coverJpegBytes($book));
+    }
+
+    /**
+     * Grimmory-correct sidecar placement for the album, plus the folder whose
+     * root-level cover.jpg the scanner reads. Null (logged) when the folder can't
+     * be scanned or holds no audio files.
+     *
+     * @return ?array{folder: string, base: string, coverDir: string}
+     */
+    private function resolvePlacement(string $albumDir): ?array
     {
         $albumDir = rtrim($albumDir, '/');
 
@@ -67,27 +111,34 @@ final class AudiobookSidecarWriter
                 'error' => $e->getMessage(),
             ]);
 
-            return;
+            return null;
         }
 
         if ($audioFiles === []) {
             $this->logger->warning('Audiobook sidecar skipped: album folder contains no audio files', ['dir' => $albumDir]);
 
-            return;
+            return null;
         }
 
         if (\count($audioFiles) === 1) {
             // Single-file audiobook: Grimmory's book path is the audio file itself,
             // so the sidecar lives next to the file (which may sit in a subfolder).
             $file = $audioFiles[0];
-            $this->writeSidecar(\dirname($file), $this->truncateAtLastDot(basename($file)), $book);
 
-            return;
+            return [
+                'folder'   => \dirname($file),
+                'base'     => $this->truncateAtLastDot(basename($file)),
+                'coverDir' => \dirname($file),
+            ];
         }
 
         // Folder-based audiobook: the book path is the folder, so the sidecar lives
         // beside it, named after the folder up to its last dot.
-        $this->writeSidecar(\dirname($albumDir), $this->truncateAtLastDot(basename($albumDir)), $book);
+        return [
+            'folder'   => \dirname($albumDir),
+            'base'     => $this->truncateAtLastDot(basename($albumDir)),
+            'coverDir' => $albumDir,
+        ];
     }
 
     /**
@@ -98,15 +149,15 @@ final class AudiobookSidecarWriter
      */
     public function write(string $folder, string $baseName, Book $book): void
     {
-        $this->writeSidecar(rtrim($folder, '/'), $baseName, $book);
+        $this->writeSidecar(rtrim($folder, '/'), $baseName, $book, $this->coverJpegBytes($book));
     }
 
     /** The shared sidecar emitter behind both public entry points. Never throws. */
-    private function writeSidecar(string $folder, string $baseName, Book $book): void
+    private function writeSidecar(string $folder, string $baseName, Book $book, ?string $coverJpeg): void
     {
         $base = $this->safeBase($baseName);
 
-        $json = json_encode($this->envelope($book), \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE);
+        $json = json_encode($this->envelope($book), \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE | \JSON_PRESERVE_ZERO_FRACTION);
         if ($json === false) {
             $this->logger->warning('Audiobook sidecar skipped: metadata could not be encoded', ['folder' => $folder]);
 
@@ -120,7 +171,12 @@ final class AudiobookSidecarWriter
             return;
         }
 
-        $this->writeCover($folder, $base, $book);
+        if ($coverJpeg !== null) {
+            $coverPath = $folder . '/' . $base . '.cover.jpg';
+            if (@file_put_contents($coverPath, $coverJpeg) === false) {
+                $this->logger->info('Audiobook cover could not be written', ['path' => $coverPath]);
+            }
+        }
     }
 
     /**
@@ -177,21 +233,28 @@ final class AudiobookSidecarWriter
     }
 
     /**
-     * The metadata block, carrying only the fields Spine Scout has values for
-     * (Grimmory's sidecar omits nulls).
+     * The metadata block, carrying only the fields Spine Scout has values for.
+     * Field names and types follow Grimmory's SidecarBookMetadata DTO exactly:
+     * series is a NESTED {name, number, total} object (flat seriesName/… keys are
+     * silently ignored), series.number is a float, and publishedDate must be a
+     * strict ISO "Y-m-d" LocalDate. Unknown keys are dropped harmlessly, but a
+     * TYPE mismatch makes Grimmory reject the whole sidecar for that book — so
+     * every value here is normalized to the expected JSON type or omitted.
      *
      * @return array<string, mixed>
      */
     private function metadata(Book $book): array
     {
-        $out = ['title' => $book->getTitle()];
+        // The formatted display title, so Grimmory's "recently added" reads
+        // exactly like Spine Scout's home carousel.
+        $out = ['title' => $book->displayTitle()];
 
         $authors = $this->authors($book->getAuthor());
         if ($authors !== []) {
             $out['authors'] = $authors;
         }
         $this->put($out, 'publisher', $book->getPublisher());
-        $this->put($out, 'publishedDate', $book->getPublishedDate());
+        $this->put($out, 'publishedDate', $this->isoDate($book->getPublishedDate()));
         $this->put($out, 'description', $book->getDescription());
 
         [$isbn13, $isbn10] = $this->isbns($book);
@@ -204,16 +267,91 @@ final class AudiobookSidecarWriter
         }
         $this->put($out, 'language', $book->getLanguage());
 
-        $this->put($out, 'seriesName', $book->getSeries());
-        $this->put($out, 'seriesNumber', $book->getSeriesIndex());
-        if ($book->getSeriesTotal() !== null) {
-            $out['seriesTotal'] = $book->getSeriesTotal();
+        $series = $this->series($book);
+        if ($series !== []) {
+            $out['series'] = $series;
+        }
+
+        $identifiers = $this->identifiers($book);
+        if ($identifiers !== []) {
+            $out['identifiers'] = $identifiers;
         }
 
         // Audiobook-specific.
         $this->put($out, 'narrator', $book->getNarrator());
 
         return $out;
+    }
+
+    /**
+     * Grimmory's nested series object: name (string), number (float — decimals
+     * like "1.5" are legal), total (int). A non-numeric series index is omitted
+     * rather than sent as a string, which would fail the Float field and void
+     * the entire sidecar.
+     *
+     * @return array<string, mixed>
+     */
+    private function series(Book $book): array
+    {
+        $series = [];
+        $name = $book->getSeries();
+        if ($name !== null && trim($name) !== '') {
+            $series['name'] = trim($name);
+        }
+        $index = trim((string) $book->getSeriesIndex());
+        if ($index !== '' && is_numeric($index)) {
+            $series['number'] = (float) $index;
+        }
+        if ($book->getSeriesTotal() !== null) {
+            $series['total'] = $book->getSeriesTotal();
+        }
+
+        return $series;
+    }
+
+    /**
+     * Provider identifiers (all strings in Grimmory's schema). We only ever hold
+     * the Hardcover slug the book was requested from.
+     *
+     * @return array<string, string>
+     */
+    private function identifiers(Book $book): array
+    {
+        if ($book->getSource() === Book::SOURCE_HARDCOVER && $book->getExternalId() !== '') {
+            return ['hardcoverId' => $book->getExternalId()];
+        }
+
+        return [];
+    }
+
+    /**
+     * Normalize Spine Scout's free-form published date ("2024", "May 2024",
+     * "2024-05-21") to the strict "Y-m-d" LocalDate Grimmory requires — any other
+     * shape is a deserialization error that voids the whole sidecar. Year and
+     * year-month values are anchored to the first day; unparseable ones are
+     * dropped.
+     */
+    private function isoDate(?string $raw): ?string
+    {
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            return null;
+        }
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw) === 1) {
+            return $raw;
+        }
+        if (preg_match('/^\d{4}$/', $raw) === 1) {
+            return $raw . '-01-01';
+        }
+        if (preg_match('/^(\d{4})-(\d{1,2})$/', $raw, $m) === 1) {
+            return sprintf('%s-%02d-01', $m[1], (int) $m[2]);
+        }
+
+        try {
+            return (new \DateTimeImmutable($raw))->format('Y-m-d');
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     /**
@@ -262,21 +400,25 @@ final class AudiobookSidecarWriter
     }
 
     /**
-     * Download the cover and save it as "<base>.cover.jpg"; best-effort, never fatal.
-     * Grimmory only reads that exact name, so non-JPEG provider bytes are transcoded
-     * to JPEG with GD rather than written under a lying extension.
+     * The book's cover as JPEG bytes, or null when unavailable; best-effort, never
+     * fatal. Fetched once and reused for both the "<base>.cover.jpg" sidecar and
+     * the album's scan-time "cover.jpg". Non-JPEG provider bytes are transcoded to
+     * JPEG with GD rather than written under a lying extension. Public so the
+     * finalizer can also embed the same artwork into the audio files via tone.
      */
-    private function writeCover(string $folder, string $base, Book $book): void
+    public function coverJpegBytes(Book $book): ?string
     {
         try {
             $cover = $this->coverProvider->originalCoverForBook($book);
         } catch (\Throwable $e) {
-            $this->logger->info('Audiobook cover fetch failed; sidecar JSON written without it', ['error' => $e->getMessage()]);
+            $this->logger->info('Audiobook cover fetch failed; proceeding without it', ['error' => $e->getMessage()]);
 
-            return;
+            return null;
         }
         if ($cover === null) {
-            return;
+            $this->logger->info('Audiobook cover unavailable: book has no stored cover source', ['book' => $book->getId()]);
+
+            return null;
         }
 
         [$bytes, $mimeType] = $cover;
@@ -287,13 +429,39 @@ final class AudiobookSidecarWriter
                     'mimeType' => $mimeType,
                 ]);
 
-                return;
+                return null;
             }
         }
 
-        $coverPath = $folder . '/' . $base . '.cover.jpg';
-        if (@file_put_contents($coverPath, $bytes) === false) {
-            $this->logger->info('Audiobook cover could not be written', ['path' => $coverPath]);
+        return $bytes;
+    }
+
+    /**
+     * Make Spine Scout's cover THE scan-time cover: write it as "cover.jpg" in the
+     * folder the scanner reads, deleting the release's competing root-level
+     * artwork (cover/folder/image.* variants) so no other file can win. No-op when
+     * we have no cover — the release's own art is better than none.
+     */
+    private function replaceAlbumCover(string $dir, ?string $coverJpeg): void
+    {
+        if ($coverJpeg === null) {
+            return;
+        }
+
+        foreach (@scandir($dir) ?: [] as $entry) {
+            $base = strtolower(pathinfo($entry, PATHINFO_FILENAME));
+            $ext = strtolower(pathinfo($entry, PATHINFO_EXTENSION));
+            if ($entry !== 'cover.jpg'
+                && \in_array($base, ['cover', 'folder', 'image'], true)
+                && \in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'], true)
+                && is_file($dir . '/' . $entry)
+            ) {
+                @unlink($dir . '/' . $entry);
+            }
+        }
+
+        if (@file_put_contents($dir . '/cover.jpg', $coverJpeg) === false) {
+            $this->logger->info('Album cover could not be written', ['path' => $dir . '/cover.jpg']);
         }
     }
 

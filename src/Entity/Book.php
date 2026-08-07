@@ -167,6 +167,21 @@ class Book
     public function getTitle(): string { return $this->title; }
     public function setTitle(string $title): self { $this->title = $title; return $this; }
 
+    /**
+     * The one true display title: "Title (Series #N)" when the series and its number
+     * are known, the bare title otherwise. Everything that shows or writes a
+     * user-facing title (home/browse cards, audiobook sidecars, tag fills) must use
+     * this so the library server and Spine Scout render identically.
+     */
+    public function displayTitle(): string
+    {
+        if ($this->series !== null && $this->seriesIndex !== null) {
+            return sprintf('%s (%s #%s)', $this->title, $this->series, $this->seriesIndex);
+        }
+
+        return $this->title;
+    }
+
     public function getAuthor(): ?string { return $this->author; }
     public function setAuthor(?string $author): self { $this->author = $author; return $this; }
 

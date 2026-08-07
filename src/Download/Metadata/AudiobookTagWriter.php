@@ -17,8 +17,9 @@ use Symfony\Component\Process\Process;
  *
  * Hard constraints, locked by policy:
  *  - Tag-level edits ONLY (tone rewrites tag atoms/frames, never remuxes audio).
- *  - Existing tag values are NEVER overwritten — only empty/absent fields whose
- *    value the {@see Book} entity knows are written.
+ *  - Existing TEXT tag values are NEVER overwritten — only empty/absent fields
+ *    whose value the {@see Book} entity knows are written. The single exception
+ *    is {@see embedCover()}, which deliberately replaces embedded artwork.
  *  - Every write is wrapped in backup-verify-swap: the file is copied aside,
  *    tagged, re-dumped, and verified (dump parses, duration within
  *    {@see self::DURATION_TOLERANCE_MS}, chapter count unchanged); any failure
@@ -112,6 +113,45 @@ final class AudiobookTagWriter
         }
     }
 
+    /**
+     * Embed $coverFile (a JPEG on disk) as the artwork of every eligible audio
+     * file under $dir, REPLACING any existing embedded picture. This is the one
+     * deliberate exception to the never-overwrite rule: Grimmory's scanner
+     * prefers embedded art over the folder's cover.jpg, so the release's own
+     * artwork would otherwise always win over the cover the user requested.
+     * Same backup-verify-swap safety as the tag fill; never throws.
+     */
+    public function embedCover(string $dir, string $coverFile): void
+    {
+        try {
+            if (!$this->isAvailable()) {
+                if (!$this->unavailabilityLogged) {
+                    $this->unavailabilityLogged = true;
+                    $this->logger->info('Audiobook cover embed skipped: tone binary is not available', [
+                        'binary' => $this->toneBinary,
+                    ]);
+                }
+
+                return;
+            }
+
+            foreach ($this->audioFiles(rtrim($dir, '/')) as $file) {
+                $before = $this->dump($file);
+                if ($before === null) {
+                    $this->logger->warning('Audiobook cover embed skipped a file: tone dump was unparseable', ['file' => $file]);
+
+                    continue;
+                }
+                $this->tagFile($file, ['--meta-cover-file', $coverFile], $before, 'Audiobook cover embedded');
+            }
+        } catch (\Throwable $e) {
+            $this->logger->warning('Audiobook cover embed aborted', [
+                'dir'   => $dir,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     /** Dump, diff against the Book, and (when anything is missing) backup-tag-verify one file. */
     private function fillFile(string $file, Book $book, bool $singleFile): void
     {
@@ -127,6 +167,18 @@ final class AudiobookTagWriter
             return; // Nothing missing that we can supply — no write at all.
         }
 
+        $this->tagFile($file, $flags, $before, 'Audiobook tags filled');
+    }
+
+    /**
+     * Backup-tag-verify one file: copy aside, run `tone tag` with $flags, re-dump
+     * and check duration/chapters survived, restoring the backup on any failure.
+     *
+     * @param list<string> $flags
+     * @param array{meta: array<string, mixed>, duration: float, chapterCount: int} $before
+     */
+    private function tagFile(string $file, array $flags, array $before, string $successMessage): void
+    {
         $backup = $file . '.spinescout.bak';
         if (!@copy($file, $backup)) {
             $this->logger->warning('Audiobook tag fill skipped a file: backup copy failed', ['file' => $file]);
@@ -170,7 +222,7 @@ final class AudiobookTagWriter
                 return;
             }
 
-            $this->logger->info('Audiobook tags filled', ['file' => $file, 'flags' => $flags]);
+            $this->logger->info($successMessage, ['file' => $file, 'flags' => $flags]);
         } catch (\Throwable $e) {
             $this->restore($backup, $file, 'tagging threw', ['error' => $e->getMessage()]);
         } finally {
@@ -202,7 +254,7 @@ final class AudiobookTagWriter
             }
         };
 
-        $put('--meta-album', 'album', $book->getTitle());
+        $put('--meta-album', 'album', $book->displayTitle());
         $put('--meta-artist', 'artist', $book->getAuthor());
         $put('--meta-album-artist', 'albumArtist', $book->getAuthor());
         $put('--meta-composer', 'composer', $book->getNarrator());

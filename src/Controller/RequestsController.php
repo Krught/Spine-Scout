@@ -446,6 +446,7 @@ final class RequestsController extends AbstractController
                 'title' => isset($payload['title']) ? (string) $payload['title'] : null,
                 'author' => isset($payload['author']) ? (string) $payload['author'] : null,
                 'externalUrl' => isset($payload['externalUrl']) ? (string) $payload['externalUrl'] : null,
+                'coverUrl' => isset($payload['coverUrl']) ? (string) $payload['coverUrl'] : null,
             ]);
         }
 

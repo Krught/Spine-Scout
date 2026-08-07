@@ -724,6 +724,24 @@ final class SettingsController extends AbstractController
         $this->persistOrTouch($em, $grimmory);
     }
 
+    #[Route('/audiobooks/test/grimmory-native', name: 'audiobooks_test_grimmory_native', methods: ['POST'])]
+    public function testGrimmoryNative(
+        Request $request,
+        IntegrationRepository $integrations,
+        \App\Integration\Grimmory\GrimmoryNativeClient $nativeClient,
+    ): Response {
+        if (!$this->isCsrfTokenValid('settings_audiobooks_test', (string) $request->request->get('_token'))) {
+            return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
+        }
+        $grimmory = $integrations->findByKind(Integration::KIND_GRIMMORY);
+        if ($grimmory === null) {
+            return $this->json(['ok' => false, 'message' => 'Grimmory is not configured yet — set it up on the Komga tab.']);
+        }
+        [$ok, $message] = $nativeClient->testConnection($grimmory);
+
+        return $this->json(['ok' => $ok, 'message' => $message]);
+    }
+
     #[Route('/audiobooks/rewrite-sidecars', name: 'audiobooks_rewrite_sidecars', methods: ['POST'])]
     public function audiobooksRewriteSidecars(Request $request, DownloadJobRepository $jobs, MessageBusInterface $bus): Response
     {

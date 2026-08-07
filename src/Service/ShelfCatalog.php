@@ -177,10 +177,7 @@ final class ShelfCatalog
         $rawTitle = $book->getTitle();
         $author = $book->getAuthor();
 
-        $title = $rawTitle;
-        if ($book->getSeries() !== null && $book->getSeriesIndex() !== null) {
-            $title = sprintf('%s (%s #%s)', $rawTitle, $book->getSeries(), $book->getSeriesIndex());
-        }
+        $title = $book->displayTitle();
 
         // Walk every edition's ISBN so a trending entry whose first ISBN happens to be the
         // German paperback still flags as "downloaded" when the user owns the US hardcover.

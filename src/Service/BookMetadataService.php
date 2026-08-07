@@ -173,6 +173,12 @@ final class BookMetadataService
             if (!empty($seed['externalUrl'])) {
                 $book->setExternalUrl((string) $seed['externalUrl']);
             }
+            // Only a real remote URL may be persisted — the request modal usually
+            // hands over a local /cover/ proxy path, which CoverCache could never
+            // re-fetch as an upstream cover.
+            if (!empty($seed['coverUrl']) && preg_match('~^https?://~i', (string) $seed['coverUrl']) === 1) {
+                $book->setCoverUrl((string) $seed['coverUrl']);
+            }
             $this->em->persist($book);
         }
         if ($book->getMetadataFetchedAt() === null) {
@@ -305,6 +311,13 @@ final class BookMetadataService
         }
         if (!empty($data['isbn']) && $book->getIsbn() === null) {
             $book->setIsbn((string) $data['isbn']);
+        }
+        // Persist the upstream cover so downstream consumers that can't resolve
+        // covers live — the audiobook sidecar/album-cover writer above all — see
+        // the same artwork the UI shows. Only Hardcover/OpenLibrary return this
+        // key; Grimmory books keep using the Komga proxy (null here).
+        if (!empty($data['coverUrl'])) {
+            $book->setCoverUrl((string) $data['coverUrl']);
         }
         if (isset($data['genres']) && is_array($data['genres'])) {
             $book->setGenres(array_values(array_filter($data['genres'], 'is_string')));

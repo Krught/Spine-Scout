@@ -12,6 +12,7 @@ use App\Download\FulfillmentLog;
 use App\Download\Metadata\AudiobookSidecarWriter;
 use App\Download\Metadata\AudiobookTagWriter;
 use App\Download\Metadata\EbookMetadataInjector;
+use App\Entity\Book;
 use App\Entity\DownloadJob;
 use App\Message\TriggerGrimmorySidecarImport;
 use App\Repository\BlockedReleaseRepository;
@@ -197,17 +198,23 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         $folderName = $this->filenames->render($config->filenameTemplate, $this->tokens($job), null);
         $book = $job->getBookRequest()?->getBook();
 
-        // Fill missing embedded tags on the STAGED copy, before the album becomes
-        // visible in the library. The try/catch is mandatory even though the writer
-        // shouldn't throw: a throwing $beforeFinalize callback aborts the whole move,
-        // and a tagging surprise must never cost an otherwise-good import.
+        // Fill missing embedded tags and embed the requested cover on the STAGED
+        // copy, before the album becomes visible in the library. Cover embedding is
+        // deliberate overwriting: Grimmory's scanner prefers embedded art over the
+        // folder's cover.jpg, so without it the release's own artwork always wins.
+        // The try/catch is mandatory even though the writers shouldn't throw: a
+        // throwing $beforeFinalize callback aborts the whole move, and a
+        // tagging/artwork surprise must never cost an otherwise-good import.
         $beforeFinalize = null;
-        if ($config->writeAudioTags && $book !== null) {
-            $beforeFinalize = function (string $stageDir) use ($book, $job): void {
+        if ($book !== null) {
+            $beforeFinalize = function (string $stageDir) use ($book, $job, $config): void {
                 try {
-                    $this->tagWriter->fillMissingTags($stageDir, $book);
+                    if ($config->writeAudioTags) {
+                        $this->tagWriter->fillMissingTags($stageDir, $book);
+                    }
+                    $this->embedCover($stageDir, $book);
                 } catch (\Throwable $e) {
-                    $this->logger->warning('Audio tag fill failed; importing as-is', ['job' => $job->getId(), 'error' => $e->getMessage()]);
+                    $this->logger->warning('Audio tag/cover fill failed; importing as-is', ['job' => $job->getId(), 'error' => $e->getMessage()]);
                 }
             };
         }
@@ -224,8 +231,14 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         // album. The whole release folder (companion files included) was moved, and
         // the writer resolves placement itself: beside the folder for a folder-based
         // audiobook, next to the audio file for a single-file one. Best-effort.
-        if ($config->writeGrimmorySidecars && $book !== null) {
-            $this->sidecarWriter->writeForAlbum($finalDir, $book);
+        // Either way the album's scan-time cover.jpg is replaced with Spine Scout's
+        // stored cover — cover.jpg is universal, not a Grimmory-only sidecar.
+        if ($book !== null) {
+            if ($config->writeGrimmorySidecars) {
+                $this->sidecarWriter->writeForAlbum($finalDir, $book);
+            } else {
+                $this->sidecarWriter->writeAlbumCover($finalDir, $book);
+            }
         }
 
         $this->complete($job, $finalDir, sprintf('Audiobook moved to library: %s (%d file(s))', basename($finalDir), \count($audioFiles)), $subject, $client);
@@ -235,6 +248,34 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         // sidecar. The handler no-ops safely when native credentials aren't configured.
         if ($config->writeGrimmorySidecars) {
             $this->bus->dispatch(new TriggerGrimmorySidecarImport(), [new DelayStamp(300_000)]);
+        }
+    }
+
+    /**
+     * Embed the book's stored cover into the staged audio files, replacing the
+     * release's embedded artwork. The JPEG is materialized OUTSIDE the stage dir
+     * (tone needs a file path; a temp file inside the stage could be swept into
+     * the library or picked up as release art). Best-effort: no cover, no tone,
+     * or a failed write all leave the files as they were.
+     */
+    private function embedCover(string $stageDir, Book $book): void
+    {
+        $cover = $this->sidecarWriter->coverJpegBytes($book);
+        if ($cover === null) {
+            return;
+        }
+
+        $tmp = tempnam(sys_get_temp_dir(), 'spinescout-cover-');
+        if ($tmp === false || @file_put_contents($tmp, $cover) === false) {
+            $this->logger->info('Cover embed skipped: temp cover file could not be written');
+
+            return;
+        }
+
+        try {
+            $this->tagWriter->embedCover($stageDir, $tmp);
+        } finally {
+            @unlink($tmp);
         }
     }
 

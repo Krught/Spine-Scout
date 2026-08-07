@@ -55,7 +55,8 @@ final class AudiobookSidecarWriterTest extends TestCase
         self::assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $data['generatedAt']);
 
         $m = $data['metadata'];
-        self::assertSame('The Way of Kings', $m['title']);
+        // The formatted display title — identical to the home carousel's card title.
+        self::assertSame('The Way of Kings (The Stormlight Archive #1)', $m['title']);
         self::assertSame(['Brandon Sanderson', 'Co Author'], $m['authors']);
         self::assertSame('Macmillan Audio', $m['publisher']);
         self::assertSame('2010-08-31', $m['publishedDate']);
@@ -64,15 +65,15 @@ final class AudiobookSidecarWriterTest extends TestCase
         self::assertSame('0765326353', $m['isbn10']);
         self::assertSame(['Fantasy', 'Epic'], $m['categories']);
         self::assertSame('en', $m['language']);
-        self::assertSame('The Stormlight Archive', $m['seriesName']);
-        self::assertSame('1', $m['seriesNumber']);
-        self::assertSame(10, $m['seriesTotal']);
+        // Grimmory's schema: series is a nested object with a FLOAT number.
+        self::assertSame(['name' => 'The Stormlight Archive', 'number' => 1.0, 'total' => 10], $m['series']);
+        self::assertSame(['hardcoverId' => 'ext-1'], $m['identifiers']);
         self::assertSame('Kate Reading, Michael Kramer', $m['narrator']);
     }
 
     public function testOmitsNullFieldsAndSkipsAbsentCover(): void
     {
-        $book = new Book('hardcover', 'ext-2', 'Bare Title');
+        $book = new Book('openlibrary', 'ext-2', 'Bare Title');
 
         $this->writer(null)->write($this->dir, 'Bare Title', $book);
 
@@ -83,6 +84,36 @@ final class AudiobookSidecarWriterTest extends TestCase
         $m = json_decode((string) file_get_contents($jsonPath), true, 512, \JSON_THROW_ON_ERROR)['metadata'];
         self::assertSame(['title'], array_keys($m));
         self::assertSame('Bare Title', $m['title']);
+    }
+
+    public function testNonNumericSeriesIndexOmitsNumberButKeepsName(): void
+    {
+        $book = (new Book('openlibrary', 'ext-10', 'Book'))
+            ->setSeries('Some Series')
+            ->setSeriesIndex('one of three');
+
+        $this->writer(null)->write($this->dir, 'Book', $book);
+
+        $m = json_decode((string) file_get_contents($this->dir . '/Book.metadata.json'), true, 512, \JSON_THROW_ON_ERROR)['metadata'];
+        // A string in Grimmory's Float field would void the whole sidecar.
+        self::assertSame(['name' => 'Some Series'], $m['series']);
+    }
+
+    public function testFreeFormPublishedDatesAreNormalizedToLocalDate(): void
+    {
+        $write = function (string $date, string $base): ?string {
+            $book = (new Book('openlibrary', 'ext-' . $base, 'Book'))->setPublishedDate($date);
+            $this->writer(null)->write($this->dir, $base, $book);
+            $m = json_decode((string) file_get_contents($this->dir . '/' . $base . '.metadata.json'), true, 512, \JSON_THROW_ON_ERROR)['metadata'];
+
+            return $m['publishedDate'] ?? null;
+        };
+
+        self::assertSame('2010-08-31', $write('2010-08-31', 'd1'));
+        self::assertSame('2024-01-01', $write('2024', 'd2'));
+        self::assertSame('2024-05-01', $write('2024-5', 'd3'));
+        self::assertSame('2024-05-01', $write('May 2024', 'd4'));
+        self::assertNull($write('sometime soon', 'd5'));
     }
 
     public function testOverwritesExistingSidecar(): void
@@ -108,6 +139,54 @@ final class AudiobookSidecarWriterTest extends TestCase
         self::assertFileExists($album . '/The Way of Kings.metadata.json');
         self::assertFileExists($album . '/The Way of Kings.cover.jpg');
         self::assertFileDoesNotExist($this->dir . '/The Way of Kings.metadata.json');
+        // The release's root cover.jpg is replaced with Spine Scout's cover.
+        self::assertSame('JPEGBYTES', file_get_contents($album . '/cover.jpg'));
+    }
+
+    public function testAlbumCoverReplacesCompetingReleaseArtwork(): void
+    {
+        $album = $this->dir . '/Album';
+        mkdir($album, 0o775, true);
+        file_put_contents($album . '/Part 1.mp3', 'AUDIO');
+        file_put_contents($album . '/Part 2.mp3', 'AUDIO');
+        file_put_contents($album . '/cover.png', 'RELEASE-ART');
+        file_put_contents($album . '/folder.jpg', 'RELEASE-ART');
+        file_put_contents($album . '/booklet.jpg', 'BOOKLET'); // not a cover name — untouched
+
+        $this->writer('JPEGBYTES')->writeForAlbum($album, new Book('hardcover', 'ext-11', 'Album'));
+
+        self::assertSame('JPEGBYTES', file_get_contents($album . '/cover.jpg'));
+        self::assertFileDoesNotExist($album . '/cover.png');
+        self::assertFileDoesNotExist($album . '/folder.jpg');
+        self::assertFileExists($album . '/booklet.jpg');
+    }
+
+    public function testAlbumCoverKeepsReleaseArtworkWhenNoCoverIsAvailable(): void
+    {
+        $album = $this->dir . '/Album';
+        mkdir($album, 0o775, true);
+        file_put_contents($album . '/Part 1.mp3', 'AUDIO');
+        file_put_contents($album . '/Part 2.mp3', 'AUDIO');
+        file_put_contents($album . '/cover.png', 'RELEASE-ART');
+
+        $this->writer(null)->writeForAlbum($album, new Book('hardcover', 'ext-12', 'Album'));
+
+        // No cover to write — the release's art is better than none.
+        self::assertFileExists($album . '/cover.png');
+        self::assertFileDoesNotExist($album . '/cover.jpg');
+    }
+
+    public function testWriteAlbumCoverAloneWritesNoSidecar(): void
+    {
+        $album = $this->dir . '/Album';
+        mkdir($album, 0o775, true);
+        file_put_contents($album . '/Part 1.mp3', 'AUDIO');
+        file_put_contents($album . '/Part 2.mp3', 'AUDIO');
+
+        $this->writer('JPEGBYTES')->writeAlbumCover($album, new Book('hardcover', 'ext-13', 'Album'));
+
+        self::assertSame('JPEGBYTES', file_get_contents($album . '/cover.jpg'));
+        self::assertFileDoesNotExist($this->dir . '/Album.metadata.json');
     }
 
     public function testSingleFileInNestedSubdirGetsSidecarNextToTheFile(): void

@@ -104,6 +104,14 @@
                            placeholder="{{ grimmory_native.hasPassword ? '•••••••• (leave blank to keep current)' : '' }}">
                 </div>
             </div>
+
+            <div class="field" data-controller="connection-test"
+                 data-connection-test-url-value="{{ path('settings_audiobooks_test_grimmory_native') }}"
+                 data-connection-test-token-value="{{ csrf_token('settings_audiobooks_test') }}">
+                <button type="button" class="btn" data-connection-test-target="button" data-action="connection-test#run">Test connection</button>
+                <p class="form-note">Tests the <strong>saved</strong> credentials — save the form first.</p>
+                <p class="form-note" data-connection-test-target="result" hidden></p>
+            </div>
         </fieldset>
 
         {# -- Audio tags ----------------------------------------------------------- #}

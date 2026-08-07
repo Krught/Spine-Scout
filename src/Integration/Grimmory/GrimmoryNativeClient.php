@@ -53,6 +53,37 @@ final class GrimmoryNativeClient
     }
 
     /**
+     * Validates the saved native-API credentials by performing a real JWT login.
+     * Unlike {@see isConfigured()} this deliberately ignores the sidecarImport
+     * toggle — the point is to verify the account works before (or without)
+     * enabling automatic imports.
+     *
+     * @return array{0: bool, 1: string} [ok, human-readable message]
+     */
+    public function testConnection(Integration $integration): array
+    {
+        $base = $integration->getBaseUrl();
+        if ($base === null || trim($base) === '') {
+            return [false, 'Set the Grimmory (Komga) server URL on the Komga tab first.'];
+        }
+        $native = $this->nativeOptions($integration);
+        $username = is_string($native['username'] ?? null) ? trim($native['username']) : '';
+        $password = is_string($native['password'] ?? null) ? trim($native['password']) : '';
+        if ($username === '' || $password === '') {
+            return [false, 'Enter (and save) a Grimmory username and password first.'];
+        }
+
+        try {
+            $root = $this->nativeRoot($integration);
+            $this->login($integration, $root);
+        } catch (GrimmoryException $e) {
+            return [false, $e->getMessage()];
+        }
+
+        return [true, sprintf('Logged in to the Grimmory native API as %s.', $username)];
+    }
+
+    /**
      * Logs into the native API and triggers a sidecar import for every target
      * library (the integration's selected libraries when a real subset is
      * selected, otherwise all discovered libraries — same semantics as the
