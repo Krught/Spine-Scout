@@ -120,6 +120,8 @@ wires everything up. No source checkout required.
        ports:
          - "${SPINESCOUT_HTTP_PORT:-9092}:80"
        restart: unless-stopped
+       volumes:
+         - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:ro
        depends_on:
          - app
 

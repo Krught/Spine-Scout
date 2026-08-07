@@ -71,6 +71,12 @@
                     data-request-search-isbn-param="{{ r.book.isbn ?? '' }}"
                     data-request-search-audiobook-param="{{ r.audiobook ? 'true' : 'false' }}"
                     title="Manually search sources and download a version">Interactive Search</button>
+            <button type="button" class="request-btn request-btn-link-torrent"
+                    data-action="link-torrent#open"
+                    data-link-torrent-options-url-param="{{ path('requests_link_torrent_options', {id: r.id}) }}"
+                    data-link-torrent-link-url-param="{{ path('requests_link_torrent', {id: r.id}) }}"
+                    data-link-torrent-token-param="{{ csrf_token('link-torrent-request-' ~ r.id) }}"
+                    title="Link this request to a torrent already in the download client">Link torrent</button>
         {% endif %}
         {% if can_approve %}
             <form method="post" action="{{ path('requests_approve', {id: r.id}) }}"

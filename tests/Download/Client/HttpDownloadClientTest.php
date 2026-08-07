@@ -47,6 +47,14 @@ final class HttpDownloadClientTest extends TestCase
         self::assertTrue($client->isConfigured());
     }
 
+    public function testListDownloadsIsAlwaysEmpty(): void
+    {
+        // Synchronous one-shot protocol: there is no client-side queue to list.
+        $client = new HttpDownloadClient(new MockHttpClient(), $this->staging, new AAStyleHttpProtocol(), $this->resolver());
+
+        self::assertSame([], $client->listDownloads());
+    }
+
     public function testStreamsBodyToStagingAndReportsComplete(): void
     {
         $client = new HttpDownloadClient(new MockHttpClient(new MockResponse('EPUBBYTES')), $this->staging, new AAStyleHttpProtocol(), $this->resolver());

@@ -195,6 +195,11 @@ final class TorrentFulfillmentTest extends TestCase
             {
                 throw new \LogicException('not used');
             }
+
+            public function listDownloads(): array
+            {
+                return [];
+            }
         };
     }
 }

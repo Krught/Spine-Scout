@@ -3,7 +3,7 @@
 {% block title %}Requests - Spine Scout{% endblock %}
 
 {% block body %}
-    <section class="requests-section" data-controller="request-search requests-filter book-modal request-actions"
+    <section class="requests-section" data-controller="request-search requests-filter book-modal request-actions link-torrent"
              {% if is_granted('ROLE_ADMIN') or is_granted('ROLE_MANAGE_SETTINGS') %}
              data-request-search-toggle-url-value="{{ path('requests_pipeline_toggle') }}"
              data-request-search-manual-next-url-value="{{ path('requests_manual_next') }}"

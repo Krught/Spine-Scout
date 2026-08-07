@@ -370,6 +370,7 @@
     flex-direction: column;
     gap: 0.5rem;
     align-items: stretch;
+    position: relative; /* anchors the link-torrent popover */
 }
 .request-actions form { width: 100%; }
 .request-actions .request-btn { width: 100%; }
@@ -419,6 +420,69 @@
     background: rgba(180, 150, 70, 0.15);
     border-color: rgba(180, 150, 70, 0.9);
 }
+.request-btn-link-torrent {
+    border-color: rgba(45, 166, 184, 0.5);
+    color: #8adfe8;
+}
+.request-btn-link-torrent:hover {
+    background: rgba(45, 166, 184, 0.15);
+    border-color: rgba(45, 166, 184, 0.9);
+}
+
+/* Popover under the "Link torrent" button listing the client's torrents. */
+.link-torrent-panel {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 30;
+    min-width: 18rem;
+    max-width: 24rem;
+    max-height: 18rem;
+    overflow-y: auto;
+    margin-top: 0.35rem;
+    padding: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.link-torrent-item {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--fg);
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    align-items: stretch;
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.link-torrent-item:hover { background: rgba(255, 255, 255, 0.06); }
+.link-torrent-item:disabled,
+.link-torrent-item.is-linked {
+    opacity: 0.5;
+    cursor: default;
+}
+.link-torrent-item.is-linked:hover { background: transparent; }
+.link-torrent-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.link-torrent-meta {
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+}
+
 .request-btn-delete {
     border-color: rgba(180, 60, 60, 0.5);
     color: #f7a4a4;

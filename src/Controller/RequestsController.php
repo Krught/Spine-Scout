@@ -19,6 +19,7 @@ use App\Message\DispatchTorrentSearch;
 use App\Message\RewriteAudiobookSidecar;
 use App\Repository\DownloadJobRepository;
 use App\Search\SearchSettingsProvider;
+use App\Search\Source\ReleaseCandidate;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -505,6 +506,111 @@ final class RequestsController extends AbstractController
 
         if ($recheckable) {
             $this->addFlash('success', 'Re-checking for a release…');
+        }
+
+        return $this->redirectToRoute('requests');
+    }
+
+    /**
+     * The torrents currently in the download client's category, for the manual
+     * "Link torrent" picker. Each row carries a `linked` flag — true when the
+     * hash is already tracked by an in-flight job — so the picker can grey it
+     * out rather than offer to double-link one torrent to two requests.
+     */
+    #[Route('/requests/{id}/link-torrent/options', name: 'requests_link_torrent_options', methods: ['GET'], requirements: ['id' => '\d+'])]
+    #[IsGranted('ROLE_ADMIN')]
+    public function linkTorrentOptions(int $id, BookRequestRepository $requests, DownloadJobRepository $jobs): JsonResponse
+    {
+        if ($requests->find($id) === null) {
+            throw $this->createNotFoundException();
+        }
+        if (!$this->qbittorrent->isConfigured()) {
+            return new JsonResponse(['ok' => false, 'message' => 'Torrent download client is not configured.'], 409);
+        }
+
+        $linked = [];
+        foreach ($jobs->activeTorrentJobs() as $job) {
+            if ($job->getClientRef() !== null) {
+                $linked[strtolower($job->getClientRef())] = true;
+            }
+        }
+
+        $torrents = $this->qbittorrent->listDownloads();
+        foreach ($torrents as &$torrent) {
+            $torrent['linked'] = isset($linked[$torrent['id']]);
+        }
+        unset($torrent);
+
+        // Incomplete torrents first (the likely link targets), then by name.
+        usort($torrents, static fn (array $a, array $b): int => ($a['completed'] <=> $b['completed']) ?: strcasecmp($a['name'], $b['name']));
+
+        return new JsonResponse(['ok' => true, 'torrents' => $torrents]);
+    }
+
+    /**
+     * Manually link a request to a torrent already in the download client — the
+     * rescue path for a grab the client accepted but whose job lost its hash
+     * (or was added outside the app entirely). Creates a DOWNLOADING job carrying
+     * the hash as its clientRef; the torrent poller then finalizes it into the
+     * library exactly like an automatic grab.
+     */
+    #[Route('/requests/{id}/link-torrent', name: 'requests_link_torrent', methods: ['POST'], requirements: ['id' => '\d+'])]
+    #[IsGranted('ROLE_ADMIN')]
+    public function linkTorrent(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, EntityManagerInterface $em): Response
+    {
+        $entity = $requests->find($id);
+        if ($entity === null) {
+            throw $this->createNotFoundException();
+        }
+        if (!$this->isCsrfTokenValid('link-torrent-request-' . $id, (string) $request->request->get('_csrf_token'))) {
+            throw new AccessDeniedHttpException('Invalid CSRF token.');
+        }
+
+        $hash = strtolower((string) $request->request->get('hash'));
+        if (preg_match('/^[a-f0-9]{40}$/', $hash) !== 1) {
+            return new JsonResponse(['ok' => false, 'message' => 'Invalid torrent hash.'], 400);
+        }
+        if (!$this->qbittorrent->isConfigured()) {
+            return new JsonResponse(['ok' => false, 'message' => 'Torrent download client is not configured.'], 409);
+        }
+
+        $torrent = null;
+        foreach ($this->qbittorrent->listDownloads() as $row) {
+            if ($row['id'] === $hash) {
+                $torrent = $row;
+                break;
+            }
+        }
+        if ($torrent === null) {
+            return new JsonResponse(['ok' => false, 'message' => 'Torrent not found in the download client.'], 409);
+        }
+        if ($jobs->hasActiveJobForRequest($entity)) {
+            return new JsonResponse(['ok' => false, 'message' => 'A download is already in progress for this request — cancel it first.'], 409);
+        }
+
+        // Linking implies approval, so a still-pending request enters the pipeline
+        // here; other statuses are left alone.
+        if ($entity->getStatus() === BookRequest::STATUS_PENDING) {
+            $entity->setStatus(BookRequest::STATUS_APPROVED);
+        }
+
+        $job = new DownloadJob(
+            source: 'torrent',
+            sourceId: mb_substr('manual-link:' . $hash, 0, 255),
+            protocol: ReleaseCandidate::PROTOCOL_TORRENT,
+            bookRequest: $entity,
+        );
+        $job->setClientRef($hash)
+            ->setStatus(DownloadJob::STATUS_DOWNLOADING)
+            ->setProgress((int) round($torrent['progress']))
+            ->setStatusMessage('Manually linked to torrent "' . mb_substr($torrent['name'], 0, 120) . '".')
+            ->setSizeBytes($torrent['sizeBytes']);
+        $entity->setDeliveryStatus(DownloadJob::STATUS_DOWNLOADING);
+        $em->persist($job);
+        $em->flush();
+
+        if (self::wantsJson($request)) {
+            return $this->rowActionResponse($entity, 'Linked to torrent — will import when the download completes.', $jobs, $metadata);
         }
 
         return $this->redirectToRoute('requests');

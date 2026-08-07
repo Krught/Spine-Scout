@@ -134,6 +134,15 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
      * concurrent add's hash to this job, or time out (in ~2s) before a proxied torrent
      * had even registered, leaving the torrent downloading untracked.
      *
+     * Response handling covers both API generations. WebAPI < 2.14 answers 200 with
+     * a plain-text "Ok."/"Fails." body. WebAPI 2.14+ (qBittorrent ≥ 5.2) answers
+     * 200 — or 202 while the add is still pending (the client fetches a non-magnet
+     * URL asynchronously) — with a JSON body carrying success_count/failure_count/
+     * pending_count/added_torrent_ids, and 409 when nothing was added at all
+     * (every URL failed or the torrent is a duplicate). The "fail" substring check
+     * must only ever run on the plain-text shape: the JSON always contains
+     * "failure_count", which would otherwise reject every successful add.
+     *
      * @param array<string, mixed> $options
      */
     public function addDownload(string $url, string $name, array $options = []): string
@@ -157,9 +166,47 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
             'body'    => $payload,
             'timeout' => self::TIMEOUT_SECONDS,
         ]);
+        $status = $response->getStatusCode();
         $body = trim($response->getContent(false));
-        if ($response->getStatusCode() !== 200 || stripos($body, 'fail') !== false) {
-            throw new \RuntimeException('The download client rejected the torrent add (' . $response->getStatusCode() . ' ' . $body . ').');
+
+        if ($status < 200 || $status >= 300) {
+            if ($status === 409) {
+                // WebAPI 2.14+: 409 means nothing was added — the torrent is
+                // already in the client, or every URL failed. A magnet carries
+                // its hash, so re-link to the existing torrent instead of
+                // failing a job whose torrent is in fact present.
+                if ($hash !== null) {
+                    return $hash;
+                }
+                if ($tag !== null) {
+                    $this->deleteTag($row, $sid, $tag);
+                }
+                throw new \RuntimeException('The download client reports this torrent is already added or could not be added (409 ' . $body . ').');
+            }
+            throw new \RuntimeException('The download client rejected the torrent add (' . $status . ' ' . $body . ').');
+        }
+
+        $result = json_decode($body, true);
+        if (is_array($result)
+            && (isset($result['success_count']) || isset($result['pending_count']) || isset($result['added_torrent_ids']))) {
+            // WebAPI 2.14+ JSON shape.
+            $ids = is_array($result['added_torrent_ids'] ?? null) ? $result['added_torrent_ids'] : [];
+            $first = $ids[0] ?? null;
+            if (is_string($first) && preg_match('/^[0-9a-fA-F]{40}$/', $first) === 1) {
+                if ($tag !== null) {
+                    $this->deleteTag($row, $sid, $tag);
+                }
+
+                return strtolower($first);
+            }
+            if ((int) ($result['pending_count'] ?? 0) <= 0 && (int) ($result['success_count'] ?? 0) <= 0) {
+                // Defensive — a fully rejected add normally arrives as 409, not 2xx.
+                throw new \RuntimeException('The download client rejected the torrent add (' . $status . ' ' . $body . ').');
+            }
+            // Added or pending without an id yet — resolve the hash below.
+        } elseif (stripos($body, 'fail') !== false) {
+            // Legacy plain-text shape only ("Ok."/"Fails.") — see the docblock.
+            throw new \RuntimeException('The download client rejected the torrent add (' . $status . ' ' . $body . ').');
         }
 
         if ($hash !== null) {
@@ -238,6 +285,51 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
 
             return false;
         }
+    }
+
+    /**
+     * All torrents in the configured category. Best-effort per the interface
+     * contract: an unconfigured client or a failed login/query returns [].
+     *
+     * @return list<array{id: string, name: string, state: string, progress: float, sizeBytes: int|null, completed: bool}>
+     */
+    public function listDownloads(): array
+    {
+        $row = $this->integrations->qbittorrentIntegration();
+        if ($row === null || $row->getBaseUrl() === null || $row->getBaseUrl() === '') {
+            return [];
+        }
+
+        try {
+            $sid = $this->login($row);
+        } catch (HttpExceptionInterface | \RuntimeException $e) {
+            $this->logger->warning('Download client listing failed at login', ['error' => $e->getMessage()]);
+
+            return [];
+        }
+
+        $category = $this->integrations->getTorrentClientConfig()->category;
+
+        $out = [];
+        foreach ($this->torrentsInCategory($row, $sid, $category) as $t) {
+            if (!is_string($t['hash'] ?? null)) {
+                continue;
+            }
+            $hash = strtolower($t['hash']);
+            $state = (string) ($t['state'] ?? 'unknown');
+            $progress = (float) ($t['progress'] ?? 0.0);
+
+            $out[] = [
+                'id'        => $hash,
+                'name'      => is_string($t['name'] ?? null) && $t['name'] !== '' ? $t['name'] : $hash,
+                'state'     => $state,
+                'progress'  => max(0.0, min(100.0, $progress * 100)),
+                'sizeBytes' => isset($t['size']) && is_numeric($t['size']) ? (int) $t['size'] : null,
+                'completed' => $progress >= 1.0 || in_array($state, self::SEEDING_STATES, true),
+            ];
+        }
+
+        return $out;
     }
 
     /**

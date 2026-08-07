@@ -406,6 +406,17 @@ final class HttpDownloadClient implements DownloadClientInterface
         return true;
     }
 
+    /**
+     * HTTP downloads are synchronous and one-shot — there is no client-side
+     * queue to enumerate.
+     *
+     * @return list<array{id: string, name: string, state: string, progress: float, sizeBytes: int|null, completed: bool}>
+     */
+    public function listDownloads(): array
+    {
+        return [];
+    }
+
     private function ensureStagingDir(): bool
     {
         if (!is_dir($this->stagingDir) && !@mkdir($this->stagingDir, 0o775, true) && !is_dir($this->stagingDir)) {

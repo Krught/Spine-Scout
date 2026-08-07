@@ -50,4 +50,14 @@ interface DownloadClientInterface
     public function getStatus(string $downloadId): DownloadStatus;
 
     public function cancel(string $downloadId, bool $deleteFiles = false): bool;
+
+    /**
+     * Enumerate the downloads this client currently knows about within its
+     * configured scope (for qBittorrent: torrents in the configured category).
+     * Best-effort: returns [] when the client is unreachable or the protocol
+     * has no meaningful listing (synchronous HTTP downloads).
+     *
+     * @return list<array{id: string, name: string, state: string, progress: float, sizeBytes: int|null, completed: bool}>
+     */
+    public function listDownloads(): array;
 }

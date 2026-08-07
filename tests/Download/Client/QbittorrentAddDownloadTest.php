@@ -140,6 +140,109 @@ final class QbittorrentAddDownloadTest extends TestCase
         self::assertSame(self::HEX_HASH, $parsed['hashes'] ?? null);
     }
 
+    public function testPendingJsonAdd202ResolvesViaTagPolling(): void
+    {
+        // WebAPI 2.14+ (qBittorrent ≥ 5.2) answers a URL add it must fetch
+        // asynchronously with 202 and pending JSON. Production regression: the
+        // old code rejected this both on the non-200 status AND on the "fail"
+        // substring inside "failure_count", erroring a successful add.
+        $tag = null;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$tag): MockResponse {
+            if (str_contains($url, '/torrents/add')) {
+                parse_str((string) ($options['body'] ?? ''), $body);
+                $tag = (string) ($body['tags'] ?? '');
+
+                return new MockResponse(
+                    '{"success_count":0,"failure_count":0,"pending_count":1,"added_torrent_ids":[]}',
+                    ['http_code' => 202],
+                );
+            }
+            if (str_contains($url, '/torrents/info')) {
+                return new MockResponse(json_encode([
+                    ['hash' => strtoupper(self::HEX_HASH), 'tags' => (string) $tag, 'state' => 'metaDL'],
+                ], JSON_THROW_ON_ERROR));
+            }
+
+            return new MockResponse('Ok.'); // createTags / deleteTags
+        });
+
+        $hash = $this->client($http)->addDownload($this->proxyUrl(), 'Piranesi');
+
+        self::assertSame(self::HEX_HASH, $hash);
+    }
+
+    public function testJsonAddedTorrentIdsReturnsHashWithoutPolling(): void
+    {
+        $polled = false;
+        $deletedTag = false;
+        $http = new MockHttpClient(function (string $method, string $url) use (&$polled, &$deletedTag): MockResponse {
+            if (str_contains($url, '/torrents/info')) {
+                $polled = true;
+            }
+            if (str_contains($url, '/torrents/deleteTags')) {
+                $deletedTag = true;
+            }
+            if (str_contains($url, '/torrents/add')) {
+                return new MockResponse(json_encode([
+                    'success_count'     => 1,
+                    'failure_count'     => 0,
+                    'pending_count'     => 0,
+                    'added_torrent_ids' => [strtoupper(self::HEX_HASH)],
+                ], JSON_THROW_ON_ERROR));
+            }
+
+            return new MockResponse('Ok.'); // createTags
+        });
+
+        $hash = $this->client($http)->addDownload($this->proxyUrl(), 'Legends & Lattes');
+
+        self::assertSame(self::HEX_HASH, $hash);
+        self::assertFalse($polled, 'the id from the JSON response makes tag polling unnecessary');
+        self::assertTrue($deletedTag, 'the throwaway tag must be cleaned up');
+    }
+
+    public function testLegacyFailsBodyThrows(): void
+    {
+        // WebAPI < 2.14 rejects an add with 200 and the literal body "Fails.".
+        $http = new MockHttpClient(static fn (): MockResponse => new MockResponse('Fails.'));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('rejected the torrent add');
+
+        $this->client($http)->addDownload('magnet:?xt=urn:btih:' . self::HEX_HASH, 'Dune');
+    }
+
+    public function testConflict409OnMagnetReturnsKnownHash(): void
+    {
+        // 409 means the torrent is already in the client (or the add failed); a
+        // magnet carries its hash, so re-link to the existing torrent.
+        $requests = [];
+        $http = new MockHttpClient(function (string $method, string $url) use (&$requests): MockResponse {
+            $requests[] = $url;
+
+            return new MockResponse('', ['http_code' => 409]);
+        });
+
+        $hash = $this->client($http)->addDownload('magnet:?xt=urn:btih:' . strtoupper(self::HEX_HASH), 'Red Rising');
+
+        self::assertSame(self::HEX_HASH, $hash);
+        self::assertCount(1, $requests);
+    }
+
+    public function testConflict409OnUrlAddThrows(): void
+    {
+        $http = new MockHttpClient(static function (string $method, string $url): MockResponse {
+            return str_contains($url, '/torrents/add')
+                ? new MockResponse('', ['http_code' => 409])
+                : new MockResponse('Ok.'); // createTags / deleteTags
+        });
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already added or could not be added');
+
+        $this->client($http)->addDownload($this->proxyUrl(), 'Fourth Wing');
+    }
+
     // --- helpers ----------------------------------------------------------
 
     private function client(MockHttpClient $http, int $attempts = 30): QbittorrentDownloadClient
