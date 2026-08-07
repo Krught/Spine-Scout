@@ -29,7 +29,7 @@ export default class extends Controller {
         button.disabled = true;
         button.classList.add('is-busy');
         try {
-            const res = await fetch(optionsUrlParam, { headers: { Accept: 'application/json' } });
+            const res = await fetch(optionsUrl, { headers: { Accept: 'application/json' } });
             let data = null;
             try {
                 data = await res.json();
