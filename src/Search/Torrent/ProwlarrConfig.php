@@ -17,6 +17,15 @@ final class ProwlarrConfig
     /** Newznab/Torznab "Audio/Audiobook" category. The default audiobook search scope. */
     public const DEFAULT_CATEGORIES = [3030];
 
+    /** Pass the Torznab category ids with the query (the classic scope). */
+    public const METHOD_CATEGORIES = 'categories';
+    /** No category filter at all — every indexer result comes back as-is. */
+    public const METHOD_RAW = 'raw';
+    /** No category filter on the query; results the app can positively classify as the wrong content type (ebook vs audiobook) are dropped afterwards. */
+    public const METHOD_FILTERED = 'filtered';
+
+    public const METHODS = [self::METHOD_CATEGORIES, self::METHOD_RAW, self::METHOD_FILTERED];
+
     public const DEFAULT_MIN_SEEDERS = 1;
 
     /**
@@ -39,12 +48,14 @@ final class ProwlarrConfig
      * @param int                                                          $minSeeders  Drop releases below this seed count
      * @param int|null                                                     $maxSizeBytes Drop releases larger than this (guards against pathological packs); null = no cap
      * @param array{match: float, seeders: float, size: float, format: float} $weights  Relative scoring weights
+     * @param string                                                       $searchMethod One of METHODS — how the category scope is applied (see the METHOD_* docs)
      */
     public function __construct(
         public readonly array $categories = self::DEFAULT_CATEGORIES,
         public readonly int $minSeeders = self::DEFAULT_MIN_SEEDERS,
         public readonly ?int $maxSizeBytes = null,
         public readonly array $weights = self::DEFAULT_WEIGHTS,
+        public readonly string $searchMethod = self::METHOD_CATEGORIES,
     ) {
     }
 
@@ -91,7 +102,12 @@ final class ProwlarrConfig
             }
         }
 
-        return new self($categories, $minSeeders, $maxSizeBytes, $weights);
+        $searchMethod = $raw['searchMethod'] ?? null;
+        if (!is_string($searchMethod) || !in_array($searchMethod, self::METHODS, true)) {
+            $searchMethod = self::METHOD_CATEGORIES;
+        }
+
+        return new self($categories, $minSeeders, $maxSizeBytes, $weights, $searchMethod);
     }
 
     /** @return array<string, mixed> */
@@ -102,6 +118,7 @@ final class ProwlarrConfig
             'minSeeders'   => $this->minSeeders,
             'maxSizeBytes' => $this->maxSizeBytes,
             'weights'      => $this->weights,
+            'searchMethod' => $this->searchMethod,
         ];
     }
 

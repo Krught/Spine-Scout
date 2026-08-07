@@ -27,6 +27,14 @@
         <div class="ix-mirrors" data-interactive-search-target="mirrors"></div>
     </div>
 
+    {# Torrent-only: how the indexer query is scoped (categories / raw / post-search
+       filtered). Starts on the operator's saved default; changing it here affects
+       this panel only. #}
+    <div class="ix-mirror-row" data-interactive-search-target="methodRow" hidden>
+        <span class="ix-mirror-label">Method</span>
+        <div class="ix-mirrors" data-interactive-search-target="methods"></div>
+    </div>
+
     <div class="ix-query">
         <label class="field">
             <span>Title</span>

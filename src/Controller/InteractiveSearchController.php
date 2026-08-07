@@ -126,12 +126,17 @@ final class InteractiveSearchController extends AbstractController
             // torrent stack) still shows, greyed out, so they can see why.
             $isTorrent = $source === DirectDownloadSource::Torrent;
             $mirrors = $isTorrent ? [] : $config->mirrorsFor($source->value)->toArray();
-            $sources[] = [
+            $entry = [
                 'id'      => $source->value,
                 'label'   => $source->label(),
                 'enabled' => $isTorrent ? $this->torrents->isAvailable() : $mirrors !== [],
                 'mirrors' => $mirrors,
             ];
+            if ($isTorrent) {
+                // The operator's saved default; the panel's method toggle starts here.
+                $entry['searchMethod'] = $this->integrations->getProwlarrConfig()->searchMethod;
+            }
+            $sources[] = $entry;
         }
 
         return $this->json(['sources' => $sources]);
@@ -191,6 +196,7 @@ final class InteractiveSearchController extends AbstractController
             'searchUrl' => $this->probe->searchUrlVia($sourceId, $mirror, $plan),
             'threshold' => $this->probe->matchThreshold(),
             'truncated' => \count($scored) > self::MAX_RESULTS,
+            'acceptedFormats' => $this->acceptedFormats(),
             'results'   => $rows,
         ]);
     }
@@ -230,8 +236,13 @@ final class InteractiveSearchController extends AbstractController
             $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
         }
 
+        // Per-search override of the operator's default search method (the panel's
+        // Categories / Raw / Filtered toggle); anything unrecognized falls back to
+        // the saved default inside search().
+        $searchMethod = $this->blankToNull($payload['searchMethod'] ?? null);
+
         $scored = $this->scorer->scored(
-            $this->prowlarr->search($plan),
+            $this->prowlarr->search($plan, is_string($searchMethod) ? $searchMethod : null),
             $plan,
             $this->integrations->getProwlarrConfig()->matchPolicy(),
         );
@@ -248,8 +259,20 @@ final class InteractiveSearchController extends AbstractController
             'searchUrl' => null,
             'threshold' => $threshold,
             'truncated' => \count($scored) > self::MAX_RESULTS,
+            'acceptedFormats' => $this->acceptedFormats(),
             'results'   => $rows,
         ]);
+    }
+
+    /**
+     * The Best Match policy's format allow-list, so the panel can flag results
+     * whose format the automatic pipeline would reject. Empty = allow all.
+     *
+     * @return list<string>
+     */
+    private function acceptedFormats(): array
+    {
+        return $this->integrations->getBestMatchPolicy()->formatPriority;
     }
 
     /**

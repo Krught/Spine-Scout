@@ -515,6 +515,7 @@ final class SettingsController extends AbstractController
             $this->applyApiToken($prowlarr, (string) $req->get('prowlarr_api_key', ''));
             $prowlarrConfig = ProwlarrConfig::fromArray([
                 'categories'   => self::parseIntCsv((string) $req->get('prowlarr_categories', '')),
+                'searchMethod' => (string) $req->get('prowlarr_search_method', ''),
                 'minSeeders'   => $req->get('prowlarr_min_seeders', ''),
                 'maxSizeBytes' => self::gbToBytes((string) $req->get('prowlarr_max_size_gb', '')),
                 'weights'      => [

@@ -301,6 +301,69 @@ final class ProwlarrClientMapTest extends TestCase
         self::assertSame('epub', $out[0]->format);
     }
 
+    /**
+     * In an audiobook search, a title naming only an ebook format still resolves
+     * (fallback set) — raw/unfiltered searches would otherwise show "?" for every
+     * off-type row.
+     */
+    public function testDeriveFormatFallsBackToTheOtherExtensionSet(): void
+    {
+        $rows = [
+            ['guid' => 'x1', 'title' => 'Some Book EPUB retail', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:x1'],
+            ['guid' => 'x2', 'title' => 'Pack epub mobi m4b', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:x2'],
+        ];
+
+        $audio = ProwlarrClient::mapResults($rows, ReleaseCandidate::CONTENT_AUDIOBOOK);
+        self::assertSame('epub', $audio[0]->format);
+        // The wanted content type's extension set wins when a title names both.
+        self::assertSame('m4b', $audio[1]->format);
+        self::assertSame('epub', ProwlarrClient::mapResults($rows, ReleaseCandidate::CONTENT_EBOOK)[1]->format);
+    }
+
+    public function testFilterByContentTypeDropsOnlyPositiveMismatches(): void
+    {
+        $rows = [
+            // Audio category → kept in an audiobook search.
+            ['guid' => 'k1', 'title' => 'Audio by category', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:k1', 'categories' => [3030]],
+            // Ebook category → dropped.
+            ['guid' => 'k2', 'title' => 'Ebook by category', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:k2', 'categories' => [7020]],
+            // No category, ebook format token → dropped.
+            ['guid' => 'k3', 'title' => 'Some Book epub', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:k3'],
+            // No category, audio format token → kept.
+            ['guid' => 'k4', 'title' => 'Some Book m4b', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:k4'],
+            // Nothing classifiable → kept (never silently hidden).
+            ['guid' => 'k5', 'title' => 'Bare title', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:k5'],
+        ];
+        $candidates = ProwlarrClient::mapResults($rows, ReleaseCandidate::CONTENT_AUDIOBOOK);
+
+        $kept = ProwlarrClient::filterByContentType($candidates, ReleaseCandidate::CONTENT_AUDIOBOOK);
+
+        self::assertSame(['k1', 'k4', 'k5'], array_map(static fn ($c) => $c->sourceId, $kept));
+    }
+
+    public function testFilterByContentTypeKeepsEbooksInAnEbookSearch(): void
+    {
+        $rows = [
+            ['guid' => 'e1', 'title' => 'Ebook by category', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:e1', 'categories' => [7020]],
+            ['guid' => 'e2', 'title' => 'Audio by category', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:e2', 'categories' => [3030]],
+        ];
+        $candidates = ProwlarrClient::mapResults($rows, ReleaseCandidate::CONTENT_EBOOK);
+
+        $kept = ProwlarrClient::filterByContentType($candidates, ReleaseCandidate::CONTENT_EBOOK);
+
+        self::assertSame(['e1'], array_map(static fn ($c) => $c->sourceId, $kept));
+    }
+
+    public function testFilterByContentTypeIsANoopForAnUnknownContentType(): void
+    {
+        $rows = [
+            ['guid' => 'n1', 'title' => 'Ebook by category', 'protocol' => 'torrent', 'magnetUrl' => 'magnet:?xt=urn:btih:n1', 'categories' => [7020]],
+        ];
+        $candidates = ProwlarrClient::mapResults($rows, ReleaseCandidate::CONTENT_EBOOK);
+
+        self::assertSame($candidates, ProwlarrClient::filterByContentType($candidates, 'comic'));
+    }
+
     public function testSkipsNonTorrentAndLinklessRows(): void
     {
         $rows = [

@@ -84,6 +84,7 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
             'prowlarr_base_url'          => 'http://prowlarr:9696/',
             'prowlarr_api_key'           => 'secret-key',
             'prowlarr_categories'        => '3030, 3000',
+            'prowlarr_search_method'     => 'filtered',
             'prowlarr_min_seeders'       => '5',
             'prowlarr_max_size_gb'       => '10',
             'prowlarr_weight_match'      => '0.6',
@@ -107,6 +108,7 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
         $this->em->clear();
         $prowlarr = $this->integrations->getProwlarrConfig();
         self::assertSame([3030, 3000], $prowlarr->categories);
+        self::assertSame('filtered', $prowlarr->searchMethod);
         self::assertSame(5, $prowlarr->minSeeders);
         self::assertSame((int) round(10 * 1024 * 1024 * 1024), $prowlarr->maxSizeBytes);
         self::assertSame(0.6, $prowlarr->weights['match']);

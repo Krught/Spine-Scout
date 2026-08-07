@@ -8,6 +8,7 @@ use App\Entity\Integration;
 use App\Repository\IntegrationRepository;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
+use App\Search\Torrent\ProwlarrConfig;
 use App\Support\AudioFormat;
 use App\Support\EbookFormat;
 use Psr\Log\LoggerInterface;
@@ -54,27 +55,40 @@ final class ProwlarrClient
      * Search Prowlarr for the plan's book and return audiobook torrent candidates.
      * Returns [] when Prowlarr is unconfigured or the request fails.
      *
+     * $searchMethod (one of ProwlarrConfig::METHODS) overrides the operator's
+     * saved default — the interactive panel's per-search toggle. With
+     * METHOD_CATEGORIES the query carries the Torznab category scope; METHOD_RAW
+     * omits it entirely (some indexers ignore or mis-map category filters);
+     * METHOD_FILTERED also omits it, then drops results the app can positively
+     * classify as the wrong content type.
+     *
      * @return list<ReleaseCandidate>
      */
-    public function search(ReleaseSearchPlan $plan): array
+    public function search(ReleaseSearchPlan $plan, ?string $searchMethod = null): array
     {
         $row = $this->integrations->findByKind(Integration::KIND_PROWLARR);
         if ($row === null || !$row->isEnabled()) {
             return [];
         }
         $config = $this->integrations->getProwlarrConfig();
+        $method = $searchMethod !== null && in_array($searchMethod, ProwlarrConfig::METHODS, true)
+            ? $searchMethod
+            : $config->searchMethod;
         $isAudiobook = $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK;
-        $categories = self::withParentCategories($isAudiobook ? $config->categories : self::EBOOK_CATEGORIES);
+
+        $query = [
+            'query' => $plan->primaryQuery(),
+            'type'  => 'search',
+            'limit' => self::MAX_RESULTS,
+        ];
+        if ($method === ProwlarrConfig::METHOD_CATEGORIES) {
+            $query['categories'] = self::withParentCategories($isAudiobook ? $config->categories : self::EBOOK_CATEGORIES);
+        }
 
         try {
             $response = $this->httpClient->request('GET', $this->baseUrl($row) . self::SEARCH_PATH, [
                 'headers' => ['X-Api-Key' => (string) ($row->getCredentials()['token'] ?? '')],
-                'query'   => [
-                    'query'      => $plan->primaryQuery(),
-                    'categories' => $categories,
-                    'type'       => 'search',
-                    'limit'      => self::MAX_RESULTS,
-                ],
+                'query'   => $query,
                 'timeout' => self::TIMEOUT_SECONDS,
             ]);
             $rows = $response->toArray();
@@ -84,7 +98,60 @@ final class ProwlarrClient
             return [];
         }
 
-        return self::mapResults($rows, $plan->contentType);
+        $candidates = self::mapResults($rows, $plan->contentType);
+        if ($method === ProwlarrConfig::METHOD_FILTERED) {
+            $candidates = self::filterByContentType($candidates, $plan->contentType);
+        }
+
+        return $candidates;
+    }
+
+    /**
+     * The post-search half of METHOD_FILTERED: keep a candidate unless it is
+     * positively classified as the *other* content type. Classification prefers
+     * the category-derived type (extra['type']); rows without a usable category
+     * fall back to a format token in the title, scanned across both extension
+     * sets. Unclassifiable rows are kept — the scorer downstream ranks them, and
+     * dropping them would silently hide releases from indexers with bare titles.
+     *
+     * @param list<ReleaseCandidate> $candidates
+     *
+     * @return list<ReleaseCandidate>
+     */
+    public static function filterByContentType(array $candidates, string $contentType): array
+    {
+        if (!in_array($contentType, [ReleaseCandidate::CONTENT_AUDIOBOOK, ReleaseCandidate::CONTENT_EBOOK], true)) {
+            return $candidates;
+        }
+
+        return array_values(array_filter(
+            $candidates,
+            static function (ReleaseCandidate $c) use ($contentType): bool {
+                $type = $c->extra['type'] ?? null;
+                if ($type === null) {
+                    $type = self::contentTypeFromFormatToken($c->title);
+                }
+
+                return $type === null || $type === $contentType;
+            },
+        ));
+    }
+
+    /**
+     * Classify a release title by the format token it carries ("[M4B]", ".epub"),
+     * checking the audio extensions first, then the ebook ones. Null when the
+     * title names no known format.
+     */
+    private static function contentTypeFromFormatToken(string $title): ?string
+    {
+        if (self::matchExtension($title, AudioFormat::EXTENSIONS) !== null) {
+            return ReleaseCandidate::CONTENT_AUDIOBOOK;
+        }
+        if (self::matchExtension($title, EbookFormat::EXTENSIONS) !== null) {
+            return ReleaseCandidate::CONTENT_EBOOK;
+        }
+
+        return null;
     }
 
     /**
@@ -212,13 +279,27 @@ final class ProwlarrClient
 
     /**
      * Derive a format token from a release title (e.g. a "[M4B]" tag or an ".epub"
-     * mention), scanning the audio or ebook extension set per content type. Returns
-     * the lowercased format, or null when none is found.
+     * mention). The extension set matching the searched content type is scanned
+     * first so a title naming both resolves to the wanted kind; the other set is a
+     * fallback so raw/unfiltered searches still label off-type rows instead of
+     * showing "?". Returns the lowercased format, or null when none is found.
      */
     private static function deriveFormat(string $title, bool $audio): ?string
     {
+        $preferred = $audio ? AudioFormat::EXTENSIONS : EbookFormat::EXTENSIONS;
+        $fallback  = $audio ? EbookFormat::EXTENSIONS : AudioFormat::EXTENSIONS;
+
+        return self::matchExtension($title, $preferred) ?? self::matchExtension($title, $fallback);
+    }
+
+    /**
+     * First extension from $extensions appearing as a word in the title, or null.
+     *
+     * @param list<string> $extensions
+     */
+    private static function matchExtension(string $title, array $extensions): ?string
+    {
         $lower = strtolower($title);
-        $extensions = $audio ? AudioFormat::EXTENSIONS : EbookFormat::EXTENSIONS;
         foreach ($extensions as $ext) {
             if (preg_match('/\b' . preg_quote($ext, '/') . '\b/', $lower) === 1) {
                 return $ext;

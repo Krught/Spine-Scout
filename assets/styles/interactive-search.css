@@ -279,6 +279,9 @@
 .ix-pct--ok { color: var(--success, #4ade80); }
 .ix-pct--low { color: var(--muted, #9aa0ad); }
 .ix-info a { color: var(--accent, #5b8cff); text-decoration: none; }
+/* Format outside the operator's accepted-formats list — probably not the file
+ * type the user wants; the tooltip carries the list. */
+.ix-format--warn { color: var(--danger, #ff6b6b); font-weight: 600; cursor: help; }
 
 /* --- torrent results: seed/leech health and indexer flags --- */
 .ix-sl { font-variant-numeric: tabular-nums; color: var(--muted, #9aa0ad); }

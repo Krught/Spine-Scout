@@ -49,6 +49,22 @@
                        spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="3030">
                 <p class="form-note">Comma-separated audiobook categories. <code>3030</code> is Audio/Audiobook. (Book torrents search the Books categories automatically.)</p>
             </div>
+            <div class="field">
+                <label for="prowlarr_search_method">Search method</label>
+                <select id="prowlarr_search_method" name="prowlarr_search_method">
+                    <option value="categories" {{ prowlarr_config.searchMethod == 'categories' ? 'selected' : '' }}>Category filter — send the Torznab categories with the query</option>
+                    <option value="raw" {{ prowlarr_config.searchMethod == 'raw' ? 'selected' : '' }}>Raw — no category filter, show everything</option>
+                    <option value="filtered" {{ prowlarr_config.searchMethod == 'filtered' ? 'selected' : '' }}>Post-search filter — raw query, then drop wrong-type releases</option>
+                </select>
+                <p class="form-note">
+                    Some indexers ignore or mis-map category filters and return nothing under
+                    <em>Category filter</em>. <em>Raw</em> queries without a category scope;
+                    <em>Post-search filter</em> does the same, then removes results the app can tell are
+                    the wrong kind (ebook vs audiobook) from their categories or file format.
+                    This is the default for automatic fulfillment; the interactive search panel can
+                    override it per search.
+                </p>
+            </div>
             <div class="field" data-controller="connection-test"
                  data-connection-test-url-value="{{ path('settings_audiobooks_test_prowlarr') }}"
                  data-connection-test-token-value="{{ csrf_token('settings_audiobooks_test') }}">

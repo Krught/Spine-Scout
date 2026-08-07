@@ -25,6 +25,7 @@ import { Controller } from '@hotwired/stimulus';
 export default class extends Controller {
     static targets = [
         'panel', 'sources', 'mirrors', 'mirrorRow',
+        'methods', 'methodRow',
         'title', 'author', 'isbn',
         'status', 'searchUrl', 'results',
         'spinner', 'searchButton', 'modeChip',
@@ -43,6 +44,10 @@ export default class extends Controller {
         this.sourcesLoaded = false;
         this.activeSource = null;
         this.activeMirror = null;
+        // Torrent search method (categories / raw / filtered). Null until the
+        // torrent source is activated, then seeded from the operator's saved
+        // default; the toggle only overrides it for this panel.
+        this.searchMethod = null;
         this.sourceList = [];
         this.selectedRow = null;
         this.runSeq = 0;
@@ -83,10 +88,12 @@ export default class extends Controller {
             this.selectedRow = null;
             this.activeSource = null;
             this.activeMirror = null;
+            this.searchMethod = null;
             this.hasRun = false;
             this.resultsTarget.innerHTML = '';
             this.searchUrlTarget.textContent = '';
             this.mirrorRowTarget.hidden = true;
+            this.methodRowTarget.hidden = true;
             this.sourcesTarget.querySelectorAll('.ix-source.is-active').forEach((b) => b.classList.remove('is-active'));
         }
         this.panelTarget.hidden = false;
@@ -185,13 +192,17 @@ export default class extends Controller {
         });
 
         if (this.isTorrentSource(source)) {
-            // Torrent search is indexer-driven; there is no mirror to choose.
+            // Torrent search is indexer-driven; there is no mirror to choose,
+            // but the query-scoping method is. Starts on the saved default.
             this.activeMirror = null;
             this.mirrorsTarget.innerHTML = '';
             this.mirrorRowTarget.hidden = true;
+            if (!this.searchMethod) this.searchMethod = source.searchMethod || 'categories';
+            this.renderMethods();
         } else {
             this.activeMirror = source.mirrors[0];
             this.renderMirrors(source.mirrors);
+            this.methodRowTarget.hidden = true;
         }
         // Only re-fire once the user has started searching; before the first run
         // switching sources is pure selection.
@@ -210,6 +221,39 @@ export default class extends Controller {
                 );
             })
             .join('');
+    }
+
+    /**
+     * The torrent method toggle, styled like the mirror buttons. Three fixed
+     * options; the tooltip carries what each one actually does.
+     */
+    renderMethods() {
+        const options = [
+            { id: 'categories', label: 'Categories', hint: 'Send the configured Torznab categories with the query (classic scope)' },
+            { id: 'raw', label: 'Raw', hint: 'No category filter — every indexer result shows' },
+            { id: 'filtered', label: 'Filtered', hint: 'No category filter on the query; results recognizably the wrong type (ebook vs audiobook) are dropped afterwards' },
+        ];
+        this.methodsTarget.innerHTML = options
+            .map((o) => {
+                const active = o.id === this.searchMethod ? ' is-active' : '';
+                return (
+                    `<button type="button" class="ix-mirror${active}" data-method="${o.id}"` +
+                    ` data-action="interactive-search#selectMethod" title="${this.escAttr(o.hint)}">` +
+                    `${this.esc(o.label)}</button>`
+                );
+            })
+            .join('');
+        this.methodRowTarget.hidden = false;
+    }
+
+    selectMethod(event) {
+        const method = event.currentTarget.dataset.method;
+        if (!method || method === this.searchMethod) return;
+        this.searchMethod = method;
+        this.methodsTarget.querySelectorAll('.ix-mirror').forEach((b) => {
+            b.classList.toggle('is-active', b.dataset.method === method);
+        });
+        if (this.hasRun) this.runSearch();
     }
 
     selectMirror(event) {
@@ -260,6 +304,7 @@ export default class extends Controller {
             const data = await this.post(this.runUrlValue, {
                 source: this.activeSource,
                 mirror: torrentMode ? undefined : this.activeMirror,
+                searchMethod: torrentMode ? this.searchMethod || undefined : undefined,
                 bookId: this.bookIdValue > 0 ? this.bookIdValue : undefined,
                 title: this.titleTarget.value.trim(),
                 author: this.authorTarget.value.trim(),
@@ -272,6 +317,9 @@ export default class extends Controller {
                 this.searchUrlTarget.innerHTML =
                     `Query: <a href="${this.escAttr(data.searchUrl)}" target="_blank" rel="noopener noreferrer">${this.esc(data.searchUrl)}</a>`;
             }
+            this.acceptedFormats = Array.isArray(data.acceptedFormats)
+                ? data.acceptedFormats.map((f) => String(f).toLowerCase())
+                : [];
             this.renderResults(data.results || [], data.threshold ?? 0, data.truncated);
         } catch (e) {
             if (seq !== this.runSeq) return;
@@ -306,6 +354,7 @@ export default class extends Controller {
         const controls = [];
         if (this.hasSourcesTarget) controls.push(...this.sourcesTarget.querySelectorAll('button'));
         if (this.hasMirrorsTarget) controls.push(...this.mirrorsTarget.querySelectorAll('button'));
+        if (this.hasMethodsTarget) controls.push(...this.methodsTarget.querySelectorAll('button'));
         if (this.hasTitleTarget) controls.push(this.titleTarget);
         if (this.hasAuthorTarget) controls.push(this.authorTarget);
         if (this.hasIsbnTarget) controls.push(this.isbnTarget);
@@ -415,6 +464,22 @@ export default class extends Controller {
         );
     }
 
+    /**
+     * Format cell body for a known format. When the operator's Best Match
+     * policy limits accepted formats, a format outside that list draws in
+     * warning red — a heads-up that this may not be the file type the user
+     * wants (the automatic pipeline would skip it entirely).
+     */
+    formatCell(format) {
+        const accepted = this.acceptedFormats || [];
+        const normalized = String(format).toLowerCase().replace(/^\./, '');
+        if (!accepted.length || accepted.includes(normalized)) {
+            return this.esc(format);
+        }
+        const hint = `Not in your accepted formats (${accepted.join(', ')}) — automatic search would skip this release.`;
+        return `<span class="ix-format--warn" title="${this.escAttr(hint)}">${this.esc(format)}</span>`;
+    }
+
     infoCell(r) {
         const info = r.infoUrl
             ? `<a href="${this.escAttr(r.infoUrl)}" target="_blank" rel="noopener noreferrer" data-action="click->interactive-search#stop">↗</a>`
@@ -428,7 +493,7 @@ export default class extends Controller {
             this.rowLead(r, i, noLinkHint, 'no link') +
             `<td>${this.esc(r.title || '—')}</td>` +
             `<td>${this.esc(r.author || '—')}</td>` +
-            `<td>${this.esc(r.format || '—')}</td>` +
+            `<td>${r.format ? this.formatCell(r.format) : '—'}</td>` +
             `<td>${this.esc(r.size || '—')}</td>` +
             `<td>${this.esc(r.year || '—')}</td>` +
             this.infoCell(r) +
@@ -509,7 +574,7 @@ export default class extends Controller {
         // A blank Format cell reads as "broken"; an explicit muted ? reads as
         // "unknown", with the type chip still saying what kind of release it is.
         const format = r.format
-            ? this.esc(r.format)
+            ? this.formatCell(r.format)
             : '<span class="ix-unknown" title="Main file type not reported by the indexer">?</span>';
         return (
             this.rowLead(r, i, noLinkHint, 'no link') +
