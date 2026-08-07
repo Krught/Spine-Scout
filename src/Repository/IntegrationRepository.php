@@ -165,7 +165,10 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
             return DirectDownloadConfig::default();
         }
         $raw = $row->getOptions()['config'] ?? null;
-        return DirectDownloadConfig::fromArray(is_array($raw) ? $raw : null, $this->mirrorNormalizer);
+        // The row's enabled column rides along as the master switch for the mirror
+        // sources; it is not part of the options blob (a missing row means "enabled",
+        // matching DirectDownloadConfig::default()).
+        return DirectDownloadConfig::fromArray(is_array($raw) ? $raw : null, $this->mirrorNormalizer, $row->isEnabled());
     }
 
     public function saveDirectDownloadConfig(

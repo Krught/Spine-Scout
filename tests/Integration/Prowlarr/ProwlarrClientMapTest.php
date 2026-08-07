@@ -6,6 +6,7 @@ namespace App\Tests\Integration\Prowlarr;
 
 use App\Integration\Prowlarr\ProwlarrClient;
 use App\Search\Source\ReleaseCandidate;
+use App\Search\Torrent\ProwlarrConfig;
 use PHPUnit\Framework\TestCase;
 
 final class ProwlarrClientMapTest extends TestCase
@@ -195,6 +196,27 @@ final class ProwlarrClientMapTest extends TestCase
         self::assertSame([7000, 7020], ProwlarrClient::withParentCategories([7000, 7020]));
         self::assertSame([3030, 3040, 3000], ProwlarrClient::withParentCategories([3030, 3040]));
         self::assertSame([], ProwlarrClient::withParentCategories([]));
+    }
+
+    /**
+     * The category filter a METHOD_CATEGORIES search sends: audiobook searches use
+     * the configured audiobook list, everything else the configured book list —
+     * both widened with their Torznab parents.
+     */
+    public function testCategoryScopePicksTheListForTheContentType(): void
+    {
+        $config = ProwlarrConfig::fromArray(['categories' => [3030], 'bookCategories' => [7020, 7060]]);
+
+        self::assertSame([3030, 3000], ProwlarrClient::categoryScope($config, ReleaseCandidate::CONTENT_AUDIOBOOK));
+        self::assertSame([7020, 7060, 7000], ProwlarrClient::categoryScope($config, ReleaseCandidate::CONTENT_EBOOK));
+    }
+
+    public function testCategoryScopeUsesTheDefaultsWhenUnconfigured(): void
+    {
+        $config = ProwlarrConfig::default();
+
+        self::assertSame([3030, 3000], ProwlarrClient::categoryScope($config, ReleaseCandidate::CONTENT_AUDIOBOOK));
+        self::assertSame([7000, 7020], ProwlarrClient::categoryScope($config, ReleaseCandidate::CONTENT_EBOOK));
     }
 
     public function testLeechersAreNullWhenAbsentOrNonNumeric(): void

@@ -8,18 +8,30 @@ use App\Support\AudioFormat;
 
 /**
  * Moves a finished audiobook torrent out of qBittorrent's completed folder into
- * the library, in the two stages the operator flow describes: copy the audio
- * file(s) into a Spine Scout staging dir, then move that folder into the final
+ * the library, in the two stages the operator flow describes: copy the payload
+ * into a Spine Scout staging dir, then move that folder into the final
  * destination. We copy (never move) from qBittorrent's dir so the torrent keeps
  * seeding.
  *
- * Audiobooks are often a folder of .mp3 or a single .m4b, so this works on a tree
- * — unlike the single-file FileMover used for ebooks. Only audio files are taken;
- * cover art / nfo / sample junk is left behind. Collision-safe and resilient to
- * cross-device moves. Throws on any failure so the caller marks the job errored.
+ * The whole release folder is preserved: every regular file is staged with its
+ * relative path intact (multi-disc CD1/CD2 trees keep their structure), so
+ * companion files (.cue/.nfo/.pdf/artwork) travel with the audio. The payload
+ * must still contain at least one audio file or the move is refused. After
+ * staging, cover art is normalized for Grimmory's folder-cover fallback, which
+ * only recognizes a root-level cover/folder/image.{jpg,jpeg,png,webp,gif,bmp}:
+ * when no such file exists at the staged root, the largest image anywhere in
+ * the tree is copied (original kept) to the root as cover.<ext>. Collision-safe
+ * and resilient to cross-device moves. Throws on any failure so the caller
+ * marks the job errored.
  */
 final class TorrentMover
 {
+    /** Extensions Grimmory's folder-cover fallback accepts (lowercase). */
+    private const COVER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'];
+
+    /** Root-level base names Grimmory's folder-cover fallback accepts (lowercase). */
+    private const COVER_BASENAMES = ['cover', 'folder', 'image'];
+
     public function __construct(private readonly string $stagingBaseDir)
     {
     }
@@ -70,15 +82,25 @@ final class TorrentMover
     }
 
     /**
-     * Stage the audio files from $sourcePath, then move them into $destDir under a
-     * folder named $folderName. Returns the final folder path.
+     * Stage the whole payload from $sourcePath (every regular file, relative paths
+     * preserved; a single-file payload lands at the staged-folder root), normalize
+     * cover art, then move the staged folder into $destDir under a folder named
+     * $folderName. Returns the final folder path.
+     *
+     * Refuses payloads with no audio files at all — that would not be an audiobook.
      *
      * @param string $jobKey A unique-per-job token so concurrent moves don't collide in staging.
+     * @param callable(string): void|null $beforeFinalize Invoked with the staged folder path
+     *                                                    after staging and cover normalization,
+     *                                                    before the final rename — e.g. to
+     *                                                    rewrite tags on the staged tree. A
+     *                                                    throwing callback aborts the move: the
+     *                                                    staging dir is cleaned up and the
+     *                                                    exception is rethrown unchanged.
      */
-    public function move(string $sourcePath, string $destDir, string $folderName, string $jobKey): string
+    public function move(string $sourcePath, string $destDir, string $folderName, string $jobKey, ?callable $beforeFinalize = null): string
     {
-        $audioFiles = self::audioFiles($sourcePath);
-        if ($audioFiles === []) {
+        if (self::audioFiles($sourcePath) === []) {
             throw new \RuntimeException("No audio files found in torrent payload: {$sourcePath}");
         }
 
@@ -89,14 +111,36 @@ final class TorrentMover
 
         $folder = $this->safeName($folderName);
 
-        // -- Stage: copy the audio files into var/downloads/<staging>/<jobKey>/<folder>.
+        // -- Stage: copy the payload into var/downloads/<staging>/<jobKey>/<folder>.
         $stageDir = rtrim($this->stagingBaseDir, '/') . '/' . $this->safeName($jobKey) . '/' . $folder;
         $this->ensureDir($stageDir);
-        foreach ($audioFiles as $src) {
-            $target = $stageDir . '/' . $this->safeName(basename($src));
+        $sourceBase = rtrim($sourcePath, '/');
+        foreach (self::filesMatching($sourcePath, static fn (): bool => true) as $src) {
+            if ($src === $sourcePath) {
+                // Single-file payload: stage it at the staged-folder root.
+                $target = $stageDir . '/' . $this->safeName(basename($src));
+            } else {
+                // Sanitize each path segment individually so no segment can
+                // escape the staging dir, then rejoin to preserve the tree.
+                $rel = substr($src, \strlen($sourceBase) + 1);
+                $segments = array_map($this->safeName(...), explode('/', $rel));
+                $target = $stageDir . '/' . implode('/', $segments);
+                $this->ensureDir(\dirname($target));
+            }
             if (!@copy($src, $target)) {
                 $this->removeTree(\dirname($stageDir));
-                throw new \RuntimeException("Failed to stage audio file: {$src}");
+                throw new \RuntimeException("Failed to stage file: {$src}");
+            }
+        }
+
+        $this->normalizeCover($stageDir);
+
+        if ($beforeFinalize !== null) {
+            try {
+                $beforeFinalize($stageDir);
+            } catch (\Throwable $e) {
+                $this->removeTree(\dirname($stageDir));
+                throw $e;
             }
         }
 
@@ -117,6 +161,52 @@ final class TorrentMover
         @rmdir(\dirname($stageDir));
 
         return $finalDir;
+    }
+
+    /**
+     * Ensure the staged root carries a cover file Grimmory's folder-cover fallback
+     * recognizes. If one is already there, leave everything alone; otherwise copy
+     * the largest image in the tree (original kept) to the root as cover.<ext>.
+     * No images at all is fine — nothing to normalize.
+     */
+    private function normalizeCover(string $stageDir): void
+    {
+        foreach (scandir($stageDir) ?: [] as $entry) {
+            if (!is_file($stageDir . '/' . $entry)) {
+                continue;
+            }
+            $base = strtolower(pathinfo($entry, PATHINFO_FILENAME));
+            $ext = strtolower(pathinfo($entry, PATHINFO_EXTENSION));
+            if (\in_array($base, self::COVER_BASENAMES, true) && \in_array($ext, self::COVER_EXTENSIONS, true)) {
+                return;
+            }
+        }
+
+        $images = self::filesMatching(
+            $stageDir,
+            static fn (string $p): bool => \in_array(strtolower(pathinfo($p, PATHINFO_EXTENSION)), self::COVER_EXTENSIONS, true),
+        );
+        if ($images === []) {
+            return;
+        }
+
+        $largest = null;
+        $largestSize = -1;
+        foreach ($images as $image) {
+            $size = @filesize($image);
+            if ($size !== false && $size > $largestSize) {
+                $largest = $image;
+                $largestSize = $size;
+            }
+        }
+        if ($largest === null) {
+            return;
+        }
+
+        $ext = strtolower(pathinfo($largest, PATHINFO_EXTENSION));
+        if (!@copy($largest, $stageDir . '/cover.' . $ext)) {
+            throw new \RuntimeException("Failed to normalize cover image: {$largest}");
+        }
     }
 
     private function ensureDir(string $dir): void

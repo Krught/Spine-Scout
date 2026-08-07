@@ -20,6 +20,12 @@ export default class extends Controller {
         inputName: String,
         fixedOptions: { type: Boolean, default: false }, // hide remove (set is fixed)
         mode: { type: String, default: 'string' }, // 'string' | 'rows'
+        // Row ids rendered forced-inactive (rows mode): the enable checkbox is
+        // disabled and the row dimmed, but the STORED enabled state still
+        // serializes unchanged and the row can still be dragged. Absent/empty
+        // means no rows are locked, leaving other users of this controller
+        // (e.g. formatPriority) unaffected.
+        lockedIds: { type: Array, default: [] },
     };
 
     connect() {
@@ -160,11 +166,21 @@ export default class extends Controller {
         li.appendChild(label);
 
         if (this.modeValue === 'rows') {
+            // A locked row keeps its stored enabled state (still serialized by
+            // sync()) but can't be toggled; dragging stays allowed — order is
+            // harmless. Dim via inline style: the orderable-list CSS lives in
+            // settings.css, outside this feature's footprint.
+            const locked = this.lockedIdsValue.includes(item.id);
+            if (locked) {
+                li.classList.add('orderable-list__item--locked');
+                li.style.opacity = '0.5';
+            }
             const toggleLabel = document.createElement('label');
             toggleLabel.className = 'orderable-list__enabled';
             const toggle = document.createElement('input');
             toggle.type = 'checkbox';
             toggle.checked = !!item.enabled;
+            toggle.disabled = locked;
             toggle.dataset.index = String(idx);
             toggle.dataset.action = 'change->orderable-list#toggleEnabled';
             toggleLabel.appendChild(toggle);

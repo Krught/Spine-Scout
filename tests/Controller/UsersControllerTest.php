@@ -77,6 +77,7 @@ final class UsersControllerTest extends WebTestCase
             'password_confirm' => 'password-123',
             'manage_settings' => '1',
             'interactive_search' => '1',
+            'reimport' => '1',
             'auto_approve' => '1',
         ]);
 
@@ -86,6 +87,7 @@ final class UsersControllerTest extends WebTestCase
         self::assertTrue($alice->canManageSettings());
         self::assertFalse($alice->canManageUsers());
         self::assertTrue($alice->canUseInteractiveSearch());
+        self::assertTrue($alice->canReimport());
         self::assertTrue($alice->isAutoApproveRequests());
         self::assertFalse($alice->isMaster());
     }
@@ -101,6 +103,7 @@ final class UsersControllerTest extends WebTestCase
             '_token' => $token,
             'username' => 'bob',
             'manage_users' => '1',
+            'reimport' => '1',
             'auto_approve' => '1',
         ]);
 
@@ -109,7 +112,20 @@ final class UsersControllerTest extends WebTestCase
         $bob = $this->users->findOneByUsername('bob');
         self::assertTrue($bob->canManageUsers());
         self::assertFalse($bob->canManageSettings());
+        self::assertTrue($bob->canReimport());
         self::assertTrue($bob->isAutoApproveRequests());
+
+        // The edit button surfaces the granted flag; revoking round-trips to off.
+        $crawler = $this->client->request('GET', '/users');
+        self::assertSame('1', $crawler->filter('button[data-user-modal-id-param="'.$bob->getId().'"]')
+            ->attr('data-user-modal-reimport-param'));
+        $this->client->request('POST', '/users/'.$bob->getId().'/update', [
+            '_token' => $this->editToken($bob->getId()),
+            'username' => 'bob',
+        ]);
+        self::assertResponseRedirects('/users');
+        $this->em->clear();
+        self::assertFalse($this->users->findOneByUsername('bob')->canReimport());
     }
 
     public function testInteractiveSearchCapabilityGrantAndRevokeRoundTrip(): void

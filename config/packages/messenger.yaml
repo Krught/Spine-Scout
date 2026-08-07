@@ -34,3 +34,5 @@ framework:
             App\Message\PollTorrentJobs: async
             App\Message\RewriteAllAudiobookSidecars: async
             App\Message\RewriteAudiobookSidecar: async
+            App\Message\TriggerGrimmorySidecarImport: async
+            App\Message\ReimportDownloadJob: async

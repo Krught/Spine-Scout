@@ -30,6 +30,19 @@ final class LibGenSourceTest extends TestCase
         self::assertStringContainsString('mirror', (string) $noMirrors->getUnavailableReason());
     }
 
+    public function testIsUnavailableWithGlobalMessageWhenMasterSwitchOff(): void
+    {
+        // Source tick ON and mirrors configured — the master switch alone turns it
+        // off, and the reason names the global switch, not the per-source tick.
+        $source = $this->source($this->config(true, ['https://lg.test'], master: false), new MockHttpClient());
+
+        self::assertFalse($source->isAvailable());
+        self::assertSame(
+            'Direct downloads are disabled in Settings → Direct downloads.',
+            $source->getUnavailableReason(),
+        );
+    }
+
     public function testSearchMapsRowsToCandidates(): void
     {
         $client = new MockHttpClient(fn (string $m, string $url): MockResponse => new MockResponse($this->fixture('libgen_search_results.html')));
@@ -82,12 +95,12 @@ final class LibGenSourceTest extends TestCase
     }
 
     /** @param list<string> $mirrors */
-    private function config(bool $enabled, array $mirrors): DirectDownloadConfig
+    private function config(bool $enabled, array $mirrors, bool $master = true): DirectDownloadConfig
     {
         return DirectDownloadConfig::fromArray([
             'indexerPriority' => [['id' => self::ID, 'enabled' => $enabled]],
             'mirrors'         => [self::ID => $mirrors],
-        ], new MirrorListNormalizer());
+        ], new MirrorListNormalizer(), $master);
     }
 
     private function source(DirectDownloadConfig $config, MockHttpClient $client): LibGenSource

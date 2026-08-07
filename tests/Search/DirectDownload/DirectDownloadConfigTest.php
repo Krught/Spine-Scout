@@ -93,6 +93,72 @@ final class DirectDownloadConfigTest extends TestCase
         self::assertSame(['annas_archive', 'libgen'], array_map(static fn ($r) => $r['id'], $updated->indexerPriority));
     }
 
+    public function testMasterSwitchOffForceDisablesMirrorSourcesButNotTorrent(): void
+    {
+        $config = DirectDownloadConfig::fromArray([
+            'indexerPriority' => [
+                ['id' => 'annas_archive', 'enabled' => true],
+                ['id' => 'libgen', 'enabled' => true],
+                ['id' => 'zlibrary', 'enabled' => true],
+                ['id' => 'welib', 'enabled' => true],
+                ['id' => 'torrent', 'enabled' => true],
+            ],
+            'mirrors' => [],
+        ], new MirrorListNormalizer(), directDownloadsEnabled: false);
+
+        self::assertFalse($config->directDownloadsEnabled);
+        // All four HTTP mirror sources go dark regardless of their own tick…
+        self::assertFalse($config->isIndexerEnabled('annas_archive'));
+        self::assertFalse($config->isIndexerEnabled('libgen'));
+        self::assertFalse($config->isIndexerEnabled('zlibrary'));
+        self::assertFalse($config->isIndexerEnabled('welib'));
+        // …while the torrent row keeps following its stored tick.
+        self::assertTrue($config->isIndexerEnabled('torrent'));
+        // The stored ticks themselves are untouched (forced-disabled, not overwritten).
+        self::assertTrue($config->indexerPriority[0]['enabled']);
+    }
+
+    public function testMasterSwitchOffRespectsTorrentStoredTick(): void
+    {
+        $config = DirectDownloadConfig::fromArray([
+            'indexerPriority' => [['id' => 'torrent', 'enabled' => false]],
+            'mirrors'         => [],
+        ], new MirrorListNormalizer(), directDownloadsEnabled: false);
+
+        self::assertFalse($config->isIndexerEnabled('torrent'));
+    }
+
+    public function testMasterSwitchIsNotPartOfTheStoredBlobAndReenableRestoresTicks(): void
+    {
+        $config = DirectDownloadConfig::fromArray([
+            'indexerPriority' => [
+                ['id' => 'annas_archive', 'enabled' => true],
+                ['id' => 'libgen', 'enabled' => false],
+            ],
+            'mirrors' => [],
+        ], new MirrorListNormalizer(), directDownloadsEnabled: false);
+
+        // The flag mirrors the Integration row's enabled column, never the blob.
+        self::assertArrayNotHasKey('directDownloadsEnabled', $config->toArray());
+
+        // Round-trip the blob with the master back on: the operator's per-source
+        // choices come back exactly as saved.
+        $reenabled = DirectDownloadConfig::fromArray($config->toArray(), new MirrorListNormalizer(), directDownloadsEnabled: true);
+        self::assertTrue($reenabled->directDownloadsEnabled);
+        self::assertTrue($reenabled->isIndexerEnabled('annas_archive'));
+        self::assertFalse($reenabled->isIndexerEnabled('libgen'));
+    }
+
+    public function testWithIndexerEnabledPreservesTheMasterSwitchFlag(): void
+    {
+        $config = DirectDownloadConfig::fromArray([
+            'indexerPriority' => [['id' => 'annas_archive', 'enabled' => true]],
+            'mirrors'         => [],
+        ], new MirrorListNormalizer(), directDownloadsEnabled: false);
+
+        self::assertFalse($config->withIndexerEnabled('libgen', true)->directDownloadsEnabled);
+    }
+
     public function testWithIndexerEnabledAppendsAbsentId(): void
     {
         $config = DirectDownloadConfig::fromArray([

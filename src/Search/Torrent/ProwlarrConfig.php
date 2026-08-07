@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Search\Torrent;
 
 /**
- * Operator tuning for Prowlarr audiobook search + torrent matching. The connection
+ * Operator tuning for Prowlarr book/audiobook search + torrent matching. The connection
  * itself (base URL + API key) lives on the Integration row of kind `prowlarr`
  * (baseUrl column + credentials['token']); this value object holds only the
  * search/scoring knobs stored in that row's options['config'] blob.
@@ -16,6 +16,9 @@ final class ProwlarrConfig
 {
     /** Newznab/Torznab "Audio/Audiobook" category. The default audiobook search scope. */
     public const DEFAULT_CATEGORIES = [3030];
+
+    /** Newznab/Torznab "Books" + "Books/EBook" categories. The default book search scope. */
+    public const DEFAULT_BOOK_CATEGORIES = [7000, 7020];
 
     /** Pass the Torznab category ids with the query (the classic scope). */
     public const METHOD_CATEGORIES = 'categories';
@@ -44,7 +47,8 @@ final class ProwlarrConfig
     ];
 
     /**
-     * @param list<int>                                                    $categories  Torznab category ids to search
+     * @param list<int>                                                    $categories  Torznab category ids for audiobook searches
+     * @param list<int>                                                    $bookCategories Torznab category ids for book (ebook) searches
      * @param int                                                          $minSeeders  Drop releases below this seed count
      * @param int|null                                                     $maxSizeBytes Drop releases larger than this (guards against pathological packs); null = no cap
      * @param array{match: float, seeders: float, size: float, format: float} $weights  Relative scoring weights
@@ -52,6 +56,7 @@ final class ProwlarrConfig
      */
     public function __construct(
         public readonly array $categories = self::DEFAULT_CATEGORIES,
+        public readonly array $bookCategories = self::DEFAULT_BOOK_CATEGORIES,
         public readonly int $minSeeders = self::DEFAULT_MIN_SEEDERS,
         public readonly ?int $maxSizeBytes = null,
         public readonly array $weights = self::DEFAULT_WEIGHTS,
@@ -73,16 +78,8 @@ final class ProwlarrConfig
             return self::default();
         }
 
-        $categories = [];
-        foreach ((array) ($raw['categories'] ?? []) as $c) {
-            if (is_int($c) || (is_string($c) && ctype_digit($c))) {
-                $categories[] = (int) $c;
-            }
-        }
-        $categories = array_values(array_unique($categories));
-        if ($categories === []) {
-            $categories = self::DEFAULT_CATEGORIES;
-        }
+        $categories = self::normalizeCategoryList($raw['categories'] ?? [], self::DEFAULT_CATEGORIES);
+        $bookCategories = self::normalizeCategoryList($raw['bookCategories'] ?? [], self::DEFAULT_BOOK_CATEGORIES);
 
         $minSeeders = isset($raw['minSeeders']) && is_numeric($raw['minSeeders'])
             ? max(0, (int) $raw['minSeeders'])
@@ -107,18 +104,40 @@ final class ProwlarrConfig
             $searchMethod = self::METHOD_CATEGORIES;
         }
 
-        return new self($categories, $minSeeders, $maxSizeBytes, $weights, $searchMethod);
+        return new self($categories, $bookCategories, $minSeeders, $maxSizeBytes, $weights, $searchMethod);
+    }
+
+    /**
+     * Coerce a raw category list to unique ints, falling back to $default when
+     * nothing usable remains (an empty input means "use the default scope").
+     *
+     * @param list<int> $default
+     *
+     * @return list<int>
+     */
+    private static function normalizeCategoryList(mixed $raw, array $default): array
+    {
+        $categories = [];
+        foreach ((array) $raw as $c) {
+            if (is_int($c) || (is_string($c) && ctype_digit($c))) {
+                $categories[] = (int) $c;
+            }
+        }
+        $categories = array_values(array_unique($categories));
+
+        return $categories === [] ? $default : $categories;
     }
 
     /** @return array<string, mixed> */
     public function toArray(): array
     {
         return [
-            'categories'   => $this->categories,
-            'minSeeders'   => $this->minSeeders,
-            'maxSizeBytes' => $this->maxSizeBytes,
-            'weights'      => $this->weights,
-            'searchMethod' => $this->searchMethod,
+            'categories'     => $this->categories,
+            'bookCategories' => $this->bookCategories,
+            'minSeeders'     => $this->minSeeders,
+            'maxSizeBytes'   => $this->maxSizeBytes,
+            'weights'        => $this->weights,
+            'searchMethod'   => $this->searchMethod,
         ];
     }
 

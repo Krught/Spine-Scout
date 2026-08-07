@@ -16,10 +16,10 @@ use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpExceptionIn
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
- * Searches Prowlarr's aggregated indexers for audiobook torrents and maps the
- * results to ReleaseCandidate. Connection details (base URL + API key) come from
- * the `prowlarr` Integration row; the search scope (categories) from its
- * ProwlarrConfig. Network errors never throw out of search()/testConnection() —
+ * Searches Prowlarr's aggregated indexers for book and audiobook torrents and maps
+ * the results to ReleaseCandidate. Connection details (base URL + API key) come from
+ * the `prowlarr` Integration row; the search scope (audiobook/book categories) from
+ * its ProwlarrConfig. Network errors never throw out of search()/testConnection() —
  * they degrade to an empty result / a failed status so the caller can fail over.
  */
 final class ProwlarrClient
@@ -30,9 +30,6 @@ final class ProwlarrClient
 
     private const TIMEOUT_SECONDS = 30;
     private const MAX_RESULTS = 100;
-
-    /** Torznab "Books" / "Books/EBook" categories used when searching for book torrents. */
-    private const EBOOK_CATEGORIES = [7000, 7020];
 
     public function __construct(
         private readonly HttpClientInterface $httpClient,
@@ -52,8 +49,9 @@ final class ProwlarrClient
     }
 
     /**
-     * Search Prowlarr for the plan's book and return audiobook torrent candidates.
-     * Returns [] when Prowlarr is unconfigured or the request fails.
+     * Search Prowlarr for the plan's book and return torrent candidates of the
+     * plan's content type. Returns [] when Prowlarr is unconfigured or the
+     * request fails.
      *
      * $searchMethod (one of ProwlarrConfig::METHODS) overrides the operator's
      * saved default — the interactive panel's per-search toggle. With
@@ -74,7 +72,6 @@ final class ProwlarrClient
         $method = $searchMethod !== null && in_array($searchMethod, ProwlarrConfig::METHODS, true)
             ? $searchMethod
             : $config->searchMethod;
-        $isAudiobook = $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK;
 
         $query = [
             'query' => $plan->primaryQuery(),
@@ -82,7 +79,7 @@ final class ProwlarrClient
             'limit' => self::MAX_RESULTS,
         ];
         if ($method === ProwlarrConfig::METHOD_CATEGORIES) {
-            $query['categories'] = self::withParentCategories($isAudiobook ? $config->categories : self::EBOOK_CATEGORIES);
+            $query['categories'] = self::categoryScope($config, $plan->contentType);
         }
 
         try {
@@ -152,6 +149,23 @@ final class ProwlarrClient
         }
 
         return null;
+    }
+
+    /**
+     * The Torznab category filter a METHOD_CATEGORIES search sends for the given
+     * content type: the operator's audiobook list for audiobook searches, the book
+     * list for everything else, each widened with its parent categories. Pure and
+     * static so the scope selection is unit-testable without HTTP.
+     *
+     * @return list<int>
+     */
+    public static function categoryScope(ProwlarrConfig $config, string $contentType): array
+    {
+        $categories = $contentType === ReleaseCandidate::CONTENT_AUDIOBOOK
+            ? $config->categories
+            : $config->bookCategories;
+
+        return self::withParentCategories($categories);
     }
 
     /**

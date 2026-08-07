@@ -8,7 +8,6 @@
              data-requests-scroll-page-value="{{ page }}"
              data-requests-scroll-pages-value="{{ pages }}"
              {% if is_granted('ROLE_ADMIN') or is_granted('ROLE_MANAGE_SETTINGS') %}
-             data-request-search-toggle-url-value="{{ path('requests_pipeline_toggle') }}"
              data-request-search-manual-next-url-value="{{ path('requests_manual_next') }}"
              data-request-search-token-value="{{ csrf_token('requests_pipeline') }}"
              {% endif %}>
@@ -19,13 +18,9 @@
                 {% set automatic = automatic_fulfillment ?? true %}
                 <div class="requests-header-controls">
                     {% if is_granted('ROLE_MANAGE_SETTINGS') %}
-                        <label class="field-checkbox requests-pipeline-toggle">
-                            <input type="checkbox"
-                                   data-request-search-target="pipelineToggle"
-                                   data-action="change->request-search#togglePipeline"
-                                   {{ automatic ? 'checked' : '' }}>
-                            <span>Automatic fulfillment</span>
-                        </label>
+                        <span class="requests-subtitle requests-pipeline-state">
+                            Automatic fulfillment: {{ automatic ? 'on' : 'off' }}
+                        </span>
                     {% endif %}
                     {% if is_granted('ROLE_ADMIN') %}
                         <button type="button"

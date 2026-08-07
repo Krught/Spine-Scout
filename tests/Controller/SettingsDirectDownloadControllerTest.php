@@ -43,23 +43,37 @@ final class SettingsDirectDownloadControllerTest extends WebTestCase
         self::assertSelectorExists('input[type="hidden"][name="mirrors[zlibrary]"]');
         self::assertSelectorExists('input[type="hidden"][name="mirrors[welib]"]');
         self::assertSelectorExists('input[name="enabled"]');
+        // Source priority moved to Settings → General; this page links there instead.
+        self::assertSelectorNotExists('input[name="indexerPriority"]');
+        self::assertSelectorExists('a[href="/settings/general"]');
+        // Ebook delivery moved to Settings → Ebooks; this page links there instead.
+        self::assertSelectorNotExists('input[name="outputDirectory"]');
+        self::assertSelectorNotExists('input[name="filenameTemplate"]');
+        self::assertSelectorExists('a[href="/settings/ebooks"]');
     }
 
-    public function testPostPersistsMirrorsAndPriorityForKnownSources(): void
+    public function testPostPersistsMirrorsAndPreservesStoredPriority(): void
     {
+        // Priority is owned by Settings → General now: saving this page must keep
+        // the stored list byte-for-byte — even if a stale/hostile form posts one.
+        $this->seedDirectDownloadConfig([
+            'indexerPriority' => [
+                ['id' => 'libgen', 'enabled' => true],
+                ['id' => 'annas_archive', 'enabled' => false],
+                ['id' => 'zlibrary', 'enabled' => true],
+                ['id' => 'welib', 'enabled' => false],
+                ['id' => 'torrent', 'enabled' => true],
+            ],
+        ], enabled: true);
+
         $this->client->loginUser($this->loadAdmin());
         $token = $this->fetchCsrfToken('/settings/direct-download');
 
         $this->client->request('POST', '/settings/direct-download', [
             '_token'          => $token,
             'enabled'         => '1',
-            'indexerPriority' => json_encode([
-                ['id' => 'annas_archive', 'enabled' => true],
-                ['id' => 'libgen', 'enabled' => false],
-                ['id' => 'bogus', 'enabled' => true], // unknown id — must be dropped
-                ['id' => 'zlibrary', 'enabled' => true],
-                ['id' => 'welib', 'enabled' => true],
-            ]),
+            // Not a form field on this page any more — must be ignored.
+            'indexerPriority' => json_encode([['id' => 'welib', 'enabled' => true]]),
             // Mirror blobs come from the token input's newline-joined hidden field.
             'mirrors' => [
                 'annas_archive' => "mirror-a.example\nhttps://mirror-a-2.example/",
@@ -82,13 +96,79 @@ final class SettingsDirectDownloadControllerTest extends WebTestCase
             $config->mirrorsFor('annas_archive')->toArray(),
         );
         self::assertTrue($config->mirrorsFor('libgen')->isEmpty());
+
+        // The stored priority (order + ticks) survives untouched.
+        self::assertSame(
+            [
+                ['id' => 'libgen', 'enabled' => true],
+                ['id' => 'annas_archive', 'enabled' => false],
+                ['id' => 'zlibrary', 'enabled' => true],
+                ['id' => 'welib', 'enabled' => false],
+                ['id' => 'torrent', 'enabled' => true],
+            ],
+            $config->indexerPriority,
+        );
+    }
+
+    public function testPostWithoutDeliveryFieldsPreservesStoredDelivery(): void
+    {
+        // Ebook delivery is owned by Settings → Ebooks now: this form no longer
+        // posts outputDirectory/filenameTemplate, so its save must keep the
+        // stored values instead of defaulting them away.
+        $this->seedDirectDownloadConfig([
+            'outputDirectory'  => '/library/ebooks',
+            'filenameTemplate' => '{Author}/{Title}',
+        ], enabled: true);
+
+        $this->client->loginUser($this->loadAdmin());
+        $this->postDirectDownload(['enabled' => '1']);
+
+        $this->em->clear();
+        $config = $this->integrations->getDirectDownloadConfig();
+        self::assertSame('/library/ebooks', $config->outputDirectory);
+        self::assertSame('{Author}/{Title}', $config->filenameTemplate);
+    }
+
+    public function testMasterToggleRoundTripPreservesPerSourceTicks(): void
+    {
+        $this->seedDirectDownloadConfig([
+            'indexerPriority' => [
+                ['id' => 'annas_archive', 'enabled' => true],
+                ['id' => 'libgen', 'enabled' => false],
+                ['id' => 'zlibrary', 'enabled' => true],
+                ['id' => 'welib', 'enabled' => true],
+                ['id' => 'torrent', 'enabled' => true],
+            ],
+            'mirrors' => ['annas_archive' => ['https://m.test']],
+        ], enabled: true);
+
+        $this->client->loginUser($this->loadAdmin());
+
+        // Switch the master OFF (checkbox unticked → param absent).
+        $this->postDirectDownload(['enabled' => null]);
+        $this->em->clear();
+        $config = $this->integrations->getDirectDownloadConfig();
+
+        self::assertFalse($config->directDownloadsEnabled);
+        // Every mirror source is forced off; the torrent row keeps its own tick.
+        self::assertFalse($config->isIndexerEnabled('annas_archive'));
+        self::assertFalse($config->isIndexerEnabled('zlibrary'));
+        self::assertTrue($config->isIndexerEnabled('torrent'));
+        // …but the STORED ticks are untouched.
+        self::assertSame(
+            ['annas_archive' => true, 'libgen' => false, 'zlibrary' => true, 'welib' => true, 'torrent' => true],
+            array_column($config->indexerPriority, 'enabled', 'id'),
+        );
+
+        // Switch it back ON: the previous per-source choices are live again.
+        $this->postDirectDownload(['enabled' => '1']);
+        $this->em->clear();
+        $config = $this->integrations->getDirectDownloadConfig();
+
+        self::assertTrue($config->directDownloadsEnabled);
         self::assertTrue($config->isIndexerEnabled('annas_archive'));
         self::assertFalse($config->isIndexerEnabled('libgen'));
-
-        // Unknown ids are never persisted.
-        $ids = array_column($config->indexerPriority, 'id');
-        self::assertNotContains('bogus', $ids);
-        self::assertContains('welib', $ids);
+        self::assertTrue($config->isIndexerEnabled('zlibrary'));
     }
 
     public function testRejectsInvalidCsrfToken(): void
@@ -108,6 +188,48 @@ final class SettingsDirectDownloadControllerTest extends WebTestCase
         $this->client->request('GET', '/settings/direct-download');
         self::assertResponseRedirects();
         self::assertStringContainsString('/login', (string) $this->client->getResponse()->headers->get('Location'));
+    }
+
+    /**
+     * Seed the direct_download row as the settings save path would: config blob
+     * under options['config'], master switch on the enabled column.
+     *
+     * @param array<string, mixed> $raw
+     */
+    private function seedDirectDownloadConfig(array $raw, bool $enabled): void
+    {
+        $config = \App\Search\DirectDownload\DirectDownloadConfig::fromArray(
+            $raw,
+            self::getContainer()->get(\App\Mirror\MirrorListNormalizer::class),
+        );
+        $this->integrations->saveDirectDownloadConfig($config, $enabled, $this->em);
+        $this->em->flush();
+        $this->em->clear();
+    }
+
+    /**
+     * POST the Direct downloads form as the page renders it (mirror fields always
+     * present, no indexerPriority — that moved to Settings → General).
+     *
+     * @param array{enabled: string|null} $overrides
+     */
+    private function postDirectDownload(array $overrides): void
+    {
+        $params = [
+            '_token'  => $this->fetchCsrfToken('/settings/direct-download'),
+            'mirrors' => [
+                'annas_archive' => 'https://m.test',
+                'libgen'        => '',
+                'zlibrary'      => '',
+                'welib'         => '',
+            ],
+        ];
+        if (($overrides['enabled'] ?? null) !== null) {
+            $params['enabled'] = $overrides['enabled'];
+        }
+
+        $this->client->request('POST', '/settings/direct-download', $params);
+        self::assertResponseRedirects('/settings/direct-download');
     }
 
     private function seedAdmin(): void

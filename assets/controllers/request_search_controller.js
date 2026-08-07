@@ -22,7 +22,6 @@ import { Controller } from '@hotwired/stimulus';
 export default class extends Controller {
     static targets = [
         'overlay',
-        'pipelineToggle',
         'queueStart',
         'queueNotice',
         'queueBar',
@@ -33,7 +32,6 @@ export default class extends Controller {
     ];
 
     static values = {
-        toggleUrl: String,
         manualNextUrl: String,
         token: String,
     };
@@ -103,35 +101,6 @@ export default class extends Controller {
         if (this.queueId !== null) {
             this.acted = true;
             this.renderQueueButtons();
-        }
-    }
-
-    /* ── automatic-fulfillment toggle ─────────────────────────────────────── */
-
-    async togglePipeline(event) {
-        const input = event.target;
-        const wanted = input.checked;
-        input.disabled = true;
-        try {
-            const data = await this.post(this.toggleUrlValue, { enabled: wanted });
-            const enabled = data.enabled === true;
-            input.checked = enabled;
-            this.applyPipelineState(enabled);
-        } catch (e) {
-            input.checked = !wanted; // revert to the server-side truth we still believe
-            this.toast(`Couldn't change automatic fulfillment: ${e.message}`, 'error');
-        } finally {
-            input.disabled = false;
-        }
-    }
-
-    // The manual queue only makes sense while the pipeline is off.
-    applyPipelineState(enabled) {
-        if (this.hasQueueStartTarget) {
-            this.queueStartTarget.hidden = enabled;
-        }
-        if (enabled) {
-            this.hideNotice();
         }
     }
 

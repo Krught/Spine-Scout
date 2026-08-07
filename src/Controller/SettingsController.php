@@ -29,6 +29,7 @@ use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\Torrent\ProwlarrConfig;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\InputBag;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -50,6 +51,7 @@ final class SettingsController extends AbstractController
         Request $request,
         IntegrationRepository $repository,
         EntityManagerInterface $em,
+        MirrorListNormalizer $normalizer,
     ): Response {
         $app = $repository->getOrCreate(Integration::KIND_APP);
 
@@ -61,19 +63,54 @@ final class SettingsController extends AbstractController
 
             $app->setOverwriteMetadataEnabled($request->request->getBoolean('overwrite_metadata'));
             $app->setAutoApproveRequestsEnabled($request->request->getBoolean('auto_approve_requests'));
+            $app->setAutomaticFulfillmentEnabled($request->request->getBoolean('automatic_fulfillment'));
             $app->setAuthType(Integration::AUTH_NONE);
             $app->setEnabled(true);
             $this->persistOrTouch($em, $app);
+
+            // Source priority lives on this page but is stored with the rest of the
+            // direct-download config. Merge-save: only the priority list is replaced —
+            // mirrors/bypass (owned by Settings → Direct downloads), delivery/naming
+            // (owned by Settings → Ebooks) and the row's master enabled flag all
+            // survive untouched. An absent row behaves
+            // as master-on (see getDirectDownloadConfig()), so when this save has to
+            // create the row it writes enabled=true to keep the effective state.
+            $ddRow = $repository->getOrCreate(Integration::KIND_DIRECT_DOWNLOAD);
+            $masterEnabled = $ddRow->getId() === null || $ddRow->isEnabled();
+            $config = DirectDownloadConfig::fromArray(
+                array_replace(
+                    $repository->getDirectDownloadConfig()->toArray(),
+                    ['indexerPriority' => $this->parseIndexerPriority($request)],
+                ),
+                $normalizer,
+            );
+            $repository->saveDirectDownloadConfig($config, $masterEnabled, $em);
+
             $em->flush();
 
             $this->addFlash('success', 'General settings saved.');
             return $this->redirectToRoute('settings_general');
         }
 
+        $config = $repository->getDirectDownloadConfig();
+        $priorityRows = [];
+        $sourceLabels = [];
+        foreach ($this->orderedSourceIds($config) as $id) {
+            $priorityRows[] = ['id' => $id, 'enabled' => $this->storedIndexerTick($config, $id)];
+            $sourceLabels[$id] = DirectDownloadSource::from($id)->label();
+        }
+
         return $this->render('settings/general.html.twig', [
             'active_tab' => 'general',
             'overwrite_metadata' => $app->isOverwriteMetadataEnabled(),
             'auto_approve_requests' => $app->isAutoApproveRequestsEnabled(),
+            'automatic_fulfillment' => $app->isAutomaticFulfillmentEnabled(),
+            'priority_rows' => $priorityRows,
+            'source_labels' => $sourceLabels,
+            'direct_downloads_enabled' => $config->directDownloadsEnabled,
+            // While the master switch is off the four mirror sources render locked
+            // (dimmed, tick disabled) but keep their stored tick; torrent stays live.
+            'locked_ids' => $config->directDownloadsEnabled ? [] : DirectDownloadSource::mirrorIds(),
         ]);
     }
 
@@ -390,24 +427,6 @@ final class SettingsController extends AbstractController
 
             $enabled = $request->request->getBoolean('enabled');
 
-            // Priority: keep only the fixed, known source ids, in posted order;
-            // then backfill any missing so all sources persist.
-            $priority = [];
-            $seen = [];
-            foreach ((array) $this->decodeJsonField($request, 'indexerPriority') as $row) {
-                $id = is_array($row) ? ($row['id'] ?? null) : null;
-                if (!is_string($id) || DirectDownloadSource::tryFromId($id) === null || isset($seen[$id])) {
-                    continue;
-                }
-                $seen[$id] = true;
-                $priority[] = ['id' => $id, 'enabled' => (bool) ($row['enabled'] ?? true)];
-            }
-            foreach (DirectDownloadSource::ids() as $id) {
-                if (!isset($seen[$id])) {
-                    $priority[] = ['id' => $id, 'enabled' => false];
-                }
-            }
-
             // Mirrors: one free-text blob per HTTP source (torrent has none).
             $blobs = $request->request->all('mirrors');
             $mirrors = [];
@@ -416,16 +435,21 @@ final class SettingsController extends AbstractController
                 $mirrors[$id] = $normalizer->normalizeBlob($blob);
             }
 
+            // Merge-save: this page owns only the channel keys of the shared
+            // direct-download blob (mirrors, fast downloads, Cloudflare bypass).
+            // The priority list (Settings → General) and the ebook delivery keys
+            // outputDirectory/filenameTemplate (Settings → Ebooks) are no longer
+            // form fields here and must survive this save untouched.
             $config = DirectDownloadConfig::fromArray(
-                [
-                    'indexerPriority'     => $priority,
-                    'mirrors'             => $mirrors,
-                    'fastDownloadEnabled' => $request->request->getBoolean('fastDownloadEnabled'),
-                    'outputDirectory'     => (string) $request->request->get('outputDirectory', ''),
-                    'filenameTemplate'    => (string) $request->request->get('filenameTemplate', ''),
-                    'bypassMode'          => (string) $request->request->get('bypassMode', DirectDownloadConfig::BYPASS_EXTERNAL),
-                    'bypassFlaresolverrUrl' => (string) $request->request->get('bypassFlaresolverrUrl', ''),
-                ],
+                array_replace(
+                    $integrations->getDirectDownloadConfig()->toArray(),
+                    [
+                        'mirrors'             => $mirrors,
+                        'fastDownloadEnabled' => $request->request->getBoolean('fastDownloadEnabled'),
+                        'bypassMode'          => (string) $request->request->get('bypassMode', DirectDownloadConfig::BYPASS_EXTERNAL),
+                        'bypassFlaresolverrUrl' => (string) $request->request->get('bypassFlaresolverrUrl', ''),
+                    ],
+                ),
                 $normalizer,
             );
             $integrations->saveDirectDownloadConfig($config, $enabled, $em);
@@ -438,36 +462,13 @@ final class SettingsController extends AbstractController
         $integration = $integrations->getOrCreate(Integration::KIND_DIRECT_DOWNLOAD);
         $config = $integrations->getDirectDownloadConfig();
 
-        // Ordered view with all sources present: stored priority first, then any
-        // not-yet-configured sources in default order. Sources absent from stored
-        // config default to enabled so a fresh install just needs URLs pasted in.
-        $enabledById = [];
-        foreach ($config->indexerPriority as $row) {
-            $enabledById[$row['id']] = $row['enabled'];
-        }
-
-        $orderedIds = [];
-        foreach ($config->indexerPriority as $row) {
-            if (DirectDownloadSource::tryFromId($row['id']) !== null && !in_array($row['id'], $orderedIds, true)) {
-                $orderedIds[] = $row['id'];
-            }
-        }
-        foreach (DirectDownloadSource::ids() as $id) {
-            if (!in_array($id, $orderedIds, true)) {
-                $orderedIds[] = $id;
-            }
-        }
-
-        $priorityRows = [];
-        $sourceLabels = [];
+        // Mirror sections follow the operator's priority order (owned by Settings →
+        // General). Torrent has no operator-supplied mirror URLs (it uses the
+        // indexers + download client from Settings → Torrents), so it gets no
+        // mirror textarea.
         $mirrorSections = [];
-        foreach ($orderedIds as $id) {
+        foreach ($this->orderedSourceIds($config) as $id) {
             $source = DirectDownloadSource::from($id);
-            $priorityRows[] = ['id' => $id, 'enabled' => $enabledById[$id] ?? true];
-            $sourceLabels[$id] = $source->label();
-            // Torrent has no operator-supplied mirror URLs (it uses the indexers +
-            // download client from Settings → Torrents), so it gets a priority row but
-            // no mirror textarea.
             if ($source->usesMirrors()) {
                 $mirrorSections[] = [
                     'id'    => $id,
@@ -481,19 +482,63 @@ final class SettingsController extends AbstractController
         return $this->render('settings/direct_download.html.twig', [
             'active_tab'            => 'direct_download',
             'integration'          => $integration,
-            'priority_rows'        => $priorityRows,
-            'source_labels'        => $sourceLabels,
             'mirror_sections'      => $mirrorSections,
             'fast_download_enabled' => $config->fastDownloadEnabled,
-            'output_directory'      => $config->outputDirectory,
-            'filename_template'     => $config->filenameTemplate,
             'bypass_mode'           => $config->bypassMode,
             'bypass_flaresolverr_url' => $config->bypassFlaresolverrUrl,
         ]);
     }
 
-    #[Route('/audiobooks', name: 'audiobooks')]
-    public function audiobooks(
+    #[Route('/ebooks', name: 'ebooks')]
+    public function ebooks(
+        Request $request,
+        IntegrationRepository $integrations,
+        EntityManagerInterface $em,
+        MirrorListNormalizer $normalizer,
+    ): Response {
+        if ($request->isMethod('POST')) {
+            if (!$this->isCsrfTokenValid('settings_ebooks', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+                return $this->redirectToRoute('settings_ebooks');
+            }
+
+            // Ebook delivery is stored with the rest of the direct-download config.
+            // Merge-save: only the delivery keys are replaced — mirrors, bypass,
+            // fast downloads, the priority list and the row's master enabled flag
+            // (owned by Settings → Direct downloads / General) survive untouched.
+            // An absent row behaves as master-on (see getDirectDownloadConfig()),
+            // so when this save has to create the row it writes enabled=true to
+            // keep the effective state.
+            $ddRow = $integrations->getOrCreate(Integration::KIND_DIRECT_DOWNLOAD);
+            $masterEnabled = $ddRow->getId() === null || $ddRow->isEnabled();
+            $config = DirectDownloadConfig::fromArray(
+                array_replace(
+                    $integrations->getDirectDownloadConfig()->toArray(),
+                    [
+                        'outputDirectory'  => (string) $request->request->get('outputDirectory', ''),
+                        'filenameTemplate' => (string) $request->request->get('filenameTemplate', ''),
+                    ],
+                ),
+                $normalizer,
+            );
+            $integrations->saveDirectDownloadConfig($config, $masterEnabled, $em);
+            $em->flush();
+
+            $this->addFlash('success', 'Ebook settings saved.');
+            return $this->redirectToRoute('settings_ebooks');
+        }
+
+        $config = $integrations->getDirectDownloadConfig();
+
+        return $this->render('settings/ebooks.html.twig', [
+            'active_tab'        => 'ebooks',
+            'output_directory'  => $config->outputDirectory,
+            'filename_template' => $config->filenameTemplate,
+        ]);
+    }
+
+    #[Route('/torrents', name: 'torrents')]
+    public function torrents(
         Request $request,
         IntegrationRepository $integrations,
         EntityManagerInterface $em,
@@ -502,9 +547,9 @@ final class SettingsController extends AbstractController
         $qbittorrent = $integrations->getOrCreate(Integration::KIND_QBITTORRENT);
 
         if ($request->isMethod('POST')) {
-            if (!$this->isCsrfTokenValid('settings_audiobooks', (string) $request->request->get('_token'))) {
+            if (!$this->isCsrfTokenValid('settings_torrents', (string) $request->request->get('_token'))) {
                 $this->addFlash('error', 'Invalid CSRF token.');
-                return $this->redirectToRoute('settings_audiobooks');
+                return $this->redirectToRoute('settings_torrents');
             }
 
             $req = $request->request;
@@ -514,7 +559,8 @@ final class SettingsController extends AbstractController
             $prowlarr->setBaseUrl(self::blankToNull((string) $req->get('prowlarr_base_url', '')));
             $this->applyApiToken($prowlarr, (string) $req->get('prowlarr_api_key', ''));
             $prowlarrConfig = ProwlarrConfig::fromArray([
-                'categories'   => self::parseIntCsv((string) $req->get('prowlarr_categories', '')),
+                'categories'     => self::parseIntCsv((string) $req->get('prowlarr_categories', '')),
+                'bookCategories' => self::parseIntCsv((string) $req->get('prowlarr_book_categories', '')),
                 'searchMethod' => (string) $req->get('prowlarr_search_method', ''),
                 'minSeeders'   => $req->get('prowlarr_min_seeders', ''),
                 'maxSizeBytes' => self::gbToBytes((string) $req->get('prowlarr_max_size_gb', '')),
@@ -550,38 +596,129 @@ final class SettingsController extends AbstractController
                     (string) $req->get('qbittorrent_password', ''),
                 );
             }
-            $clientConfig = TorrentClientConfig::fromArray([
-                'category'             => (string) $req->get('qbittorrent_category', ''),
-                'audioOutputDirectory' => (string) $req->get('audio_output_directory', ''),
-                'useEbookLibraryDir'   => $req->getBoolean('use_ebook_library_dir'),
-                'stagingSubdir'        => (string) $req->get('staging_subdir', ''),
-                'filenameTemplate'     => (string) $req->get('torrent_filename_template', ''),
-                'removeOnComplete'     => $req->getBoolean('remove_on_complete'),
-                'reconcileIntervalHours' => $req->get('reconcile_interval_hours', ''),
-            ]);
+            // Merge-save: this page owns only the torrent-stack keys of the shared
+            // TorrentClientConfig blob. The audiobook delivery/metadata keys belong
+            // to Settings → Audiobooks and must survive this save untouched.
+            $clientConfig = TorrentClientConfig::fromArray(array_replace(
+                $integrations->getTorrentClientConfig()->toArray(),
+                [
+                    'category'               => (string) $req->get('qbittorrent_category', ''),
+                    'removeOnComplete'       => $req->getBoolean('remove_on_complete'),
+                    'reconcileIntervalHours' => $req->get('reconcile_interval_hours', ''),
+                ],
+            ));
             $qbittorrent->setEnabled(
                 $req->getBoolean('qbittorrent_enabled')
                 && $qbittorrent->getBaseUrl() !== null && $qbittorrent->getBaseUrl() !== '',
             );
-            $qbittorrent->setOptions(['config' => $clientConfig->toArray()]);
+            $qbOptions = $qbittorrent->getOptions();
+            $qbOptions['config'] = $clientConfig->toArray();
+            $qbittorrent->setOptions($qbOptions);
             $this->persistOrTouch($em, $qbittorrent);
+
+            $em->flush();
+            $this->addFlash('success', 'Torrent settings saved.');
+            return $this->redirectToRoute('settings_torrents');
+        }
+
+        $prowlarrConfig = $integrations->getProwlarrConfig();
+        $clientConfig = $integrations->getTorrentClientConfig();
+
+        return $this->render('settings/torrents.html.twig', [
+            'active_tab'      => 'torrents',
+            'prowlarr'        => $prowlarr,
+            'qbittorrent'     => $qbittorrent,
+            'prowlarr_config' => $prowlarrConfig,
+            'client_config'   => $clientConfig,
+        ]);
+    }
+
+    #[Route('/audiobooks', name: 'audiobooks')]
+    public function audiobooks(
+        Request $request,
+        IntegrationRepository $integrations,
+        EntityManagerInterface $em,
+    ): Response {
+        if ($request->isMethod('POST')) {
+            if (!$this->isCsrfTokenValid('settings_audiobooks', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+                return $this->redirectToRoute('settings_audiobooks');
+            }
+
+            $req = $request->request;
+
+            // Merge-save: this page owns only the audiobook delivery/metadata keys of
+            // the shared TorrentClientConfig blob. The torrent-stack keys (category,
+            // seeding policy, reconcile cadence) belong to Settings → Torrents and must
+            // survive this save untouched — as must the qbittorrent row's connection
+            // fields and enabled flag, which this page no longer edits at all.
+            $qbittorrent = $integrations->getOrCreate(Integration::KIND_QBITTORRENT);
+            $overrides = [
+                'useEbookLibraryDir'    => $req->getBoolean('use_ebook_library_dir'),
+                'stagingSubdir'         => (string) $req->get('staging_subdir', ''),
+                'filenameTemplate'      => (string) $req->get('torrent_filename_template', ''),
+                'writeAudioTags'        => $req->getBoolean('write_audio_tags'),
+                'writeGrimmorySidecars' => $req->getBoolean('write_grimmory_sidecars'),
+            ];
+            // The output-folder input is disabled (and therefore not submitted) while
+            // "deliver into the ebook library" is ticked — keep the stored path in
+            // that case so unticking later restores it instead of resetting to default.
+            if ($req->has('audio_output_directory')) {
+                $overrides['audioOutputDirectory'] = (string) $req->get('audio_output_directory');
+            }
+            $clientConfig = TorrentClientConfig::fromArray(array_replace(
+                $integrations->getTorrentClientConfig()->toArray(),
+                $overrides,
+            ));
+            $qbOptions = $qbittorrent->getOptions();
+            $qbOptions['config'] = $clientConfig->toArray();
+            $qbittorrent->setOptions($qbOptions);
+            $this->persistOrTouch($em, $qbittorrent);
+
+            $this->applyGrimmoryNativeOptions($req, $integrations, $em);
 
             $em->flush();
             $this->addFlash('success', 'Audiobook settings saved.');
             return $this->redirectToRoute('settings_audiobooks');
         }
 
-        $prowlarrConfig = $integrations->getProwlarrConfig();
-        $clientConfig = $integrations->getTorrentClientConfig();
+        $grimmory = $integrations->findByKind(Integration::KIND_GRIMMORY);
+        $native = $grimmory?->getOptions()['native'] ?? null;
+        $native = is_array($native) ? $native : [];
 
         return $this->render('settings/audiobooks.html.twig', [
-            'active_tab'      => 'audiobooks',
-            'prowlarr'        => $prowlarr,
-            'qbittorrent'     => $qbittorrent,
-            'prowlarr_config' => $prowlarrConfig,
-            'client_config'   => $clientConfig,
+            'active_tab'    => 'audiobooks',
+            'client_config' => $integrations->getTorrentClientConfig(),
             'ebook_output_directory' => $integrations->getDirectDownloadConfig()->outputDirectory,
+            'grimmory_native' => [
+                'username'      => (string) ($native['username'] ?? ''),
+                'hasPassword'   => (string) ($native['password'] ?? '') !== '',
+                'sidecarImport' => (bool) ($native['sidecarImport'] ?? false),
+            ],
         ]);
+    }
+
+    /**
+     * Persist the Grimmory native-API account (JWT; sidecar import) under the
+     * GRIMMORY row's options['native'] blob, merging into the existing options
+     * so other keys survive. The password is write-only in the UI: blank keeps
+     * the stored one.
+     */
+    private function applyGrimmoryNativeOptions(InputBag $req, IntegrationRepository $integrations, EntityManagerInterface $em): void
+    {
+        $grimmory = $integrations->getOrCreate(Integration::KIND_GRIMMORY);
+        $options = $grimmory->getOptions();
+        $existing = is_array($options['native'] ?? null) ? $options['native'] : [];
+
+        $password = (string) $req->get('native_password', '');
+
+        $options['native'] = [
+            'username'      => (string) $req->get('native_username', ''),
+            'password'      => $password !== '' ? $password : (string) ($existing['password'] ?? ''),
+            'sidecarImport' => $req->getBoolean('native_sidecar_import'),
+        ];
+        $grimmory->setOptions($options);
+        $this->persistOrTouch($em, $grimmory);
     }
 
     #[Route('/audiobooks/rewrite-sidecars', name: 'audiobooks_rewrite_sidecars', methods: ['POST'])]
@@ -606,25 +743,25 @@ final class SettingsController extends AbstractController
         return $this->redirectToRoute('settings_audiobooks');
     }
 
-    #[Route('/audiobooks/reconcile-torrents', name: 'audiobooks_reconcile_torrents', methods: ['POST'])]
-    public function audiobooksReconcileTorrents(Request $request, MessageBusInterface $bus): Response
+    #[Route('/torrents/reconcile', name: 'torrents_reconcile', methods: ['POST'])]
+    public function reconcileTorrents(Request $request, MessageBusInterface $bus): Response
     {
-        if (!$this->isCsrfTokenValid('audiobooks_reconcile_torrents', (string) $request->request->get('_token'))) {
+        if (!$this->isCsrfTokenValid('torrents_reconcile', (string) $request->request->get('_token'))) {
             $this->addFlash('error', 'Invalid CSRF token.');
 
-            return $this->redirectToRoute('settings_audiobooks');
+            return $this->redirectToRoute('settings_torrents');
         }
 
         $bus->dispatch(new ReconcileTorrents(force: true));
         $this->addFlash('success', 'Torrent reconcile queued. Refresh in a moment to see results.');
 
-        return $this->redirectToRoute('settings_audiobooks');
+        return $this->redirectToRoute('settings_torrents');
     }
 
-    #[Route('/audiobooks/test/prowlarr', name: 'audiobooks_test_prowlarr', methods: ['POST'])]
+    #[Route('/torrents/test/prowlarr', name: 'torrents_test_prowlarr', methods: ['POST'])]
     public function testProwlarr(Request $request, \App\Integration\Prowlarr\ProwlarrClient $prowlarr): Response
     {
-        if (!$this->isCsrfTokenValid('settings_audiobooks_test', (string) $request->request->get('_token'))) {
+        if (!$this->isCsrfTokenValid('settings_torrents_test', (string) $request->request->get('_token'))) {
             return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
         }
         [$ok, $message] = $prowlarr->testConnection();
@@ -632,10 +769,10 @@ final class SettingsController extends AbstractController
         return $this->json(['ok' => $ok, 'message' => $message]);
     }
 
-    #[Route('/audiobooks/test/qbittorrent', name: 'audiobooks_test_qbittorrent', methods: ['POST'])]
+    #[Route('/torrents/test/qbittorrent', name: 'torrents_test_qbittorrent', methods: ['POST'])]
     public function testQbittorrent(Request $request, \App\Download\Client\QbittorrentDownloadClient $qbittorrent): Response
     {
-        if (!$this->isCsrfTokenValid('settings_audiobooks_test', (string) $request->request->get('_token'))) {
+        if (!$this->isCsrfTokenValid('settings_torrents_test', (string) $request->request->get('_token'))) {
             return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
         }
         [$ok, $message] = $qbittorrent->testConnection();
@@ -688,6 +825,75 @@ final class SettingsController extends AbstractController
             'password' => $password !== '' ? $password : ($existing['password'] ?? null),
         ];
         $integration->setCredentials(array_filter($next, static fn ($v) => $v !== null && $v !== ''));
+    }
+
+    /**
+     * Parse the posted Source-priority list (the orderable_list hidden field):
+     * keep only the fixed, known source ids, in posted order; then backfill any
+     * missing so all sources persist.
+     *
+     * @return list<array{id: string, enabled: bool}>
+     */
+    private function parseIndexerPriority(Request $request): array
+    {
+        $priority = [];
+        $seen = [];
+        foreach ((array) $this->decodeJsonField($request, 'indexerPriority') as $row) {
+            $id = is_array($row) ? ($row['id'] ?? null) : null;
+            if (!is_string($id) || DirectDownloadSource::tryFromId($id) === null || isset($seen[$id])) {
+                continue;
+            }
+            $seen[$id] = true;
+            $priority[] = ['id' => $id, 'enabled' => (bool) ($row['enabled'] ?? true)];
+        }
+        foreach (DirectDownloadSource::ids() as $id) {
+            if (!isset($seen[$id])) {
+                $priority[] = ['id' => $id, 'enabled' => false];
+            }
+        }
+
+        return $priority;
+    }
+
+    /**
+     * Ordered view with all sources present: stored priority first, then any
+     * not-yet-configured sources in default order.
+     *
+     * @return list<string>
+     */
+    private function orderedSourceIds(DirectDownloadConfig $config): array
+    {
+        $orderedIds = [];
+        foreach ($config->indexerPriority as $row) {
+            if (DirectDownloadSource::tryFromId($row['id']) !== null && !in_array($row['id'], $orderedIds, true)) {
+                $orderedIds[] = $row['id'];
+            }
+        }
+        foreach (DirectDownloadSource::ids() as $id) {
+            if (!in_array($id, $orderedIds, true)) {
+                $orderedIds[] = $id;
+            }
+        }
+
+        return $orderedIds;
+    }
+
+    /**
+     * The STORED per-source tick — deliberately not isIndexerEnabled(), which is
+     * force-false for mirror sources while the master switch is off: the priority
+     * list must render (and round-trip) the saved ticks so re-enabling restores
+     * them. Sources absent from stored config default to enabled so a fresh
+     * install just needs URLs pasted in.
+     */
+    private function storedIndexerTick(DirectDownloadConfig $config, string $id): bool
+    {
+        foreach ($config->indexerPriority as $row) {
+            if ($row['id'] === $id) {
+                return $row['enabled'];
+            }
+        }
+
+        return true;
     }
 
     /**

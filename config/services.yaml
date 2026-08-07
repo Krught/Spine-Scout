@@ -59,6 +59,13 @@ services:
         arguments:
             $stagingBaseDir: '%kernel.project_dir%/var/downloads'
 
+    # Fills missing embedded tags on finished audiobooks via the `tone` CLI
+    # (installed in the app image; dev hosts without it degrade to a no-op).
+    # Scalar arg can't be autowired.
+    App\Download\Metadata\AudiobookTagWriter:
+        arguments:
+            $toneBinary: 'tone'
+
     # Dev-tools gate: scalar args can't be autowired.
     App\Dev\DevTools:
         arguments:

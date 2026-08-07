@@ -13,10 +13,12 @@ use App\Repository\BookRequestRepository;
 use App\Service\AppSettingsProvider;
 use App\Service\BookMetadataService;
 use App\Download\Client\QbittorrentDownloadClient;
+use App\Download\Torrent\TorrentFinalizerInterface;
 use App\Integration\Prowlarr\ProwlarrClient;
 use App\Message\DispatchReleaseSearch;
 use App\Message\DispatchTorrentSearch;
 use App\Message\PollTorrentJobs;
+use App\Message\ReimportDownloadJob;
 use App\Message\RewriteAudiobookSidecar;
 use App\Repository\DownloadJobRepository;
 use App\Search\SearchSettingsProvider;
@@ -38,7 +40,7 @@ final class RequestsController extends AbstractController
     /** Long TTL; the proxy URL is deterministic per remote URL so it's safe to keep around. */
     private const COVER_CACHE_TTL = 60 * 60 * 24 * 30;
 
-    /** CSRF id shared by the manual-fulfillment JSON endpoints on this page. */
+    /** CSRF id for the manual-fulfillment JSON endpoint on this page. */
     private const PIPELINE_CSRF_ID = 'requests_pipeline';
 
     /**
@@ -142,26 +144,6 @@ final class RequestsController extends AbstractController
             'pages'                  => $pages,
             'total'                  => $total,
         ]);
-    }
-
-    /**
-     * Flip the automatic fulfillment pipeline on/off. Off means the dispatch
-     * handlers no-op, so approving leaves a request APPROVED awaiting a manual
-     * interactive search from this page.
-     */
-    #[Route('/requests/pipeline-toggle', name: 'requests_pipeline_toggle', methods: ['POST'])]
-    #[IsGranted('ROLE_MANAGE_SETTINGS')]
-    public function pipelineToggle(Request $request, SearchSettingsProvider $settings): JsonResponse
-    {
-        $payload = self::jsonPayload($request);
-        if (($error = $this->guardPipelineCsrf($payload)) !== null) {
-            return $error;
-        }
-
-        $enabled = filter_var($payload['enabled'] ?? false, FILTER_VALIDATE_BOOL);
-        $settings->setAutomaticFulfillmentEnabled($enabled);
-
-        return new JsonResponse(['enabled' => $enabled]);
     }
 
     /**
@@ -310,6 +292,17 @@ final class RequestsController extends AbstractController
         }
 
         return $r->getStatus();
+    }
+
+    /**
+     * Whether the request has been fulfilled into the library — the same predicate
+     * `requests/_row.html.twig` uses for its `is_fulfilled` flag: marked available,
+     * or approved with its latest delivery complete.
+     */
+    private static function isFulfilled(BookRequest $r): bool
+    {
+        return $r->getStatus() === BookRequest::STATUS_AVAILABLE
+            || ($r->getStatus() === BookRequest::STATUS_APPROVED && $r->getDeliveryStatus() === DownloadJob::STATUS_COMPLETE);
     }
 
     /**
@@ -676,6 +669,121 @@ final class RequestsController extends AbstractController
             return $this->rowActionResponse($entity, 'Metadata sidecar rewrite queued.', $jobs, $metadata);
         }
         $this->addFlash('success', 'Metadata sidecar rewrite queued.');
+
+        return $this->redirectToRoute('requests');
+    }
+
+    /**
+     * Queue a re-import of a fulfilled request's completed download into the
+     * library. Only possible while the torrent's raw files are still in the
+     * download client; otherwise answers a 409 carrying `unavailable: true` plus
+     * the re-get options the client can offer instead (automatic re-download
+     * and/or interactive search).
+     */
+    #[Route('/requests/{id}/reimport', name: 'requests_reimport', methods: ['POST'], requirements: ['id' => '\d+'])]
+    #[IsGranted('ROLE_REIMPORT')]
+    public function reimport(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, SearchSettingsProvider $settings, TorrentFinalizerInterface $finalizer, MessageBusInterface $bus): Response
+    {
+        $entity = $requests->find($id);
+        if ($entity === null) {
+            throw $this->createNotFoundException();
+        }
+        if (!$this->isCsrfTokenValid('reimport-request-' . $id, (string) $request->request->get('_csrf_token'))) {
+            throw new AccessDeniedHttpException('Invalid CSRF token.');
+        }
+
+        // Only a fulfilled request with a completed download has anything to re-import.
+        $job = $jobs->findLatestForRequest($entity);
+        if (!self::isFulfilled($entity) || $job === null || $job->getStatus() !== DownloadJob::STATUS_COMPLETE) {
+            if (self::wantsJson($request)) {
+                return new JsonResponse(['ok' => false, 'message' => 'No completed download to re-import for this request.'], 409);
+            }
+            $this->addFlash('error', 'No completed download to re-import for this request.');
+
+            return $this->redirectToRoute('requests');
+        }
+
+        // The raw files only survive in the torrent client (a direct download is
+        // consumed by its import); re-importable = torrent job + configured client
+        // + the torrent still present with its files on disk.
+        $sourceAvailable = $job->getProtocol() === ReleaseCandidate::PROTOCOL_TORRENT
+            && $this->qbittorrent->isConfigured()
+            && $finalizer->sourceAvailability($job, $this->qbittorrent) !== null;
+
+        if ($sourceAvailable) {
+            $bus->dispatch(new ReimportDownloadJob((int) $job->getId()));
+
+            if (self::wantsJson($request)) {
+                return $this->rowActionResponse($entity, 'Reimport queued: the files will be re-imported into the library.', $jobs, $metadata);
+            }
+            $this->addFlash('success', 'Reimport queued: the files will be re-imported into the library.');
+
+            return $this->redirectToRoute('requests');
+        }
+
+        // Gone from the client — offer a re-get instead. `canAuto` mirrors what the
+        // dispatch handlers require to actually act: automatic fulfillment on, and
+        // (for an audiobook) the Prowlarr + qBittorrent stack configured.
+        $canAuto = $settings->isAutomaticFulfillmentEnabled()
+            && (!$entity->isAudiobook() || $this->torrentStackReady());
+        $message = 'Original files are no longer available in the download client.';
+
+        if (self::wantsJson($request)) {
+            return new JsonResponse([
+                'ok'          => false,
+                'unavailable' => true,
+                'canAuto'     => $canAuto,
+                'canSearch'   => $this->isGranted(User::ROLE_INTERACTIVE_SEARCH),
+                'message'     => $message,
+            ], 409);
+        }
+        $this->addFlash('error', $message);
+
+        return $this->redirectToRoute('requests');
+    }
+
+    /**
+     * Re-fetch a fulfilled request from scratch — the fallback when the original
+     * files are gone from the download client. Mirrors recheck()'s bookkeeping:
+     * cancel any lingering active job, then re-enter the fulfillment pipeline.
+     * The dispatch handlers only act on APPROVED requests, so an AVAILABLE one is
+     * set back to APPROVED (it is being re-fetched), and the completed delivery
+     * mirror is cleared so the row reflects the new attempt.
+     */
+    #[Route('/requests/{id}/reget', name: 'requests_reget', methods: ['POST'], requirements: ['id' => '\d+'])]
+    #[IsGranted('ROLE_REIMPORT')]
+    public function reget(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, EntityManagerInterface $em, MessageBusInterface $bus): Response
+    {
+        $entity = $requests->find($id);
+        if ($entity === null) {
+            throw $this->createNotFoundException();
+        }
+        if (!$this->isCsrfTokenValid('reget-request-' . $id, (string) $request->request->get('_csrf_token'))) {
+            throw new AccessDeniedHttpException('Invalid CSRF token.');
+        }
+
+        if (!self::isFulfilled($entity)) {
+            if (self::wantsJson($request)) {
+                return new JsonResponse(['ok' => false, 'message' => 'Only fulfilled requests can be re-downloaded.'], 409);
+            }
+            $this->addFlash('error', 'Only fulfilled requests can be re-downloaded.');
+
+            return $this->redirectToRoute('requests');
+        }
+
+        $jobs->cancelActiveForRequest($entity);
+        if ($entity->getStatus() === BookRequest::STATUS_AVAILABLE) {
+            $entity->setStatus(BookRequest::STATUS_APPROVED);
+        }
+        $entity->setDeliveryStatus(null);
+        $em->flush();
+
+        $this->dispatchFulfillment($entity, $bus);
+
+        if (self::wantsJson($request)) {
+            return $this->rowActionResponse($entity, 'Re-download started.', $jobs, $metadata);
+        }
+        $this->addFlash('success', 'Re-download started.');
 
         return $this->redirectToRoute('requests');
     }

@@ -64,6 +64,13 @@ final class DirectDownloadConfig
      * @param string                                 $filenameTemplate     Naming template with {Author}/{Title}/{Year}/{ISBN}/{Format} tokens
      * @param string                                 $bypassMode           One of self::BYPASS_MODES
      * @param string                                 $bypassFlaresolverrUrl Base URL (host:port) of the FlareSolverr used when $bypassMode is EXTERNAL; defaults to the bundled instance
+     * @param bool                                   $directDownloadsEnabled Master switch for the four HTTP mirror sources. NOT part of the
+     *                                                                     options['config'] blob (toArray/fromArray ignore it) — it mirrors the
+     *                                                                     direct_download Integration row's `enabled` column, injected by
+     *                                                                     IntegrationRepository::getDirectDownloadConfig(). While off,
+     *                                                                     isIndexerEnabled() is false for every mirror source (the torrent row
+     *                                                                     is unaffected) but each row's own stored tick is left untouched, so
+     *                                                                     re-enabling restores the operator's per-source choices.
      */
     public function __construct(
         public readonly array $indexerPriority,
@@ -73,6 +80,7 @@ final class DirectDownloadConfig
         public readonly string $filenameTemplate = self::DEFAULT_FILENAME_TEMPLATE,
         public readonly string $bypassMode = self::BYPASS_EXTERNAL,
         public readonly string $bypassFlaresolverrUrl = self::DEFAULT_FLARESOLVERR_URL,
+        public readonly bool $directDownloadsEnabled = true,
     ) {
     }
 
@@ -82,12 +90,14 @@ final class DirectDownloadConfig
     }
 
     /**
-     * @param array<string, mixed>|null $raw      JSON-decoded options blob
+     * @param array<string, mixed>|null $raw                    JSON-decoded options blob
+     * @param bool                      $directDownloadsEnabled The direct_download row's `enabled` column (see the
+     *                                                          constructor doc); true when the row is absent.
      */
-    public static function fromArray(?array $raw, MirrorListNormalizer $normalizer): self
+    public static function fromArray(?array $raw, MirrorListNormalizer $normalizer, bool $directDownloadsEnabled = true): self
     {
         if ($raw === null) {
-            return self::default();
+            return new self([], [], directDownloadsEnabled: $directDownloadsEnabled);
         }
 
         $priority = [];
@@ -146,6 +156,7 @@ final class DirectDownloadConfig
             $template !== '' ? $template : self::DEFAULT_FILENAME_TEMPLATE,
             $bypassMode,
             $flaresolverrUrl,
+            $directDownloadsEnabled,
         );
     }
 
@@ -174,6 +185,14 @@ final class DirectDownloadConfig
 
     public function isIndexerEnabled(string $kind): bool
     {
+        // The master switch (the direct_download row's enabled column) force-disables
+        // every mirror source while off — the stored per-row ticks are untouched, so
+        // they come back exactly as saved when the switch is turned on again. The
+        // torrent row has no mirrors and is deliberately outside the switch.
+        if (!$this->directDownloadsEnabled && (DirectDownloadSource::tryFromId($kind)?->usesMirrors() ?? true)) {
+            return false;
+        }
+
         foreach ($this->indexerPriority as $row) {
             if ($row['id'] === $kind) {
                 return $row['enabled'];
@@ -210,6 +229,7 @@ final class DirectDownloadConfig
             $this->filenameTemplate,
             $this->bypassMode,
             $this->bypassFlaresolverrUrl,
+            $this->directDownloadsEnabled,
         );
     }
 }

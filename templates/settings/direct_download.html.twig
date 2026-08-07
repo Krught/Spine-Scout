@@ -5,6 +5,14 @@
         <h2 class="panel-title">Direct downloads</h2>
     </div>
 
+    <p class="form-note">
+        The direct-download channel: the master switch, fast-partner downloads, the Cloudflare
+        bypass and your mirror URLs. Where finished ebooks land (and how their files are named)
+        is configured on the <a href="{{ path('settings_ebooks') }}">Ebooks</a> tab; source
+        ordering lives under
+        <a href="{{ path('settings_general') }}">Settings → General → Source priority</a>.
+    </p>
+
     {% if integration.id is not null %}
         <div class="status-pill {{ integration.enabled ? 'status-pill-on' : 'status-pill-off' }}">
             <span class="dot"></span>
@@ -22,8 +30,15 @@
             <legend>Integration</legend>
             <label class="field-checkbox">
                 <input type="checkbox" name="enabled" value="1" {{ integration.enabled ? 'checked' : '' }}>
-                <span>Enable direct-download release source</span>
+                <span>Enable direct downloads</span>
             </label>
+            <p class="form-note">
+                Master switch for all four direct sources (Anna's Archive, LibGen, Z-Library,
+                Welib): while off, none of them are searched or downloaded from — the torrent
+                source is unaffected. Source ordering and per-source ticks moved to
+                <a href="{{ path('settings_general') }}">Settings → General</a>; the ticks are
+                kept while this is off and restored when it is switched back on.
+            </p>
             <label class="field-checkbox">
                 <input type="checkbox" name="fastDownloadEnabled" value="1" {{ fast_download_enabled ? 'checked' : '' }}>
                 <span>Include fast-partner download links</span>
@@ -57,26 +72,10 @@
         </fieldset>
 
         <fieldset class="settings-fieldset">
-            <legend>Source priority</legend>
-            <p class="form-note">
-                Drag to reorder. Downloads are resolved by trying enabled sources top-down.
-                Untick a source to filter it out without losing its mirror URLs.
-            </p>
-            <div class="field"
-                 data-controller="orderable-list"
-                 data-orderable-list-input-name-value="indexerPriority"
-                 data-orderable-list-initial-value="{{ priority_rows|json_encode }}"
-                 data-orderable-list-labels-value="{{ source_labels|json_encode }}"
-                 data-orderable-list-fixed-options-value="true"
-                 data-orderable-list-mode-value="rows">
-                <ul data-orderable-list-target="list" class="orderable-list" aria-label="Source priority"></ul>
-                <input type="hidden" name="indexerPriority" data-orderable-list-target="hidden">
-            </div>
-        </fieldset>
-
-        <fieldset class="settings-fieldset">
             <legend>Mirror URLs</legend>
             <p class="form-note">
+                Source ordering (and which sources are enabled) is configured under
+                <a href="{{ path('settings_general') }}">Settings → General → Source priority</a>.
                 Type a URL and press <kbd>Tab</kbd> (or <kbd>Enter</kbd>) to add it. Remove one with
                 its <span aria-hidden="true">×</span> or by pressing <kbd>Backspace</kbd> in the empty
                 field. URLs are normalized on save: default scheme https, trailing slash stripped,
@@ -104,33 +103,6 @@
                     </div>
                 </div>
             {% endfor %}
-        </fieldset>
-
-        <fieldset class="settings-fieldset">
-            <legend>Output</legend>
-            <div class="field">
-                <label for="outputDirectory">Output / watch folder</label>
-                <input type="text" id="outputDirectory" name="outputDirectory" value="{{ output_directory }}"
-                       spellcheck="false" autocapitalize="off" autocomplete="off"
-                       placeholder="/library/import">
-                <p class="form-note">
-                    Absolute path a finished download is moved into — point this at the folder your
-                    library (e.g. Komga) watches, so the book is imported and the request flips to
-                    Available. The worker container must have this path mounted and writable.
-                </p>
-            </div>
-            <div class="field">
-                <label for="filenameTemplate">Filename template</label>
-                <input type="text" id="filenameTemplate" name="filenameTemplate" value="{{ filename_template }}"
-                       spellcheck="false" autocapitalize="off" autocomplete="off"
-                       placeholder="{{ '{Author} - {Title} ({Year})' }}">
-                <p class="form-note">
-                    Tokens: <code>{{ '{Author}' }}</code>, <code>{{ '{Title}' }}</code>,
-                    <code>{{ '{Year}' }}</code>, <code>{{ '{ISBN}' }}</code>, <code>{{ '{Format}' }}</code>.
-                    The file extension is appended automatically. Empty tokens and any surrounding empty
-                    brackets are cleaned up.
-                </p>
-            </div>
         </fieldset>
 
         <div class="form-actions">

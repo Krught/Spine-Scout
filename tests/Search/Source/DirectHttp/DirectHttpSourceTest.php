@@ -27,6 +27,22 @@ final class DirectHttpSourceTest extends TestCase
         self::assertNotNull($source->getUnavailableReason());
     }
 
+    public function testIsUnavailableWithGlobalMessageWhenMasterSwitchOff(): void
+    {
+        // Source tick ON and mirrors configured — the master switch alone turns it
+        // off, and the reason names the global switch, not the per-source tick.
+        $source = $this->source(
+            $this->config(enabled: true, mirrors: ['https://m.test'], master: false),
+            new MockHttpClient(),
+        );
+
+        self::assertFalse($source->isAvailable());
+        self::assertSame(
+            'Direct downloads are disabled in Settings → Direct downloads.',
+            $source->getUnavailableReason(),
+        );
+    }
+
     public function testIsUnavailableWhenNoMirrors(): void
     {
         $source = $this->source($this->config(enabled: true, mirrors: []), new MockHttpClient());
@@ -130,7 +146,7 @@ final class DirectHttpSourceTest extends TestCase
     // --- helpers ----------------------------------------------------------
 
     /** @param list<string> $mirrors */
-    private function config(bool $enabled, array $mirrors, bool $fast = false): DirectDownloadConfig
+    private function config(bool $enabled, array $mirrors, bool $fast = false, bool $master = true): DirectDownloadConfig
     {
         return DirectDownloadConfig::fromArray(
             [
@@ -139,6 +155,7 @@ final class DirectHttpSourceTest extends TestCase
                 'fastDownloadEnabled' => $fast,
             ],
             new MirrorListNormalizer(),
+            $master,
         );
     }
 

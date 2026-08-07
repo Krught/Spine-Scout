@@ -1,6 +1,7 @@
 .settings-form { display: flex; flex-direction: column; gap: 1.25rem; }
 
 .field { display: flex; flex-direction: column; gap: 0.35rem; }
+.field.is-disabled { opacity: 0.5; }
 .field label {
     font-size: 0.85rem;
     font-weight: 600;

@@ -23,6 +23,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public const ROLE_MANAGE_SETTINGS    = 'ROLE_MANAGE_SETTINGS';
     public const ROLE_MANAGE_USERS       = 'ROLE_MANAGE_USERS';
     public const ROLE_INTERACTIVE_SEARCH = 'ROLE_INTERACTIVE_SEARCH';
+    public const ROLE_REIMPORT           = 'ROLE_REIMPORT';
 
     public const USERNAME_MIN = 3;
     public const USERNAME_MAX = 60;
@@ -124,6 +125,11 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function canUseInteractiveSearch(): bool
     {
         return $this->isAdmin() || in_array(self::ROLE_INTERACTIVE_SEARCH, $this->roles, true);
+    }
+
+    public function canReimport(): bool
+    {
+        return $this->isAdmin() || in_array(self::ROLE_REIMPORT, $this->roles, true);
     }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }

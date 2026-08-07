@@ -16,9 +16,10 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
 /**
- * Covers the manual-fulfillment controls on the requests page: the automatic
- * pipeline toggle, and the "next item awaiting manual fulfillment" queue the
- * interactive-search overlay walks when the pipeline is off.
+ * Covers the manual-fulfillment surface on the requests page: the passive
+ * automatic-fulfillment state indicator (the switch itself lives in
+ * Settings → General), and the "next item awaiting manual fulfillment" queue
+ * the interactive-search overlay walks when the pipeline is off.
  */
 final class RequestsControllerTest extends WebTestCase
 {
@@ -51,49 +52,6 @@ final class RequestsControllerTest extends WebTestCase
         $this->seedUser('admin-pipeline', [User::ROLE_ADMIN]);
         $this->seedUser('member-pipeline', []);
         $this->em->clear();
-    }
-
-    public function testPipelineToggleRoundTrip(): void
-    {
-        $this->client->loginUser($this->loadUser('admin-pipeline'));
-        // Default is on.
-        self::assertTrue($this->integrations->isAutomaticFulfillmentEnabled());
-
-        $this->postJson('/requests/pipeline-toggle', ['enabled' => false]);
-
-        self::assertResponseIsSuccessful();
-        self::assertFalse($this->json()['enabled']);
-        $this->em->clear();
-        self::assertFalse($this->integrations->isAutomaticFulfillmentEnabled());
-
-        $this->postJson('/requests/pipeline-toggle', ['enabled' => true]);
-
-        self::assertResponseIsSuccessful();
-        self::assertTrue($this->json()['enabled']);
-        $this->em->clear();
-        self::assertTrue($this->integrations->isAutomaticFulfillmentEnabled());
-    }
-
-    public function testPipelineToggleDeniedForUserWithoutManageSettings(): void
-    {
-        $this->client->loginUser($this->loadUser('member-pipeline'));
-
-        $this->postJson('/requests/pipeline-toggle', ['enabled' => false]);
-
-        self::assertResponseStatusCodeSame(403);
-        $this->em->clear();
-        self::assertTrue($this->integrations->isAutomaticFulfillmentEnabled());
-    }
-
-    public function testPipelineToggleRejectsInvalidCsrfToken(): void
-    {
-        $this->client->loginUser($this->loadUser('admin-pipeline'));
-
-        $this->postJson('/requests/pipeline-toggle', ['enabled' => false], 'not-a-valid-token');
-
-        self::assertResponseStatusCodeSame(403);
-        $this->em->clear();
-        self::assertTrue($this->integrations->isAutomaticFulfillmentEnabled());
     }
 
     public function testManualNextReturnsOldestAwaitingRequestFirst(): void
@@ -190,19 +148,42 @@ final class RequestsControllerTest extends WebTestCase
         self::assertResponseStatusCodeSame(403);
     }
 
-    public function testIndexExposesTheAutomaticFulfillmentFlag(): void
+    public function testIndexShowsPassivePipelineState(): void
     {
         $this->integrations->setAutomaticFulfillmentEnabled(false);
         $this->em->clear();
 
         $this->client->loginUser($this->loadUser('admin-pipeline'));
-        $this->client->request('GET', '/requests');
+        $crawler = $this->client->request('GET', '/requests');
 
-        // The page renders with the flag off — i.e. `automatic_fulfillment` is a
-        // real variable resolved from the provider, not a template default.
+        // The switch itself moved to Settings → General; the page renders the
+        // current state as a plain passive indicator (no link, no control), and
+        // the manual-queue entry point is live while the pipeline is off.
         self::assertResponseIsSuccessful();
-        self::assertSame('requests', $this->client->getRequest()->attributes->get('_route'));
-        self::assertFalse($this->integrations->isAutomaticFulfillmentEnabled());
+        self::assertSelectorTextContains('.requests-pipeline-state', 'Automatic fulfillment: off');
+        self::assertCount(0, $crawler->filter('.requests-pipeline-state a'));
+        self::assertCount(0, $crawler->filter('.requests-pipeline-state input'));
+        self::assertCount(0, $crawler->filter('[data-request-search-toggle-url-value]'));
+        self::assertNull($crawler->filter('.requests-queue-start')->attr('hidden'));
+
+        $this->integrations->setAutomaticFulfillmentEnabled(true);
+        $this->em->clear();
+
+        $crawler = $this->client->request('GET', '/requests');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('.requests-pipeline-state', 'Automatic fulfillment: on');
+        self::assertNotNull($crawler->filter('.requests-queue-start')->attr('hidden'));
+    }
+
+    public function testIndexHidesPipelineStateFromUsersWithoutManageSettings(): void
+    {
+        $this->client->loginUser($this->loadUser('member-pipeline'));
+        $crawler = $this->client->request('GET', '/requests');
+
+        self::assertResponseIsSuccessful();
+        self::assertCount(0, $crawler->filter('.requests-pipeline-state'));
+        self::assertCount(0, $crawler->filter('.requests-queue-start'));
     }
 
     public function testIndexPaginatesAndClampsThePageParameter(): void

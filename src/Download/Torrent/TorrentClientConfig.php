@@ -46,6 +46,11 @@ final class TorrentClientConfig
      * @param int    $reconcileIntervalHours How often to automatically re-link errored torrent jobs back to a
      *                                        torrent still present in the download client (see TorrentJobReconciler).
      *                                        0 disables the automatic run; the "Run now" button always works.
+     * @param bool   $writeGrimmorySidecars  Write the Grimmory-specific .metadata.json/.cover.jpg sidecar files
+     *                                        beside each imported audiobook. Sidecars are only understood by
+     *                                        Grimmory — skip when the library server isn't Grimmory.
+     * @param bool   $writeAudioTags         Fill only *missing* embedded tags (series, narrator, author, …) in the
+     *                                        downloaded audio files via tone; existing tags are never overwritten.
      */
     public function __construct(
         public readonly string $category = self::DEFAULT_CATEGORY,
@@ -55,6 +60,8 @@ final class TorrentClientConfig
         public readonly string $filenameTemplate = self::DEFAULT_FILENAME_TEMPLATE,
         public readonly bool $removeOnComplete = true,
         public readonly int $reconcileIntervalHours = self::DEFAULT_RECONCILE_INTERVAL_HOURS,
+        public readonly bool $writeGrimmorySidecars = true,
+        public readonly bool $writeAudioTags = true,
     ) {
     }
 
@@ -85,6 +92,8 @@ final class TorrentClientConfig
             $str($raw['filenameTemplate'] ?? null, self::DEFAULT_FILENAME_TEMPLATE),
             (bool) ($raw['removeOnComplete'] ?? true),
             max(0, (int) ($raw['reconcileIntervalHours'] ?? self::DEFAULT_RECONCILE_INTERVAL_HOURS)),
+            (bool) ($raw['writeGrimmorySidecars'] ?? true),
+            (bool) ($raw['writeAudioTags'] ?? true),
         );
     }
 
@@ -99,6 +108,8 @@ final class TorrentClientConfig
             'filenameTemplate'        => $this->filenameTemplate,
             'removeOnComplete'        => $this->removeOnComplete,
             'reconcileIntervalHours'  => $this->reconcileIntervalHours,
+            'writeGrimmorySidecars'   => $this->writeGrimmorySidecars,
+            'writeAudioTags'          => $this->writeAudioTags,
         ];
     }
 

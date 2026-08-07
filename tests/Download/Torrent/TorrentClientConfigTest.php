@@ -77,4 +77,28 @@ final class TorrentClientConfigTest extends TestCase
         self::assertFalse($kept->removeOnComplete);
         self::assertFalse(TorrentClientConfig::fromArray($kept->toArray())->removeOnComplete);
     }
+
+    public function testWriteGrimmorySidecarsDefaultsToTrueAndRoundTrips(): void
+    {
+        // Absent from the stored blob (older configs) → keep writing sidecars.
+        self::assertTrue(TorrentClientConfig::fromArray(['category' => 'ab'])->writeGrimmorySidecars);
+        self::assertTrue(TorrentClientConfig::default()->writeGrimmorySidecars);
+
+        // An explicit false (library server isn't Grimmory) survives a round trip.
+        $off = TorrentClientConfig::fromArray(['writeGrimmorySidecars' => false]);
+        self::assertFalse($off->writeGrimmorySidecars);
+        self::assertFalse(TorrentClientConfig::fromArray($off->toArray())->writeGrimmorySidecars);
+    }
+
+    public function testWriteAudioTagsDefaultsToTrueAndRoundTrips(): void
+    {
+        // Absent from the stored blob (older configs) → keep filling missing tags.
+        self::assertTrue(TorrentClientConfig::fromArray(['category' => 'ab'])->writeAudioTags);
+        self::assertTrue(TorrentClientConfig::default()->writeAudioTags);
+
+        // An explicit false survives a round trip.
+        $off = TorrentClientConfig::fromArray(['writeAudioTags' => false]);
+        self::assertFalse($off->writeAudioTags);
+        self::assertFalse(TorrentClientConfig::fromArray($off->toArray())->writeAudioTags);
+    }
 }

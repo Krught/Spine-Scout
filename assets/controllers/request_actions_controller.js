@@ -18,6 +18,10 @@ export default class extends Controller {
             return;
         }
 
+        await this.send(form);
+    }
+
+    async send(form) {
         const button = form.querySelector('button[type="submit"]');
         if (button?.disabled) return;
         if (button) {
@@ -39,6 +43,10 @@ export default class extends Controller {
                 // Non-JSON body (e.g. an HTML error page) — fall through to the status check.
             }
             if (!res.ok || !data?.ok) {
+                if (data?.unavailable) {
+                    await this.offerReget(data, row);
+                    return;
+                }
                 this.toast(data?.message || `Action failed (HTTP ${res.status}).`, 'error');
                 return;
             }
@@ -58,6 +66,30 @@ export default class extends Controller {
                 button.classList.remove('is-busy');
             }
         }
+    }
+
+    /**
+     * A reimport answered that the torrent's raw files are gone from the download
+     * client. Offer the fallbacks the server said are viable: an automatic
+     * re-download (the row's hidden re-get form, sent through the same fetch
+     * path), else the row's interactive-search overlay, else just the message.
+     */
+    async offerReget(data, row) {
+        if (data.canAuto && window.confirm('Original files are no longer available. Start an automatic re-download?')) {
+            const regetForm = row?.querySelector('form[data-request-actions-reget]');
+            if (regetForm) {
+                await this.send(regetForm);
+                return;
+            }
+        } else if (data.canSearch) {
+            const searchButton = row?.querySelector('.request-btn-search');
+            if (searchButton) {
+                this.toast('Original files are gone — opening interactive search.', 'error');
+                searchButton.click();
+                return;
+            }
+        }
+        this.toast(data.message || 'Original files are no longer available.', 'error');
     }
 
     refreshFilters() {

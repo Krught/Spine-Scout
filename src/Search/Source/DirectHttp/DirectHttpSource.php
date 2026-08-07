@@ -80,8 +80,13 @@ final class DirectHttpSource implements ReleaseSourceInterface, BatchDetailResol
         $config = $this->settings->getDirectDownloadConfig();
         $aa = DirectDownloadSource::AnnasArchive->value;
 
+        // Master switch first: with direct downloads off globally, the per-source
+        // message would mislead (the source's own tick may well still be on).
+        if (!$config->directDownloadsEnabled) {
+            return 'Direct downloads are disabled in Settings → Direct downloads.';
+        }
         if (!$config->isIndexerEnabled($aa)) {
-            return 'Enable the Anna\'s Archive search source in Settings → Direct downloads.';
+            return 'Enable the Anna\'s Archive search source in Settings → General.';
         }
         if ($config->mirrorsFor($aa)->toArray() === []) {
             return 'Add at least one Anna\'s Archive mirror in Settings → Direct downloads.';

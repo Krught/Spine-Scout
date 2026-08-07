@@ -26,6 +26,9 @@ final class DirectDownloadEvaluatorTest extends TestCase
 {
     private const AA = 'annas_archive';
 
+    /** HTTP calls made through the evaluator() helper's mock client. */
+    private int $httpRequests = 0;
+
     public function testEvaluateScoresThresholdsAndPicksBestMatch(): void
     {
         $evaluator = $this->evaluator(new BestMatchPolicy(minMatchScore: 50));
@@ -70,6 +73,20 @@ final class DirectDownloadEvaluatorTest extends TestCase
         self::assertNotNull($result->unavailableReason);
         self::assertSame([], $result->scored);
         self::assertNull($result->pick);
+    }
+
+    public function testMasterSwitchOffSkipsMirrorSourcesEntirely(): void
+    {
+        // Source tick ON, mirrors configured — but the master switch (the
+        // direct_download row's enabled column) is OFF: the source is unavailable
+        // via the adapter gate and never searched.
+        $evaluator = $this->evaluator(new BestMatchPolicy(minMatchScore: 50), enabled: true, masterEnabled: false);
+        $result = $evaluator->evaluate($this->plan('The Left Hand of Darkness', 'Ursula K. Le Guin', '9780441478125'));
+
+        self::assertNotNull($result->unavailableReason);
+        self::assertSame([], $result->scored);
+        self::assertNull($result->pick);
+        self::assertSame(0, $this->httpRequests, 'no mirror may be contacted while the master switch is off');
     }
 
     public function testFailsOverToTheNextSourceWhenTheFirstHasNoQualifyingMatch(): void
@@ -177,7 +194,7 @@ final class DirectDownloadEvaluatorTest extends TestCase
         return new DirectDownloadEvaluator($sources, new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings);
     }
 
-    private function evaluator(BestMatchPolicy $policy, bool $enabled = true): DirectDownloadEvaluator
+    private function evaluator(BestMatchPolicy $policy, bool $enabled = true, bool $masterEnabled = true): DirectDownloadEvaluator
     {
         $config = DirectDownloadConfig::fromArray(
             [
@@ -185,6 +202,7 @@ final class DirectDownloadEvaluatorTest extends TestCase
                 'mirrors'         => [self::AA => ['https://m.test']],
             ],
             new MirrorListNormalizer(),
+            $masterEnabled,
         );
 
         $settings = $this->createStub(SearchSettingsProvider::class);
@@ -192,6 +210,7 @@ final class DirectDownloadEvaluatorTest extends TestCase
         $settings->method('getBestMatchPolicy')->willReturn($policy);
 
         $client = new MockHttpClient(function (string $method, string $url): MockResponse {
+            ++$this->httpRequests;
             if (str_contains($url, '/search?')) {
                 return new MockResponse($this->fixture('aa_search_results.html'));
             }

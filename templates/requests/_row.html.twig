@@ -17,6 +17,7 @@
 {% set can_delete = is_granted('ROLE_ADMIN') or is_owner %}
 {% set is_fulfilled = status == 'available' or (status == 'approved' and r.deliveryStatus == 'complete') %}
 {% set can_search = is_granted('ROLE_ADMIN') and not is_fulfilled %}
+{% set can_reimport = is_granted('ROLE_REIMPORT') and is_fulfilled %}
 {% set _dur = random(900, 3600) %}
 <li class="request-row" data-controller="cover-palette" data-cover-palette-target-value=".request-cover"
     data-requests-filter-target="row" data-status-key="{{ item.status_key }}"
@@ -62,7 +63,9 @@
     </div>
 
     <div class="request-actions">
-        {% if can_search %}
+        {# The search button also renders on fulfilled rows for reimport-capable
+           searchers — the re-get fallback when the original files are gone. #}
+        {% if can_search or (can_reimport and is_granted('ROLE_INTERACTIVE_SEARCH')) %}
             <button type="button" class="request-btn request-btn-search"
                     data-action="request-search#open"
                     data-request-search-book-id-param="{{ r.book.id }}"
@@ -71,6 +74,8 @@
                     data-request-search-isbn-param="{{ r.book.isbn ?? '' }}"
                     data-request-search-audiobook-param="{{ r.audiobook ? 'true' : 'false' }}"
                     title="Manually search sources and download a version">Interactive Search</button>
+        {% endif %}
+        {% if can_search %}
             <button type="button" class="request-btn request-btn-link-torrent"
                     data-action="link-torrent#open"
                     data-link-torrent-options-url-param="{{ path('requests_link_torrent_options', {id: r.id}) }}"
@@ -97,6 +102,21 @@
                   data-action="submit->request-actions#submit">
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token('rewrite-sidecar-request-' ~ r.id) }}">
                 <button type="submit" class="request-btn request-btn-sidecar" title="Re-write the metadata.json and cover.jpg sidecar beside this audiobook">Rewrite sidecar</button>
+            </form>
+        {% endif %}
+        {% if can_reimport %}
+            <form method="post" action="{{ path('requests_reimport', {id: r.id}) }}"
+                  data-action="submit->request-actions#submit"
+                  data-request-actions-confirm-param="Re-import this download into the library?">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('reimport-request-' ~ r.id) }}">
+                <button type="submit" class="request-btn request-btn-reimport" title="Re-import the downloaded files into the library">Reimport</button>
+            </form>
+            {# Hidden re-get form: request-actions submits it when a reimport answers
+               that the original files are gone and the user opts to re-download. #}
+            <form method="post" action="{{ path('requests_reget', {id: r.id}) }}"
+                  data-action="submit->request-actions#submit"
+                  data-request-actions-reget hidden>
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('reget-request-' ~ r.id) }}">
             </form>
         {% endif %}
         {% if can_delete %}

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Controller;
 
+use App\Download\Torrent\TorrentClientConfig;
 use App\Entity\Integration;
 use App\Entity\User;
 use App\Repository\IntegrationRepository;
@@ -29,206 +30,306 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
         $this->seedAdmin();
     }
 
-    public function testGetRendersProwlarrAndQbittorrentSections(): void
+    public function testGetRendersAudiobookDeliverySections(): void
     {
         $this->client->loginUser($this->loadAdmin());
         $this->client->request('GET', '/settings/audiobooks');
 
         self::assertResponseIsSuccessful();
-        self::assertSelectorTextContains('h2.panel-title', 'Torrents');
-        self::assertSelectorExists('input[name="prowlarr_base_url"]');
-        self::assertSelectorExists('input[name="prowlarr_api_key"]');
-        self::assertSelectorExists('input[name="qbittorrent_base_url"]');
-        self::assertSelectorExists('input[name="qbittorrent_auth_method"][value="basic"][checked]');
-        self::assertSelectorExists('input[name="qbittorrent_auth_method"][value="api_key"]');
-        self::assertSelectorExists('input[name="qbittorrent_api_key"][type="password"]');
+        self::assertSelectorTextContains('h2.panel-title', 'Audiobooks');
+        self::assertSelectorExists('input[name="audio_output_directory"]');
         self::assertSelectorExists('input[name="use_ebook_library_dir"]');
-        // Sections are labelled "Indexers" and "Download Client".
-        self::assertSelectorTextContains('.settings-fieldset legend', 'Indexers');
-        self::assertSelectorTextContains('body', 'Download Client');
-        // Both sections expose a connection-test button.
-        self::assertSelectorExists('[data-connection-test-url-value$="/test/prowlarr"]');
-        self::assertSelectorExists('[data-connection-test-url-value$="/test/qbittorrent"]');
+        self::assertSelectorExists('input[name="staging_subdir"]');
+        self::assertSelectorExists('input[name="torrent_filename_template"]');
+        // The audio-tags flag renders inside the main form, checked by default.
+        self::assertSelectorExists('input[name="write_audio_tags"][checked]');
+        // The Grimmory sidecar toggle is back on this page, checked by default.
+        self::assertSelectorExists('input[name="write_grimmory_sidecars"][checked]');
+        // The native-API sidecar-import section renders inside the main form.
+        self::assertSelectorExists('input[name="native_sidecar_import"]');
+        self::assertSelectorExists('input[name="native_username"]');
+        self::assertSelectorExists('input[name="native_password"][type="password"]');
+        // The rewrite-all button posts to its own standalone form at the restored path.
+        self::assertSelectorExists('form[action="/settings/audiobooks/rewrite-sidecars"] button');
+        self::assertSelectorNotExists('form[action="/settings/grimmory/rewrite-sidecars"]');
+        // The torrent stack moved to Settings → Torrents; this page links there
+        // and no longer renders any connection fields.
+        self::assertSelectorExists('a[href="/settings/torrents"]');
+        self::assertSelectorNotExists('input[name="prowlarr_base_url"]');
+        self::assertSelectorNotExists('input[name="qbittorrent_base_url"]');
+        self::assertSelectorNotExists('input[name="qbittorrent_category"]');
+        self::assertSelectorNotExists('input[name="remove_on_complete"]');
+        self::assertSelectorNotExists('input[name="reconcile_interval_hours"]');
     }
 
-    public function testConnectionTestEndpointReportsUnconfigured(): void
-    {
-        $this->client->loginUser($this->loadAdmin());
-        // The test buttons carry their own CSRF id (settings_audiobooks_test); read it off the page.
-        $crawler = $this->client->request('GET', '/settings/audiobooks');
-        $testToken = $crawler->filter('[data-connection-test-token-value]')->first()
-            ->attr('data-connection-test-token-value');
-
-        $this->client->request('POST', '/settings/audiobooks/test/prowlarr', ['_token' => $testToken]);
-        self::assertResponseIsSuccessful();
-        $data = json_decode((string) $this->client->getResponse()->getContent(), true);
-        self::assertFalse($data['ok']);
-        self::assertStringContainsString('not set', $data['message']);
-    }
-
-    public function testConnectionTestRejectsBadCsrf(): void
-    {
-        $this->client->loginUser($this->loadAdmin());
-        $this->client->request('POST', '/settings/audiobooks/test/qbittorrent', ['_token' => 'nope']);
-        self::assertResponseStatusCodeSame(403);
-    }
-
-    public function testPostPersistsConfigRoundTrip(): void
+    public function testPostPersistsAudiobookDeliveryRoundTrip(): void
     {
         $this->client->loginUser($this->loadAdmin());
         $token = $this->fetchCsrfToken('/settings/audiobooks');
 
         $this->client->request('POST', '/settings/audiobooks', [
-            '_token'                     => $token,
-            'prowlarr_enabled'           => '1',
-            'prowlarr_base_url'          => 'http://prowlarr:9696/',
-            'prowlarr_api_key'           => 'secret-key',
-            'prowlarr_categories'        => '3030, 3000',
-            'prowlarr_search_method'     => 'filtered',
-            'prowlarr_min_seeders'       => '5',
-            'prowlarr_max_size_gb'       => '10',
-            'prowlarr_weight_match'      => '0.6',
-            'prowlarr_weight_seeders'    => '0.2',
-            'prowlarr_weight_size'       => '0.1',
-            'prowlarr_weight_format'     => '0.1',
-            'qbittorrent_enabled'        => '1',
-            'qbittorrent_base_url'       => 'http://qbittorrent:8080',
-            'qbittorrent_username'       => 'admin',
-            'qbittorrent_password'       => 'adminpass',
-            'qbittorrent_category'       => 'audiobooks',
-            'audio_output_directory'     => '/audiobooks',
-            'use_ebook_library_dir'      => '0',
-            'staging_subdir'             => 'torrents',
-            'torrent_filename_template'  => '{Author} - {Title}',
-            'remove_on_complete'         => '1',
+            '_token'                    => $token,
+            'audio_output_directory'    => '/audiobooks',
+            'use_ebook_library_dir'     => '0',
+            'staging_subdir'            => 'staging-ab',
+            'torrent_filename_template' => '{Author} - {Title} ({Year})',
         ]);
 
         self::assertResponseRedirects('/settings/audiobooks');
 
         $this->em->clear();
-        $prowlarr = $this->integrations->getProwlarrConfig();
-        self::assertSame([3030, 3000], $prowlarr->categories);
-        self::assertSame('filtered', $prowlarr->searchMethod);
-        self::assertSame(5, $prowlarr->minSeeders);
-        self::assertSame((int) round(10 * 1024 * 1024 * 1024), $prowlarr->maxSizeBytes);
-        self::assertSame(0.6, $prowlarr->weights['match']);
-
-        $prowlarrRow = $this->integrations->findByKind(Integration::KIND_PROWLARR);
-        self::assertNotNull($prowlarrRow);
-        self::assertTrue($prowlarrRow->isEnabled());
-        self::assertSame('http://prowlarr:9696', $prowlarrRow->getBaseUrl());
-        self::assertSame('secret-key', $prowlarrRow->getCredentials()['token'] ?? null);
-
-        $client = $this->integrations->getTorrentClientConfig();
-        self::assertSame('audiobooks', $client->category);
-        self::assertSame('/audiobooks', $client->audioOutputDirectory);
-        self::assertFalse($client->useEbookLibraryDir);
-        self::assertTrue($client->removeOnComplete);
-
-        $qbitRow = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
-        self::assertNotNull($qbitRow);
-        self::assertSame('admin', $qbitRow->getCredentials()['username'] ?? null);
-        self::assertSame(Integration::AUTH_BASIC, $qbitRow->getAuthType());
+        $config = $this->integrations->getTorrentClientConfig();
+        self::assertSame('/audiobooks', $config->audioOutputDirectory);
+        self::assertFalse($config->useEbookLibraryDir);
+        self::assertSame('staging-ab', $config->stagingSubdir);
+        self::assertSame('{Author} - {Title} ({Year})', $config->filenameTemplate);
+        // Torrent-stack keys weren't posted and keep their defaults untouched.
+        self::assertTrue($config->removeOnComplete);
+        self::assertSame(6, $config->reconcileIntervalHours);
     }
 
-    public function testQbittorrentApiKeyAuthMethodPersists(): void
+    public function testAbsentOutputDirectoryKeepsStoredPath(): void
     {
         $this->client->loginUser($this->loadAdmin());
+
+        // Seed a custom output folder.
         $token = $this->fetchCsrfToken('/settings/audiobooks');
-
         $this->client->request('POST', '/settings/audiobooks', [
-            '_token'                  => $token,
-            'qbittorrent_enabled'     => '1',
-            'qbittorrent_base_url'    => 'http://qbittorrent:8080',
-            'qbittorrent_auth_method' => 'api_key',
-            'qbittorrent_api_key'     => 'qbt_abcdefghijklmnopqrstuvwxyz00',
+            '_token'                 => $token,
+            'audio_output_directory' => '/custom/audiobooks',
+            'staging_subdir'         => 'torrents',
         ]);
-
         self::assertResponseRedirects('/settings/audiobooks');
-        $this->em->clear();
-        $row = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
-        self::assertNotNull($row);
-        self::assertSame(Integration::AUTH_API_KEY, $row->getAuthType());
-        self::assertSame('qbt_abcdefghijklmnopqrstuvwxyz00', $row->getCredentials()['api_key'] ?? null);
 
-        // The saved page preselects the API-key radio.
-        $this->client->followRedirect();
-        self::assertSelectorExists('input[name="qbittorrent_auth_method"][value="api_key"][checked]');
+        // Save with "deliver into the ebook library" ticked: the folder input is
+        // disabled client-side and therefore absent from the POST entirely.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'                => $token,
+            'use_ebook_library_dir' => '1',
+            'staging_subdir'        => 'torrents',
+        ]);
+        self::assertResponseRedirects('/settings/audiobooks');
+
+        $this->em->clear();
+        $config = $this->integrations->getTorrentClientConfig();
+        self::assertTrue($config->useEbookLibraryDir);
+        self::assertSame('/custom/audiobooks', $config->audioOutputDirectory);
+
+        // The page now renders the folder input disabled and dimmed.
+        $this->client->request('GET', '/settings/audiobooks');
+        self::assertSelectorExists('input[name="audio_output_directory"][disabled]');
+        self::assertSelectorExists('.field.is-disabled input[name="audio_output_directory"]');
     }
 
-    public function testBlankQbittorrentApiKeyKeepsExisting(): void
+    public function testPostDoesNotTouchQbittorrentConnectionOrEnabledFlag(): void
     {
+        // Seed a fully configured qbittorrent row as Settings → Torrents would.
         $row = new Integration(Integration::KIND_QBITTORRENT);
-        $row->setAuthType(Integration::AUTH_API_KEY);
+        $row->setAuthType(Integration::AUTH_BASIC);
         $row->setBaseUrl('http://qbittorrent:8080');
-        $row->setCredentials(['api_key' => 'qbt_original']);
+        $row->setCredentials(['username' => 'admin', 'password' => 'adminpass']);
         $row->setEnabled(true);
         $this->em->persist($row);
         $this->em->flush();
 
         $this->client->loginUser($this->loadAdmin());
         $token = $this->fetchCsrfToken('/settings/audiobooks');
-
         $this->client->request('POST', '/settings/audiobooks', [
-            '_token'                  => $token,
-            'qbittorrent_enabled'     => '1',
-            'qbittorrent_base_url'    => 'http://qbittorrent:8080',
-            'qbittorrent_auth_method' => 'api_key',
-            'qbittorrent_api_key'     => '', // blank — keep existing
+            '_token'                 => $token,
+            'audio_output_directory' => '/audiobooks',
         ]);
-
         self::assertResponseRedirects('/settings/audiobooks');
+
         $this->em->clear();
         $fresh = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
-        self::assertSame('qbt_original', $fresh?->getCredentials()['api_key'] ?? null);
-        self::assertSame(Integration::AUTH_API_KEY, $fresh?->getAuthType());
+        self::assertNotNull($fresh);
+        self::assertTrue($fresh->isEnabled());
+        self::assertSame('http://qbittorrent:8080', $fresh->getBaseUrl());
+        self::assertSame(Integration::AUTH_BASIC, $fresh->getAuthType());
+        self::assertSame('admin', $fresh->getCredentials()['username'] ?? null);
+        self::assertSame('adminpass', $fresh->getCredentials()['password'] ?? null);
     }
 
-    public function testUnknownQbittorrentAuthMethodFallsBackToBasic(): void
+    public function testWriteAudioTagsCheckboxPersistsOffAndOn(): void
     {
         $this->client->loginUser($this->loadAdmin());
-        $token = $this->fetchCsrfToken('/settings/audiobooks');
 
+        // Checkbox absent from the POST (unticked) → the flag persists as false.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token' => $token,
+        ]);
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->em->clear();
+        $config = $this->integrations->getTorrentClientConfig();
+        self::assertFalse($config->writeAudioTags);
+
+        // Ticked → the flag persists as true again.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'           => $token,
+            'write_audio_tags' => '1',
+        ]);
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->em->clear();
+        $config = $this->integrations->getTorrentClientConfig();
+        self::assertTrue($config->writeAudioTags);
+    }
+
+    public function testWriteGrimmorySidecarsCheckboxPersistsOffAndOn(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+
+        // Checkbox absent from the POST (unticked) → the flag persists as false.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token' => $token,
+        ]);
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->em->clear();
+        $config = $this->integrations->getTorrentClientConfig();
+        self::assertFalse($config->writeGrimmorySidecars);
+
+        // Ticked → the flag persists as true again.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
         $this->client->request('POST', '/settings/audiobooks', [
             '_token'                  => $token,
-            'qbittorrent_base_url'    => 'http://qbittorrent:8080',
-            'qbittorrent_auth_method' => 'something-else',
-            'qbittorrent_username'    => 'admin',
-            'qbittorrent_password'    => 'adminpass',
+            'write_grimmory_sidecars' => '1',
         ]);
-
         self::assertResponseRedirects('/settings/audiobooks');
         $this->em->clear();
-        $row = $this->integrations->findByKind(Integration::KIND_QBITTORRENT);
-        self::assertSame(Integration::AUTH_BASIC, $row?->getAuthType());
-        self::assertSame('admin', $row?->getCredentials()['username'] ?? null);
+        $config = $this->integrations->getTorrentClientConfig();
+        self::assertTrue($config->writeGrimmorySidecars);
     }
 
-    public function testBlankSecretKeepsExistingCredential(): void
+    public function testNativeOptionsRoundTrip(): void
     {
-        // Seed an existing Prowlarr row with a stored token.
-        $row = new Integration(Integration::KIND_PROWLARR);
-        $row->setAuthType(Integration::AUTH_API_KEY);
-        $row->setBaseUrl('http://prowlarr:9696');
-        $row->setCredentials(['token' => 'original-token']);
-        $row->setEnabled(true);
-        $this->em->persist($row);
-        $this->em->flush();
+        $this->client->loginUser($this->loadAdmin());
+
+        // First save creates the grimmory row and stores the native block.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'                => $token,
+            'native_sidecar_import' => '1',
+            'native_username'       => 'meta-user',
+            'native_password'       => 'meta-pass',
+        ]);
+        self::assertResponseRedirects('/settings/audiobooks');
+
+        $this->em->clear();
+        $grimmory = $this->integrations->findByKind(Integration::KIND_GRIMMORY);
+        self::assertNotNull($grimmory);
+        // assertEquals: jsonb storage does not preserve key order.
+        self::assertEquals([
+            'username'      => 'meta-user',
+            'password'      => 'meta-pass',
+            'sidecarImport' => true,
+        ], $grimmory->getOptions()['native'] ?? null);
+
+        // The page renders the stored username, the toggle ticked, and the
+        // password field empty with the keep-current placeholder.
+        $this->client->request('GET', '/settings/audiobooks');
+        self::assertSelectorExists('input[name="native_sidecar_import"][checked]');
+        self::assertSelectorExists('input[name="native_username"][value="meta-user"]');
+        self::assertSelectorNotExists('input[name="native_password"][value]');
+        self::assertSelectorExists('input[name="native_password"][placeholder*="leave blank to keep current"]');
+
+        // Blank password keeps the stored one; username and toggle update.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'          => $token,
+            'native_username' => 'meta-user-2',
+            'native_password' => '',
+        ]);
+        self::assertResponseRedirects('/settings/audiobooks');
+
+        $this->em->clear();
+        $grimmory = $this->integrations->findByKind(Integration::KIND_GRIMMORY);
+        self::assertNotNull($grimmory);
+        self::assertEquals([
+            'username'      => 'meta-user-2',
+            'password'      => 'meta-pass',
+            'sidecarImport' => false,
+        ], $grimmory->getOptions()['native'] ?? null);
+
+        // A non-blank password replaces the stored one.
+        $token = $this->fetchCsrfToken('/settings/audiobooks');
+        $this->client->request('POST', '/settings/audiobooks', [
+            '_token'                => $token,
+            'native_sidecar_import' => '1',
+            'native_username'       => 'meta-user-2',
+            'native_password'       => 'new-pass',
+        ]);
+        self::assertResponseRedirects('/settings/audiobooks');
+
+        $this->em->clear();
+        $grimmory = $this->integrations->findByKind(Integration::KIND_GRIMMORY);
+        self::assertNotNull($grimmory);
+        self::assertSame('new-pass', $grimmory->getOptions()['native']['password'] ?? null);
+    }
+
+    /**
+     * The native block merge-saves into the grimmory row's options: every other
+     * options key — and the row's connection fields, which this page never
+     * edits — must survive the save untouched.
+     */
+    public function testPostPreservesGrimmoryRowOtherOptionsAndConnection(): void
+    {
+        $grimId = $this->seedGrimmoryRow();
 
         $this->client->loginUser($this->loadAdmin());
         $token = $this->fetchCsrfToken('/settings/audiobooks');
-
         $this->client->request('POST', '/settings/audiobooks', [
-            '_token'             => $token,
-            'prowlarr_enabled'   => '1',
-            'prowlarr_base_url'  => 'http://prowlarr:9696',
-            'prowlarr_api_key'   => '', // blank — keep existing
+            '_token'                => $token,
+            'native_sidecar_import' => '1',
+            'native_username'       => 'meta-user',
+            'native_password'       => '',
         ]);
-
         self::assertResponseRedirects('/settings/audiobooks');
+
         $this->em->clear();
-        $fresh = $this->integrations->findByKind(Integration::KIND_PROWLARR);
-        self::assertSame('original-token', $fresh?->getCredentials()['token'] ?? null);
+        $grimmory = $this->integrations->findByKind(Integration::KIND_GRIMMORY);
+        self::assertNotNull($grimmory);
+        self::assertSame($grimId, $grimmory->getId());
+        // Other options keys survive the merge-save.
+        self::assertSame('keep-me', $grimmory->getOptions()['other'] ?? null);
+        // The native block itself was updated (blank password kept the seeded one).
+        self::assertSame('meta-user', $grimmory->getOptions()['native']['username'] ?? null);
+        self::assertSame('seeded-pass', $grimmory->getOptions()['native']['password'] ?? null);
+        self::assertTrue($grimmory->getOptions()['native']['sidecarImport'] ?? false);
+        // Connection fields and the enabled flag are untouched.
+        self::assertTrue($grimmory->isEnabled());
+        self::assertSame('http://komga:25600', $grimmory->getBaseUrl());
+        self::assertSame(Integration::AUTH_BASIC, $grimmory->getAuthType());
+        self::assertSame('komga-user', $grimmory->getCredentials()['username'] ?? null);
+        self::assertSame('komga-pass', $grimmory->getCredentials()['password'] ?? null);
+    }
+
+    public function testRewriteSidecarsRouteAtRestoredPath(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+
+        // Valid CSRF, no downloaded audiobooks → error flash, back to this tab.
+        $crawler = $this->client->request('GET', '/settings/audiobooks');
+        $token = $crawler
+            ->filter('form[action="/settings/audiobooks/rewrite-sidecars"] input[name="_token"]')
+            ->attr('value');
+        self::assertNotNull($token);
+        $this->client->request('POST', '/settings/audiobooks/rewrite-sidecars', ['_token' => $token]);
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->client->followRedirect();
+        self::assertSelectorTextContains('.flash-error', 'No downloaded audiobooks found');
+
+        // Invalid CSRF also redirects to this tab.
+        $this->client->request('POST', '/settings/audiobooks/rewrite-sidecars', ['_token' => 'nope']);
+        self::assertResponseRedirects('/settings/audiobooks');
+        $this->client->followRedirect();
+        self::assertSelectorTextContains('.flash-error', 'Invalid CSRF token');
+
+        // The temporary Komga-tab path is gone.
+        $this->client->request('POST', '/settings/grimmory/rewrite-sidecars', ['_token' => $token]);
+        self::assertResponseStatusCodeSame(404);
     }
 
     public function testRejectsInvalidCsrfToken(): void
@@ -245,6 +346,33 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
         $this->client->request('GET', '/settings/audiobooks');
         self::assertResponseRedirects();
         self::assertStringContainsString('/login', (string) $this->client->getResponse()->headers->get('Location'));
+    }
+
+    /** Seed a fully configured grimmory row as Settings → Komga would, plus a foreign options key. */
+    private function seedGrimmoryRow(): ?int
+    {
+        // Drop the per-request memo: it caches null lookups, and reusing the
+        // repository across requests would otherwise re-create existing rows.
+        $this->integrations->clearSettingsCache();
+        $grimmory = $this->integrations->getOrCreate(Integration::KIND_GRIMMORY);
+        $grimmory->setAuthType(Integration::AUTH_BASIC);
+        $grimmory->setBaseUrl('http://komga:25600');
+        $grimmory->setCredentials(['username' => 'komga-user', 'password' => 'komga-pass']);
+        $grimmory->setEnabled(true);
+        $grimmory->setOptions([
+            'native' => [
+                'username'      => 'seeded-user',
+                'password'      => 'seeded-pass',
+                'sidecarImport' => false,
+            ],
+            'other' => 'keep-me',
+        ]);
+        if ($grimmory->getId() === null) {
+            $this->em->persist($grimmory);
+        }
+        $this->em->flush();
+
+        return $grimmory->getId();
     }
 
     private function seedAdmin(): void
@@ -266,10 +394,11 @@ final class SettingsAudiobooksControllerTest extends WebTestCase
         return $user;
     }
 
+    /** The MAIN settings form's token — it renders before the rewrite form, so first match wins. */
     private function fetchCsrfToken(string $path): string
     {
         $crawler = $this->client->request('GET', $path);
-        $token = $crawler->filter('input[name="_token"]')->attr('value');
+        $token = $crawler->filter('input[name="_token"]')->first()->attr('value');
         self::assertNotNull($token, "Expected CSRF token rendered at {$path}");
         return $token;
     }

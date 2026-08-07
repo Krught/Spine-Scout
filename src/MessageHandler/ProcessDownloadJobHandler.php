@@ -149,7 +149,7 @@ final class ProcessDownloadJobHandler
         $config = $this->settings->getDirectDownloadConfig();
         if (trim($config->outputDirectory) === '') {
             @unlink($staged);
-            $this->fail($job, 'No output / watch folder configured in Settings → Direct downloads.');
+            $this->fail($job, 'No ebook library / watch folder configured in Settings → Ebooks.');
 
             return;
         }

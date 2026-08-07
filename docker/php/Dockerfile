@@ -56,6 +56,26 @@ RUN apk add --no-cache \
         zip \
     && apk del --no-network .build-deps
 
+# Audiobook tagger: tone (https://github.com/sandreas/tone) fills missing
+# embedded tags on finished audiobooks before they enter the library. It is a
+# single-file .NET binary; the musl builds need libstdc++ at runtime (tone is
+# built with invariant globalization, and icu-libs is installed above anyway).
+ARG TARGETARCH
+ARG TONE_VERSION=0.2.5
+RUN apk add --no-cache libstdc++ \
+    && case "${TARGETARCH:-amd64}" in \
+        amd64) tone_arch=x64 ;; \
+        arm64) tone_arch=arm64 ;; \
+        *) echo "unsupported TARGETARCH for tone: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && wget -qO /tmp/tone.tar.gz \
+        "https://github.com/sandreas/tone/releases/download/v${TONE_VERSION}/tone-${TONE_VERSION}-linux-musl-${tone_arch}.tar.gz" \
+    && tar -xzf /tmp/tone.tar.gz -C /tmp \
+    && mv "/tmp/tone-${TONE_VERSION}-linux-musl-${tone_arch}/tone" /usr/local/bin/tone \
+    && chmod +x /usr/local/bin/tone \
+    && rm -rf /tmp/tone.tar.gz "/tmp/tone-${TONE_VERSION}-linux-musl-${tone_arch}" \
+    && tone --version
+
 # Production-ish PHP defaults; the override compose layer can replace these for dev
 COPY docker/php/php.ini /usr/local/etc/php/conf.d/zz-spinescout.ini
 

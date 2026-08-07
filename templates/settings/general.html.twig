@@ -13,6 +13,35 @@
         <input type="hidden" name="_token" value="{{ csrf_token('settings_general') }}">
 
         <fieldset class="settings-fieldset">
+            <legend>Source priority</legend>
+            <p class="form-note">
+                Drag to reorder. Downloads are resolved by trying enabled sources top-down.
+                Torrent uses the indexers and download client configured on the
+                <a href="{{ path('settings_torrents') }}">Torrents</a> tab; the four direct
+                sources also require direct downloads to be enabled on the
+                <a href="{{ path('settings_direct_download') }}">Direct downloads</a> tab.
+            </p>
+            {% if not direct_downloads_enabled %}
+                <p class="form-note">
+                    Direct downloads are currently disabled, so the four direct sources are
+                    inactive (their saved ticks are kept). Re-enable them on the
+                    <a href="{{ path('settings_direct_download') }}">Direct downloads</a> tab.
+                </p>
+            {% endif %}
+            <div class="field"
+                 data-controller="orderable-list"
+                 data-orderable-list-input-name-value="indexerPriority"
+                 data-orderable-list-initial-value="{{ priority_rows|json_encode }}"
+                 data-orderable-list-labels-value="{{ source_labels|json_encode }}"
+                 data-orderable-list-locked-ids-value="{{ locked_ids|json_encode }}"
+                 data-orderable-list-fixed-options-value="true"
+                 data-orderable-list-mode-value="rows">
+                <ul data-orderable-list-target="list" class="orderable-list" aria-label="Source priority"></ul>
+                <input type="hidden" name="indexerPriority" data-orderable-list-target="hidden">
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
             <legend>Metadata</legend>
             <label class="field-checkbox">
                 <input type="checkbox" name="overwrite_metadata" value="1" {{ overwrite_metadata ? 'checked' : '' }}>
@@ -26,6 +55,14 @@
                 <input type="checkbox" name="auto_approve_requests" value="1" {{ auto_approve_requests ? 'checked' : '' }}>
                 <span>Enable automatic book approval for all requested books</span>
             </label>
+            <label class="field-checkbox">
+                <input type="checkbox" name="automatic_fulfillment" value="1" {{ automatic_fulfillment ? 'checked' : '' }}>
+                <span>Enable automatic fulfillment (search + download approved requests automatically)</span>
+            </label>
+            <p class="form-note">
+                When off, approved requests wait in the manual queue on the
+                <a href="{{ path('requests') }}">Requests</a> page.
+            </p>
         </fieldset>
 
         <div class="form-actions">

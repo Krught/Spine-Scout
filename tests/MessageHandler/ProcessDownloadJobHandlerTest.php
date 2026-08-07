@@ -126,7 +126,7 @@ final class ProcessDownloadJobHandlerTest extends TestCase
         $handler(new ProcessDownloadJob(1));
 
         self::assertSame(DownloadJob::STATUS_ERROR, $job->getStatus());
-        self::assertStringContainsString('output', strtolower((string) $job->getStatusMessage()));
+        self::assertStringContainsString('watch folder', strtolower((string) $job->getStatusMessage()));
     }
 
     public function testNonQueuedJobIsSkipped(): void

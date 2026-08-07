@@ -69,8 +69,13 @@ abstract class AbstractDirectHttpSource implements ReleaseSourceInterface, Batch
         $config = $this->settings->getDirectDownloadConfig();
         $id = $this->sourceId();
 
+        // Master switch first: with direct downloads off globally, the per-source
+        // message would mislead (the source's own tick may well still be on).
+        if (!$config->directDownloadsEnabled) {
+            return 'Direct downloads are disabled in Settings → Direct downloads.';
+        }
         if (!$config->isIndexerEnabled($id)) {
-            return sprintf('Enable the %s source in Settings → Direct downloads.', $this->getDisplayName());
+            return sprintf('Enable the %s source in Settings → General.', $this->getDisplayName());
         }
         if ($config->mirrorsFor($id)->toArray() === []) {
             return sprintf('Add at least one %s mirror in Settings → Direct downloads.', $this->getDisplayName());

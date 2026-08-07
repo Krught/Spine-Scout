@@ -413,7 +413,7 @@ final class InteractiveSearchController extends AbstractController
 
         $config = $this->probe->config();
         if (trim($config->outputDirectory) === '') {
-            return $this->json(['error' => 'No output / watch folder configured in Settings → Direct downloads.'], 409);
+            return $this->json(['error' => 'No ebook library / watch folder configured in Settings → Ebooks.'], 409);
         }
 
         // Try each link in order; first one that stages a file wins (failover).

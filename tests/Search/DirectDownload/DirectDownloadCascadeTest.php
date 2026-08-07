@@ -130,6 +130,50 @@ final class DirectDownloadCascadeTest extends TestCase
         self::assertSame(['zlibrary'], array_values(array_unique(array_map(static fn (DownloadAttempt $x) => $x->sourceId, $attempts))));
     }
 
+    public function testMasterSwitchOffSkipsHttpSourcesEntirely(): void
+    {
+        // A REAL adapter (not the test fake, whose unavailable reason is fixed):
+        // the cascade honours the master switch through the adapter's
+        // getUnavailableReason() gate, so this exercises the actual seam.
+        $requests = 0;
+        $client = new \Symfony\Component\HttpClient\MockHttpClient(function () use (&$requests): \Symfony\Component\HttpClient\Response\MockResponse {
+            ++$requests;
+
+            return new \Symfony\Component\HttpClient\Response\MockResponse('No files found.');
+        });
+
+        $config = DirectDownloadConfig::fromArray(
+            [
+                'indexerPriority' => [
+                    ['id' => 'annas_archive', 'enabled' => true],
+                    ['id' => 'torrent', 'enabled' => true],
+                ],
+                'mirrors' => ['annas_archive' => ['https://m.test']],
+            ],
+            new MirrorListNormalizer(),
+            directDownloadsEnabled: false,
+        );
+        $settings = $this->createStub(SearchSettingsProvider::class);
+        $settings->method('getDirectDownloadConfig')->willReturn($config);
+        $settings->method('getBestMatchPolicy')->willReturn(new BestMatchPolicy(minMatchScore: 50));
+
+        $source = new \App\Search\Source\DirectHttp\DirectHttpSource(
+            $settings,
+            new \App\Search\Source\DirectHttpProtocol\AAStyleHttpProtocol(),
+            $client,
+        );
+        $lines = [];
+        $cascade = new DirectDownloadCascade([$source], new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $this->capturingLog($lines));
+
+        $attempts = iterator_to_array($cascade->attempts($this->plan(), 'A Book'), false);
+
+        self::assertSame([], $attempts);
+        self::assertSame(0, $requests, 'no mirror may be contacted while the master switch is off');
+        self::assertContains("Anna's Archive — skipped: Direct downloads are disabled in Settings → Direct downloads.", $lines);
+        // (The torrent row is outside the cascade either way — it is fulfilled by
+        // the torrent pipeline in ProcessDownloadJobHandler, gated on its own tick.)
+    }
+
     // --- helpers ----------------------------------------------------------
 
     private function source(string $id, array $candidates, ?string $unavailableReason = null): CascadeTestSource

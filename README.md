@@ -227,7 +227,7 @@ Most configuration happens in the **Settings** area of the web UI after first la
 
 ### Torrent downloads: mapping the download path
 
-Books and audiobooks can be fulfilled over BitTorrent. Audiobooks always use it; for books, add **Torrent** to *Settings → Direct downloads → Source priority* (drag it above the HTTP sources to prefer it, or below to use it as a fallback). Spine Scout searches your indexers, sends the best match to your download client, then **moves the finished files into your library** — audiobooks to your audiobook folder, books to your ebook library folder. To do the move it reads the client's completed downloads from disk; it does not pull files over the client's API.
+Books and audiobooks can be fulfilled over BitTorrent. Audiobooks always use it; for books, add **Torrent** to *Settings → General → Source priority* (drag it above the HTTP sources to prefer it, or below to use it as a fallback). Spine Scout searches your indexers, sends the best match to your download client, then **moves the finished files into your library** — audiobooks to your audiobook folder, books to your ebook library folder. To do the move it reads the client's completed downloads from disk; it does not pull files over the client's API.
 
 The convention is a single fixed mount: **bind-mount your download client's completed-downloads folder into the Spine Scout `app` and `worker` containers at `/downloads`.** Spine Scout then resolves a finished torrent at `/downloads/<torrent name>`, so it works no matter what absolute path the client uses on its own host (e.g. `/mnt/videos/torr/...`) — only the basename matters. No path-mapping fields are needed in the UI; the `/downloads` mount is the whole contract.
 

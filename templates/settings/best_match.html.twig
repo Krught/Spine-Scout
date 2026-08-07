@@ -64,6 +64,12 @@
 
         <fieldset class="settings-fieldset">
             <legend>Quality gates</legend>
+            <p class="form-note">
+                These gates judge the final candidate across all sources (seeders applies to torrents
+                only). They are separate from the indexer pre-filters on the
+                <a href="{{ path('settings_torrents') }}">Torrents</a> tab, which trim torrent search
+                results before scoring.
+            </p>
             <div class="field-row">
                 <div class="field">
                     <label for="minSizeBytes">Min size (bytes, blank = no gate)</label>

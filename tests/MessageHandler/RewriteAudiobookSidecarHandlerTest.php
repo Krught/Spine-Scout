@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Tests\MessageHandler;
 
+use App\Download\Client\TorrentClientSettings;
 use App\Download\Metadata\AudiobookSidecarWriter;
+use App\Download\Torrent\TorrentClientConfig;
 use App\Entity\Book;
 use App\Entity\BookRequest;
 use App\Entity\DownloadJob;
@@ -34,10 +36,12 @@ final class RewriteAudiobookSidecarHandlerTest extends TestCase
         @rmdir($this->root);
     }
 
-    public function testRewritesSidecarBesideTheAlbumFolder(): void
+    public function testRewritesSidecarBesideAFolderBasedAlbum(): void
     {
         $album = $this->root . '/Brandon Sanderson - The Way of Kings';
         mkdir($album, 0o775, true);
+        file_put_contents($album . '/Part 1.mp3', 'AUDIO');
+        file_put_contents($album . '/Part 2.mp3', 'AUDIO');
 
         $book = (new Book('hardcover', 'ext-1', 'The Way of Kings'))
             ->setAuthor('Brandon Sanderson')
@@ -46,7 +50,8 @@ final class RewriteAudiobookSidecarHandlerTest extends TestCase
 
         $this->handler($job, 'JPEGBYTES')(new RewriteAudiobookSidecar(7));
 
-        // Sidecar lands BESIDE the album folder (in $this->root), named after it.
+        // Folder-based (2+ audio files): the sidecar lands BESIDE the album folder
+        // (in $this->root), named after it.
         self::assertFileExists($this->root . '/Brandon Sanderson - The Way of Kings.metadata.json');
         self::assertFileExists($this->root . '/Brandon Sanderson - The Way of Kings.cover.jpg');
         // The folder itself stays free of the sidecar.
@@ -57,10 +62,44 @@ final class RewriteAudiobookSidecarHandlerTest extends TestCase
         self::assertSame('Kate Reading', $meta['metadata']['narrator']);
     }
 
+    public function testRewritesSidecarInsideASingleFileAlbum(): void
+    {
+        $album = $this->root . '/Matt Dinniman - Dungeon Crawler Carl';
+        mkdir($album, 0o775, true);
+        file_put_contents($album . '/Dungeon Crawler Carl.m4b', 'AUDIO');
+
+        $book = (new Book('hardcover', 'ext-5', 'Dungeon Crawler Carl'))->setAuthor('Matt Dinniman');
+        $job = $this->completedAudiobookJob($book, $album);
+
+        $this->handler($job, 'JPEGBYTES')(new RewriteAudiobookSidecar(7));
+
+        // Single-file: the sidecar lands INSIDE the folder, named after the file.
+        self::assertFileExists($album . '/Dungeon Crawler Carl.metadata.json');
+        self::assertFileExists($album . '/Dungeon Crawler Carl.cover.jpg');
+        self::assertSame([], glob($this->root . '/*.metadata.json') ?: []);
+    }
+
+    public function testSkipsEntirelyWhenGrimmorySidecarsAreDisabled(): void
+    {
+        $album = $this->root . '/Disabled Album';
+        mkdir($album, 0o775, true);
+        file_put_contents($album . '/Part 1.mp3', 'AUDIO');
+        file_put_contents($album . '/Part 2.mp3', 'AUDIO');
+
+        $job = $this->completedAudiobookJob(new Book('hardcover', 'ext-6', 'Disabled'), $album);
+
+        $this->handler($job, 'JPEGBYTES', sidecarsEnabled: false)(new RewriteAudiobookSidecar(7));
+
+        self::assertSame([], glob($this->root . '/*.metadata.json') ?: []);
+        self::assertSame([], glob($album . '/*.metadata.json') ?: []);
+    }
+
     public function testSkipsWhenJobIsNotAudiobook(): void
     {
         $album = $this->root . '/Some Folder';
         mkdir($album, 0o775, true);
+        file_put_contents($album . '/Part 1.mp3', 'AUDIO');
+        file_put_contents($album . '/Part 2.mp3', 'AUDIO');
 
         $job = $this->completedAudiobookJob(new Book('hardcover', 'ext-2', 'An Ebook'), $album);
         $job->getBookRequest()?->setAudiobook(false);
@@ -101,16 +140,21 @@ final class RewriteAudiobookSidecarHandlerTest extends TestCase
         return $job;
     }
 
-    private function handler(DownloadJob $job, ?string $coverBytes): RewriteAudiobookSidecarHandler
+    private function handler(DownloadJob $job, ?string $coverBytes, bool $sidecarsEnabled = true): RewriteAudiobookSidecarHandler
     {
         $em = $this->createStub(EntityManagerInterface::class);
         $em->method('find')->willReturn($job);
+
+        $integrations = $this->createStub(TorrentClientSettings::class);
+        $integrations->method('getTorrentClientConfig')
+            ->willReturn(new TorrentClientConfig(writeGrimmorySidecars: $sidecarsEnabled));
 
         $covers = $this->createStub(BookCoverProvider::class);
         $covers->method('originalCoverForBook')->willReturn($coverBytes === null ? null : [$coverBytes, 'image/jpeg']);
 
         return new RewriteAudiobookSidecarHandler(
             $em,
+            $integrations,
             new AudiobookSidecarWriter($covers, new NullLogger()),
             new NullLogger(),
         );

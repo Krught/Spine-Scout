@@ -6,6 +6,7 @@ namespace App\Download\Metadata;
 
 use App\Entity\Book;
 use App\Service\BookCoverProvider;
+use App\Support\AudioFormat;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
@@ -14,13 +15,25 @@ use Psr\Log\NullLogger;
  * image) for a finished audiobook, so the library holds a portable, importable copy
  * of Spine Scout's stored metadata.
  *
- * The on-disk shape matches Grimmory's sidecar contract: into a given "<folder>" we
- * write "<baseName>.metadata.json" and "<baseName>.cover.jpg". Grimmory matches a
- * sidecar to an album folder by name, so the caller passes the album folder's parent
- * as "<folder>" and the album folder's own name as "<baseName>" — placing the sidecar
- * BESIDE the album folder (the folder itself holds only audio). The JSON is the
- * {version, generatedAt, generatedBy, metadata{...}} envelope; only non-null metadata
- * fields are emitted.
+ * Grimmory resolves a book's sidecar as "<bookPath parent>/<basename>.metadata.json"
+ * and "<basename>.cover.jpg", where basename is the book path's filename truncated at
+ * its LAST dot (if any). What the "book path" is depends on the audiobook's shape, so
+ * sidecar placement must match it or the sidecar is never found:
+ *
+ *  - FOLDER-BASED audiobook (2+ audio files in the folder): the book path is the
+ *    folder itself, so the sidecar goes BESIDE the folder, named after the folder.
+ *    Because of the dot-truncation quirk, a folder named "Book Vol. 1" is matched by
+ *    "Book Vol.metadata.json" (name up to the last dot) — we mimic that exactly.
+ *  - SINGLE-FILE audiobook (exactly 1 audio file, e.g. one .m4b): the book path is
+ *    the audio FILE, so the sidecar goes INSIDE the folder, next to the file, named
+ *    "<audio filename minus extension>.metadata.json" / ".cover.jpg".
+ *
+ * {@see writeForAlbum()} counts the album's audio files (via {@see AudioFormat};
+ * companion files like jpg/nfo/cue don't count) and picks the right placement.
+ * The JSON is the {version, generatedAt, generatedBy, metadata{...}} envelope; only
+ * non-null metadata fields are emitted. The cover is always written as ".cover.jpg"
+ * (the only name Grimmory reads), transcoding to JPEG when the provider hands back
+ * another format.
  *
  * Never throws — a sidecar hiccup must not lose an otherwise-good download — so the
  * caller can always treat the import as successful.
@@ -37,14 +50,60 @@ final class AudiobookSidecarWriter
     }
 
     /**
+     * Inspect $albumDir's audio files and write the sidecar where Grimmory will look
+     * for it: next to the single audio file (named after the file) for single-file
+     * audiobooks, or beside $albumDir (named after the folder, dot-truncated) for
+     * folder-based ones. With no audio files at all, nothing is written.
+     */
+    public function writeForAlbum(string $albumDir, Book $book): void
+    {
+        $albumDir = rtrim($albumDir, '/');
+
+        try {
+            $audioFiles = $this->audioFiles($albumDir);
+        } catch (\Throwable $e) {
+            $this->logger->warning('Audiobook sidecar skipped: album folder could not be scanned', [
+                'dir'   => $albumDir,
+                'error' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+
+        if ($audioFiles === []) {
+            $this->logger->warning('Audiobook sidecar skipped: album folder contains no audio files', ['dir' => $albumDir]);
+
+            return;
+        }
+
+        if (\count($audioFiles) === 1) {
+            // Single-file audiobook: Grimmory's book path is the audio file itself,
+            // so the sidecar lives next to the file (which may sit in a subfolder).
+            $file = $audioFiles[0];
+            $this->writeSidecar(\dirname($file), $this->truncateAtLastDot(basename($file)), $book);
+
+            return;
+        }
+
+        // Folder-based audiobook: the book path is the folder, so the sidecar lives
+        // beside it, named after the folder up to its last dot.
+        $this->writeSidecar(\dirname($albumDir), $this->truncateAtLastDot(basename($albumDir)), $book);
+    }
+
+    /**
      * Write "<baseName>.metadata.json" (and a best-effort "<baseName>.cover.jpg")
-     * into $folder, overwriting any existing sidecar. The caller passes the album
-     * folder's parent as $folder and the album folder's own name as $baseName, so the
-     * sidecar lands beside the album folder, named to match it on Grimmory import.
+     * into $folder, overwriting any existing sidecar. Callers that already know the
+     * placement pass it directly; prefer {@see writeForAlbum()} which derives the
+     * Grimmory-correct placement from the album's audio files.
      */
     public function write(string $folder, string $baseName, Book $book): void
     {
-        $folder = rtrim($folder, '/');
+        $this->writeSidecar(rtrim($folder, '/'), $baseName, $book);
+    }
+
+    /** The shared sidecar emitter behind both public entry points. Never throws. */
+    private function writeSidecar(string $folder, string $baseName, Book $book): void
+    {
         $base = $this->safeBase($baseName);
 
         $json = json_encode($this->envelope($book), \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE);
@@ -62,6 +121,46 @@ final class AudiobookSidecarWriter
         }
 
         $this->writeCover($folder, $base, $book);
+    }
+
+    /**
+     * All audio files under $albumDir (recursive), judged by extension via
+     * {@see AudioFormat::isAudio()} — mirrors how Grimmory decides whether a folder
+     * groups into one folder-based book (2+ audio files) or is a single-file book.
+     *
+     * @return list<string> absolute paths
+     */
+    private function audioFiles(string $albumDir): array
+    {
+        $found = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($albumDir, \FilesystemIterator::SKIP_DOTS),
+        );
+        /** @var \SplFileInfo $file */
+        foreach ($iterator as $file) {
+            if ($file->isFile() && AudioFormat::isAudio($file->getExtension())) {
+                $found[] = $file->getPathname();
+            }
+        }
+        sort($found);
+
+        return $found;
+    }
+
+    /**
+     * Grimmory's basename rule: the name truncated at its LAST dot when one exists
+     * past position 0 (so dot-leading names and dotless names pass through whole).
+     * For a file this strips the extension; for a folder like "Book Vol. 1" it
+     * yields "Book Vol".
+     */
+    private function truncateAtLastDot(string $name): string
+    {
+        $pos = strrpos($name, '.');
+        if ($pos !== false && $pos > 0) {
+            return substr($name, 0, $pos);
+        }
+
+        return $name;
     }
 
     /**
@@ -162,7 +261,11 @@ final class AudiobookSidecarWriter
         return [$isbn13, $isbn10];
     }
 
-    /** Download the cover and save it as "<base>.cover.jpg"; best-effort, never fatal. */
+    /**
+     * Download the cover and save it as "<base>.cover.jpg"; best-effort, never fatal.
+     * Grimmory only reads that exact name, so non-JPEG provider bytes are transcoded
+     * to JPEG with GD rather than written under a lying extension.
+     */
     private function writeCover(string $folder, string $base, Book $book): void
     {
         try {
@@ -176,10 +279,38 @@ final class AudiobookSidecarWriter
             return;
         }
 
+        [$bytes, $mimeType] = $cover;
+        if (strtolower($mimeType) !== 'image/jpeg') {
+            $bytes = $this->transcodeToJpeg($bytes);
+            if ($bytes === null) {
+                $this->logger->info('Audiobook cover skipped: non-JPEG cover could not be transcoded', [
+                    'mimeType' => $mimeType,
+                ]);
+
+                return;
+            }
+        }
+
         $coverPath = $folder . '/' . $base . '.cover.jpg';
-        if (@file_put_contents($coverPath, $cover[0]) === false) {
+        if (@file_put_contents($coverPath, $bytes) === false) {
             $this->logger->info('Audiobook cover could not be written', ['path' => $coverPath]);
         }
+    }
+
+    /** Re-encode arbitrary raster bytes as JPEG via GD, or null when GD can't. */
+    private function transcodeToJpeg(string $bytes): ?string
+    {
+        $image = @imagecreatefromstring($bytes);
+        if ($image === false) {
+            return null;
+        }
+
+        ob_start();
+        $ok = @imagejpeg($image, null, 90);
+        $jpeg = ob_get_clean();
+        imagedestroy($image);
+
+        return ($ok && \is_string($jpeg) && $jpeg !== '') ? $jpeg : null;
     }
 
     /** @param array<string, mixed> $out */

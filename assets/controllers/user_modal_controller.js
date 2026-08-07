@@ -19,7 +19,7 @@ export default class extends Controller {
     static targets = [
         'modal', 'form', 'token', 'title', 'submit',
         'username', 'password', 'passwordConfirm', 'passwordHelp',
-        'manageSettings', 'manageUsers', 'interactiveSearch', 'autoApprove', 'masterNote',
+        'manageSettings', 'manageUsers', 'interactiveSearch', 'reimport', 'autoApprove', 'masterNote',
     ];
 
     openCreate(event) {
@@ -35,7 +35,7 @@ export default class extends Controller {
         this.passwordConfirmTarget.required = true;
         this.passwordHelpTarget.textContent = 'At least 8 characters.';
 
-        this.setCapabilities(false, false, false, false);
+        this.setCapabilities(false, false, false, false, false);
         this.setMasterLocked(false);
         this.open();
     }
@@ -57,6 +57,7 @@ export default class extends Controller {
             flag(p.manageSettings),
             flag(p.manageUsers),
             flag(p.interactiveSearch),
+            flag(p.reimport),
             flag(p.autoApprove),
         );
         this.setMasterLocked(flag(p.master));
@@ -68,10 +69,11 @@ export default class extends Controller {
         this.passwordConfirmTarget.value = '';
     }
 
-    setCapabilities(settings, users, interactiveSearch, autoApprove) {
+    setCapabilities(settings, users, interactiveSearch, reimport, autoApprove) {
         this.manageSettingsTarget.checked = settings;
         this.manageUsersTarget.checked = users;
         this.interactiveSearchTarget.checked = interactiveSearch;
+        this.reimportTarget.checked = reimport;
         this.autoApproveTarget.checked = autoApprove;
     }
 
@@ -81,10 +83,12 @@ export default class extends Controller {
             this.manageSettingsTarget.checked = true;
             this.manageUsersTarget.checked = true;
             this.interactiveSearchTarget.checked = true;
+            this.reimportTarget.checked = true;
         }
         this.manageSettingsTarget.disabled = locked;
         this.manageUsersTarget.disabled = locked;
         this.interactiveSearchTarget.disabled = locked;
+        this.reimportTarget.disabled = locked;
         this.masterNoteTarget.hidden = !locked;
     }
 
