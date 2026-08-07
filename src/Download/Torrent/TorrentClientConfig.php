@@ -24,6 +24,11 @@ final class TorrentClientConfig
     public const DEFAULT_CATEGORY = 'spinescout-audiobooks';
     public const DEFAULT_FILENAME_TEMPLATE = '{Author} - {Title}';
     public const DEFAULT_STAGING_SUBDIR = 'torrents';
+    public const DEFAULT_RELEASED_TAG = 'spinescout-unmonitored';
+
+    /** What deleting a request with an active torrent does when the prompt is off. */
+    public const DELETE_ACTION_KEEP = 'keep';
+    public const DELETE_ACTION_REMOVE = 'remove';
     public const DEFAULT_AUDIO_OUTPUT_DIRECTORY = '/var/www/html/audiobooks';
     public const DEFAULT_RECONCILE_INTERVAL_HOURS = 6;
 
@@ -51,6 +56,16 @@ final class TorrentClientConfig
      *                                        Grimmory — skip when the library server isn't Grimmory.
      * @param bool   $writeAudioTags         Fill only *missing* embedded tags (series, narrator, author, …) in the
      *                                        downloaded audio files via tone; existing tags are never overwritten.
+     * @param bool   $deletePromptEnabled    When a user deletes a request whose torrent is still in the download
+     *                                        client (downloading or seeding), ask whether to keep seeding or remove
+     *                                        the torrent. Off = apply $deleteDefaultAction silently instead.
+     * @param string $releasedTag            Tag applied to a torrent kept seeding after its request was deleted, so
+     *                                        the operator can spot no-longer-tracked seeds in the client. Empty =
+     *                                        don't tag.
+     * @param string $deleteDefaultAction    The automatic choice applied when $deletePromptEnabled is off and a
+     *                                        deleted request still has an active torrent: DELETE_ACTION_KEEP leaves
+     *                                        it seeding (tagged with $releasedTag when non-empty), DELETE_ACTION_REMOVE
+     *                                        deletes the torrent and its data from the client.
      */
     public function __construct(
         public readonly string $category = self::DEFAULT_CATEGORY,
@@ -62,6 +77,9 @@ final class TorrentClientConfig
         public readonly int $reconcileIntervalHours = self::DEFAULT_RECONCILE_INTERVAL_HOURS,
         public readonly bool $writeGrimmorySidecars = true,
         public readonly bool $writeAudioTags = true,
+        public readonly bool $deletePromptEnabled = true,
+        public readonly string $releasedTag = self::DEFAULT_RELEASED_TAG,
+        public readonly string $deleteDefaultAction = self::DELETE_ACTION_KEEP,
     ) {
     }
 
@@ -94,6 +112,14 @@ final class TorrentClientConfig
             max(0, (int) ($raw['reconcileIntervalHours'] ?? self::DEFAULT_RECONCILE_INTERVAL_HOURS)),
             (bool) ($raw['writeGrimmorySidecars'] ?? true),
             (bool) ($raw['writeAudioTags'] ?? true),
+            (bool) ($raw['deletePromptEnabled'] ?? true),
+            // Unlike $str-parsed fields, a *stored* empty string is meaningful here
+            // ("don't tag") and must not fall back to the default — only an absent
+            // key (older configs) does.
+            \array_key_exists('releasedTag', $raw) && is_string($raw['releasedTag'])
+                ? trim($raw['releasedTag'])
+                : self::DEFAULT_RELEASED_TAG,
+            self::normalizeDeleteAction($raw['deleteDefaultAction'] ?? null),
         );
     }
 
@@ -110,7 +136,20 @@ final class TorrentClientConfig
             'reconcileIntervalHours'  => $this->reconcileIntervalHours,
             'writeGrimmorySidecars'   => $this->writeGrimmorySidecars,
             'writeAudioTags'          => $this->writeAudioTags,
+            'deletePromptEnabled'     => $this->deletePromptEnabled,
+            'releasedTag'             => $this->releasedTag,
+            'deleteDefaultAction'     => $this->deleteDefaultAction,
         ];
+    }
+
+    /** Anything but an exact known action (absent key, old blob, tampered form) falls back to keep — the safe choice. */
+    private static function normalizeDeleteAction(mixed $raw): string
+    {
+        $action = is_string($raw) ? trim($raw) : '';
+
+        return in_array($action, [self::DELETE_ACTION_KEEP, self::DELETE_ACTION_REMOVE], true)
+            ? $action
+            : self::DELETE_ACTION_KEEP;
     }
 
     /**

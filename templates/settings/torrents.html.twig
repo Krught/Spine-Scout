@@ -230,6 +230,49 @@
                 Once the import lands in your library, remove the finished torrent from qBittorrent and delete
                 the files it downloaded. Untick to keep seeding (e.g. on a private tracker).
             </p>
+            <label class="field-checkbox">
+                <input type="checkbox" name="delete_prompt_enabled" value="1" {{ client_config.deletePromptEnabled ? 'checked' : '' }}>
+                <span>Ask what to do when deleting a request with an active torrent</span>
+            </label>
+            <p class="form-note">
+                If the request being removed still has its torrent in qBittorrent (downloading or seeding),
+                offer a choice: keep it seeding — re-tagged with the tag below so you can spot
+                no-longer-tracked seeds — or delete the torrent and its files from the client.
+            </p>
+            <div class="field delete-default-action">
+                <label>Otherwise, by default</label>
+                <label class="field-checkbox">
+                    <input type="radio" name="delete_default_action" value="keep"
+                           {{ client_config.deleteDefaultAction == 'remove' ? '' : 'checked' }}>
+                    <span>Keep the torrent seeding (applies the tag below)</span>
+                </label>
+                <label class="field-checkbox">
+                    <input type="radio" name="delete_default_action" value="remove"
+                           {{ client_config.deleteDefaultAction == 'remove' ? 'checked' : '' }}>
+                    <span>Delete the torrent and its data</span>
+                </label>
+                <p class="form-note">
+                    Applied automatically — without asking — only when the checkbox above is unticked.
+                </p>
+            </div>
+            <style>
+                /* No-JS progressive disclosure (same trick as the auth-method blocks
+                   above): while the ask-first checkbox is ticked the default-action
+                   radios are inert, so dim them. They still submit their value. */
+                fieldset:has(input[name="delete_prompt_enabled"]:checked) .delete-default-action {
+                    opacity: .55;
+                }
+            </style>
+            <div class="field">
+                <label for="released_tag">Tag for kept torrents</label>
+                <input type="text" id="released_tag" name="released_tag" value="{{ client_config.releasedTag }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="spinescout-unmonitored">
+                <p class="form-note">
+                    Applied in qBittorrent to a torrent kept seeding after its request was deleted, so it's
+                    easy to find torrents Spine Scout no longer tracks. Leave blank to keep without tagging.
+                </p>
+            </div>
             <div class="field">
                 <label for="reconcile_interval_hours">Reconcile orphaned torrents every (hours)</label>
                 <input type="number" id="reconcile_interval_hours" name="reconcile_interval_hours" min="0" step="1"

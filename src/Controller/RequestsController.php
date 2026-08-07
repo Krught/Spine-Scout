@@ -13,6 +13,8 @@ use App\Repository\BookRequestRepository;
 use App\Service\AppSettingsProvider;
 use App\Service\BookMetadataService;
 use App\Download\Client\QbittorrentDownloadClient;
+use App\Download\Client\TorrentClientSettings;
+use App\Download\FulfillmentLog;
 use App\Download\Torrent\TorrentFinalizerInterface;
 use App\Integration\Prowlarr\ProwlarrClient;
 use App\Message\DispatchReleaseSearch;
@@ -63,7 +65,38 @@ final class RequestsController extends AbstractController
         private readonly CacheItemPoolInterface $cache,
         private readonly ProwlarrClient $prowlarr,
         private readonly QbittorrentDownloadClient $qbittorrent,
+        private readonly TorrentClientSettings $torrentSettings,
     ) {
+    }
+
+    /** Memo for {@see torrentDeletePromptReady()} — one settings read per request, not per row. */
+    private ?bool $torrentDeletePromptReady = null;
+
+    /**
+     * Whether deleting a request with an active torrent should offer the
+     * keep-seeding / remove-from-client choice at all: the Settings → Torrents
+     * ask-what-to-do toggle is on and the download client is configured. Gates
+     * only the row's popup hook — with the toggle off the delete endpoint applies
+     * the configured default action itself, without asking.
+     */
+    private function torrentDeletePromptReady(): bool
+    {
+        return $this->torrentDeletePromptReady ??=
+            $this->torrentSettings->getTorrentClientConfig()->deletePromptEnabled
+            && $this->qbittorrent->isConfigured();
+    }
+
+    /**
+     * Whether the request's latest job is a torrent still expected to be present in
+     * the download client: torrent protocol, a known hash, and either downloading
+     * or complete (complete = finished and left seeding until/unless removed).
+     */
+    private static function isActiveTorrentJob(?DownloadJob $job): bool
+    {
+        return $job !== null
+            && $job->getProtocol() === ReleaseCandidate::PROTOCOL_TORRENT
+            && $job->getClientRef() !== null
+            && in_array($job->getStatus(), [DownloadJob::STATUS_DOWNLOADING, DownloadJob::STATUS_COMPLETE], true);
     }
 
     /**
@@ -252,6 +285,10 @@ final class RequestsController extends AbstractController
             'status_key'     => $statusKey,
             'status_label'   => self::STATUS_LABELS[$statusKey] ?? $r->getStatusLabel(),
             'format_key'     => $r->isAudiobook() ? 'audiobook' : 'book',
+            // Drives the delete-form popup hook: only when the latest job's torrent
+            // should still be in the client AND the operator toggle allows asking.
+            'torrent_active' => self::isActiveTorrentJob($job) && $this->torrentDeletePromptReady(),
+            'torrent_state'  => $job !== null && $job->getStatus() === DownloadJob::STATUS_COMPLETE ? 'seeding' : 'downloading',
         ];
     }
 
@@ -789,7 +826,7 @@ final class RequestsController extends AbstractController
     }
 
     #[Route('/requests/{id}/delete', name: 'requests_delete', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function delete(int $id, Request $request, BookRequestRepository $requests, EntityManagerInterface $em): Response
+    public function delete(int $id, Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, FulfillmentLog $fulfillmentLog, EntityManagerInterface $em): Response
     {
         $entity = $requests->find($id);
         if ($entity === null) {
@@ -806,11 +843,65 @@ final class RequestsController extends AbstractController
             throw new AccessDeniedHttpException('Invalid CSRF token.');
         }
 
+        // Torrent-aware deletion: when the latest job's torrent should still be in
+        // the download client (downloading or seeding), what happens to it follows
+        // the Settings → Torrents choice. Prompt on: the user picks keep seeding
+        // (re-tagged so the operator can spot it) or remove-with-files via the
+        // dialog round-trip. Prompt off: the configured default action is applied
+        // silently through the same code paths. No active torrent (or client not
+        // configured) → plain delete, exactly as before.
+        $job = $jobs->findLatestForRequest($entity);
+        $config = $this->torrentSettings->getTorrentClientConfig();
+        $hasActiveTorrent = self::isActiveTorrentJob($job) && $this->qbittorrent->isConfigured();
+        $torrentAction = (string) $request->request->get('torrent_action', '');
+        $message = 'Request removed.';
+
+        if ($hasActiveTorrent && $config->deletePromptEnabled && $torrentAction === '' && self::wantsJson($request)) {
+            // Prompt on, no decision yet — don't delete; ask the frontend to pop
+            // the dialog and re-submit with a torrent_action. (A non-JSON post has
+            // no way to show the dialog, so it falls through to a plain delete.)
+            return new JsonResponse([
+                'ok'                   => true,
+                'needsTorrentDecision' => true,
+                'torrentState'         => $job->getStatus() === DownloadJob::STATUS_COMPLETE ? 'seeding' : 'downloading',
+            ]);
+        }
+
+        if ($hasActiveTorrent && !$config->deletePromptEnabled && !in_array($torrentAction, ['keep', 'remove'], true)) {
+            // Prompt off — no one is asked; the operator's default action decides.
+            $torrentAction = $config->deleteDefaultAction;
+        }
+
+        if ($hasActiveTorrent && in_array($torrentAction, ['keep', 'remove'], true)) {
+            $hash = (string) $job->getClientRef();
+            $title = $entity->getBook()->getTitle();
+            try {
+                if ($torrentAction === 'remove') {
+                    $this->qbittorrent->deleteTorrent($hash, true);
+                    $message = 'Request removed. Torrent deleted from the download client.';
+                } else {
+                    $tag = $config->releasedTag;
+                    if ($tag !== '') {
+                        $this->qbittorrent->addTags($hash, $tag);
+                        $message = 'Request removed. Torrent kept seeding and tagged.';
+                    }
+                }
+            } catch (\Throwable $e) {
+                // The request deletion must not be blocked by a client hiccup —
+                // proceed, but say (and log) that the torrent was left untouched.
+                $message = 'Request removed. (Could not update the torrent: ' . $e->getMessage() . ')';
+                $fulfillmentLog->warn(
+                    'Request deletion could not ' . ($torrentAction === 'remove' ? 'remove torrent ' : 'tag torrent ') . $hash . ': ' . $e->getMessage(),
+                    $title,
+                );
+            }
+        }
+
         $em->remove($entity);
         $em->flush();
 
         if (self::wantsJson($request)) {
-            return new JsonResponse(['ok' => true, 'message' => 'Request removed.', 'removed' => true]);
+            return new JsonResponse(['ok' => true, 'message' => $message, 'removed' => true]);
         }
 
         return $this->redirectToRoute('requests');

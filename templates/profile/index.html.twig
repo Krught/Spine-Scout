@@ -1,0 +1,76 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Profile - Spine Scout{% endblock %}
+
+{% block body %}
+    <section class="settings profile">
+        <header class="settings-header">
+            <h1>Profile</h1>
+            <p>Your account details and password.</p>
+        </header>
+
+        {% for label, messages in app.flashes %}
+            {% for msg in messages %}
+                <div class="flash flash-{{ label }}">{{ msg }}</div>
+            {% endfor %}
+        {% endfor %}
+
+        {% set u = app.user %}
+        <div class="settings-panel profile-panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Account</h2>
+            </div>
+            <dl class="profile-facts">
+                <dt>Username</dt>
+                <dd>{{ u.username }}</dd>
+                <dt>Member since</dt>
+                <dd>{{ u.createdAt|date('F j, Y') }}</dd>
+                <dt>Capabilities</dt>
+                <dd>
+                    <div class="profile-caps">
+                        {% if u.isMaster %}
+                            <span class="profile-cap profile-cap-admin">Master admin</span>
+                        {% elseif u.isAdmin %}
+                            <span class="profile-cap profile-cap-admin">Administrator</span>
+                        {% endif %}
+                        {% if u.canManageSettings %}<span class="profile-cap">Manage settings</span>{% endif %}
+                        {% if u.canManageUsers %}<span class="profile-cap">Manage users</span>{% endif %}
+                        {% if u.canUseInteractiveSearch %}<span class="profile-cap">Interactive search</span>{% endif %}
+                        {% if u.canReimport %}<span class="profile-cap">Reimport</span>{% endif %}
+                        {% if not (u.isAdmin or u.canManageSettings or u.canManageUsers or u.canUseInteractiveSearch or u.canReimport) %}
+                            <span class="profile-cap profile-cap-none">Standard user</span>
+                        {% endif %}
+                    </div>
+                </dd>
+            </dl>
+        </div>
+
+        <div class="settings-panel profile-panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Change password</h2>
+                <p class="panel-sub">Pick a new password of at least 8 characters.</p>
+            </div>
+            <form method="post" action="{{ path('profile_password') }}" class="settings-form" novalidate>
+                <input type="hidden" name="_token" value="{{ csrf_token('profile_password') }}">
+                <div class="field">
+                    <label for="profile-current-password">Current password</label>
+                    <input type="password" id="profile-current-password" name="current_password"
+                           autocomplete="current-password" required>
+                </div>
+                <div class="field">
+                    <label for="profile-new-password">New password</label>
+                    <input type="password" id="profile-new-password" name="password"
+                           autocomplete="new-password" required minlength="8">
+                </div>
+                <div class="field">
+                    <label for="profile-confirm-password">Confirm new password</label>
+                    <input type="password" id="profile-confirm-password" name="password_confirm"
+                           autocomplete="new-password" required minlength="8">
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Change password</button>
+                </div>
+            </form>
+        </div>
+    </section>
+{% endblock %}

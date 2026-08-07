@@ -29,38 +29,51 @@ final class BookRequestRepository extends ServiceEntityRepository
      * same second would otherwise be free to swap places between pages and could be
      * shown twice (or skipped) as the reader pages through.
      *
-     * @param int $page    1-based; callers are expected to clamp against {@see countForList()}
-     * @param int $perPage rows per page
+     * @param int   $page    1-based; callers are expected to clamp against {@see countForList()}
+     * @param int   $perPage rows per page
+     * @param ?User $user    when set, only this user's requests (the /my-requests view)
      *
      * @return list<BookRequest>
      */
-    public function findAllForList(int $page = 1, int $perPage = 50): array
+    public function findAllForList(int $page = 1, int $perPage = 50, ?User $user = null): array
     {
         $page = max(1, $page);
         $perPage = max(1, $perPage);
 
-        /** @var list<BookRequest> $rows */
-        $rows = $this->createQueryBuilder('r')
+        $qb = $this->createQueryBuilder('r')
             ->addSelect('u', 'b')
             ->leftJoin('r.requestedBy', 'u')
             ->leftJoin('r.book', 'b')
             ->orderBy('r.createdAt', 'DESC')
             ->addOrderBy('r.id', 'DESC')
             ->setFirstResult(($page - 1) * $perPage)
-            ->setMaxResults($perPage)
-            ->getQuery()
-            ->getResult();
+            ->setMaxResults($perPage);
+
+        if ($user !== null) {
+            $qb->andWhere('r.requestedBy = :user')->setParameter('user', $user);
+        }
+
+        /** @var list<BookRequest> $rows */
+        $rows = $qb->getQuery()->getResult();
 
         return $rows;
     }
 
-    /** Total requests, for paging {@see findAllForList()}. */
-    public function countForList(): int
+    /**
+     * Total requests, for paging {@see findAllForList()}.
+     *
+     * @param ?User $user when set, only this user's requests are counted
+     */
+    public function countForList(?User $user = null): int
     {
-        return (int) $this->createQueryBuilder('r')
-            ->select('COUNT(r.id)')
-            ->getQuery()
-            ->getSingleScalarResult();
+        $qb = $this->createQueryBuilder('r')
+            ->select('COUNT(r.id)');
+
+        if ($user !== null) {
+            $qb->andWhere('r.requestedBy = :user')->setParameter('user', $user);
+        }
+
+        return (int) $qb->getQuery()->getSingleScalarResult();
     }
 
     /**

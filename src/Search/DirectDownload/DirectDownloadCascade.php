@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Search\DirectDownload;
 
 use App\Download\FulfillmentLog;
+use App\Repository\BlockedReleaseRepository;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\BestMatch\BestMatchSelector;
 use App\Search\SearchSettingsProvider;
@@ -56,6 +57,7 @@ final class DirectDownloadCascade
         private readonly BestMatchSelector $selector,
         private readonly SearchSettingsProvider $settings,
         private readonly FulfillmentLog $log,
+        private readonly BlockedReleaseRepository $blockedReleases,
     ) {
     }
 
@@ -71,6 +73,9 @@ final class DirectDownloadCascade
         $threshold = $policy->minMatchScore;
         $byId = $this->sourcesById();
         $subject = $subject !== '' ? $subject : null;
+        // Releases that already failed for this book in a way that proved the
+        // release itself is bad (see BlockedRelease). Loaded once per cascade run.
+        $blocked = $this->blockedKeys($plan);
 
         foreach ($config->indexerPriority as $row) {
             if (!($row['enabled'] ?? false)) {
@@ -121,6 +126,7 @@ final class DirectDownloadCascade
                 }
 
                 $scored = $this->scorer->scoreCandidates($source, $candidates, $plan, $threshold, $config, self::DETAIL_LIMIT);
+                $scored = $this->withoutBlocked($scored, $blocked, $label, $subject);
                 $top = $this->topQualifying($scored, $policy);
                 if ($top === []) {
                     $this->log->info(sprintf('%s — %d found, none qualified', $label, \count($scored)), $subject);
@@ -204,6 +210,51 @@ final class DirectDownloadCascade
         }
 
         return $source->linksVia($entry->candidate, $mirror, $config);
+    }
+
+    /**
+     * Blocked-release match keys for the plan's book (empty for an unsaved book —
+     * nothing can have been blocked against it yet).
+     *
+     * @return array<string, true>
+     */
+    private function blockedKeys(ReleaseSearchPlan $plan): array
+    {
+        $bookId = $plan->book->getId();
+
+        return $bookId === null ? [] : $this->blockedReleases->blockedKeysForBook($bookId);
+    }
+
+    /**
+     * Drop scored entries whose candidate is on the book's blocklist — BEFORE
+     * ranking, so a blocked release never occupies a top-N slot. Logs how many
+     * were skipped, consistent with the neighbouring per-source lines.
+     *
+     * @param list<ScoredCandidate> $scored
+     * @param array<string, true>  $blocked
+     * @return list<ScoredCandidate>
+     */
+    private function withoutBlocked(array $scored, array $blocked, string $label, ?string $subject): array
+    {
+        if ($blocked === []) {
+            return $scored;
+        }
+
+        $kept = [];
+        foreach ($scored as $entry) {
+            $c = $entry->candidate;
+            if (isset($blocked[$this->key($c)]) || ($c->downloadUrl !== null && isset($blocked[$c->downloadUrl]))) {
+                continue;
+            }
+            $kept[] = $entry;
+        }
+
+        $dropped = \count($scored) - \count($kept);
+        if ($dropped > 0) {
+            $this->log->info(sprintf('%s — skipped %d blocked release(s)', $label, $dropped), $subject);
+        }
+
+        return $kept;
     }
 
     private function key(ReleaseCandidate $c): string

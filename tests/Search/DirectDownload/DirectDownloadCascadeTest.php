@@ -6,6 +6,7 @@ namespace App\Tests\Search\DirectDownload;
 
 use App\Entity\Book;
 use App\Mirror\MirrorListNormalizer;
+use App\Repository\BlockedReleaseRepository;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\BestMatch\BestMatchSelector;
 use App\Search\DirectDownload\DirectDownloadCascade;
@@ -163,7 +164,7 @@ final class DirectDownloadCascadeTest extends TestCase
             $client,
         );
         $lines = [];
-        $cascade = new DirectDownloadCascade([$source], new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $this->capturingLog($lines));
+        $cascade = new DirectDownloadCascade([$source], new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $this->capturingLog($lines), $this->blockedRepository());
 
         $attempts = iterator_to_array($cascade->attempts($this->plan(), 'A Book'), false);
 
@@ -174,6 +175,86 @@ final class DirectDownloadCascadeTest extends TestCase
         // the torrent pipeline in ProcessDownloadJobHandler, gated on its own tick.)
     }
 
+    public function testSkipsBlockedReleaseBeforeRankingAndLogsCount(): void
+    {
+        // Candidate 'a' is on the book's blocklist (keyed source|sourceId, exactly
+        // how the cascade keys candidates) — only 'b' may be attempted.
+        $lines = [];
+        $src = $this->source('libgen', [$this->match('a'), $this->match('b')]);
+        $cascade = $this->cascade(
+            [$src],
+            ['libgen' => ['https://m1']],
+            ['libgen'],
+            log: $this->capturingLog($lines),
+            blockedKeys: ['src|a' => true],
+        );
+
+        $attempts = iterator_to_array($cascade->attempts($this->plan(bookId: 7), 'A Book'), false);
+
+        self::assertSame(['b'], array_map(static fn (DownloadAttempt $x) => $x->item->sourceId, $attempts));
+        self::assertContains('LibGen — skipped 1 blocked release(s)', $lines);
+    }
+
+    public function testSkipsReleaseBlockedByDownloadUrl(): void
+    {
+        // Blocks also match on the candidate's raw download URL, so a re-listed
+        // record with a different id but the same dead URL still gets skipped.
+        $src = $this->source('libgen', [
+            $this->match('a', downloadUrl: 'https://dead.example/file.epub'),
+            $this->match('b'),
+        ]);
+        $cascade = $this->cascade(
+            [$src],
+            ['libgen' => ['https://m1']],
+            ['libgen'],
+            blockedKeys: ['https://dead.example/file.epub' => true],
+        );
+
+        $attempts = iterator_to_array($cascade->attempts($this->plan(bookId: 7)), false);
+
+        self::assertSame(['b'], array_map(static fn (DownloadAttempt $x) => $x->item->sourceId, $attempts));
+    }
+
+    public function testYieldsNothingWhenEveryCandidateIsBlocked(): void
+    {
+        $src = $this->source('libgen', [$this->match('a'), $this->match('b')]);
+        $cascade = $this->cascade(
+            [$src],
+            ['libgen' => ['https://m1']],
+            ['libgen'],
+            blockedKeys: ['src|a' => true, 'src|b' => true],
+        );
+
+        self::assertSame([], iterator_to_array($cascade->attempts($this->plan(bookId: 7)), false));
+    }
+
+    public function testUnsavedBookNeverQueriesTheBlocklist(): void
+    {
+        // A plan for a book without an id (nothing can be blocked against it yet)
+        // must not hit the repository at all.
+        $repository = $this->createMock(BlockedReleaseRepository::class);
+        $repository->expects(self::never())->method('blockedKeysForBook');
+
+        $config = DirectDownloadConfig::fromArray(
+            ['indexerPriority' => [['id' => 'libgen', 'enabled' => true]], 'mirrors' => ['libgen' => ['https://m1']]],
+            new MirrorListNormalizer(),
+        );
+        $settings = $this->createStub(SearchSettingsProvider::class);
+        $settings->method('getDirectDownloadConfig')->willReturn($config);
+        $settings->method('getBestMatchPolicy')->willReturn(new BestMatchPolicy(minMatchScore: 0));
+
+        $cascade = new DirectDownloadCascade(
+            [$this->source('libgen', [$this->match('a')])],
+            new ReleaseSourceScorer(new MatchScorer()),
+            new BestMatchSelector(),
+            $settings,
+            $this->log(),
+            $repository,
+        );
+
+        self::assertNotSame([], iterator_to_array($cascade->attempts($this->plan()), false));
+    }
+
     // --- helpers ----------------------------------------------------------
 
     private function source(string $id, array $candidates, ?string $unavailableReason = null): CascadeTestSource
@@ -181,10 +262,11 @@ final class DirectDownloadCascadeTest extends TestCase
         return new CascadeTestSource($id, $candidates, $unavailableReason);
     }
 
-    private function match(string $sourceId): ReleaseCandidate
+    private function match(string $sourceId, ?string $downloadUrl = null): ReleaseCandidate
     {
         return new ReleaseCandidate(
             source: 'src', sourceId: $sourceId, title: self::TITLE, format: 'epub',
+            downloadUrl: $downloadUrl,
             infoUrl: 'https://m1/book/' . $sourceId, author: self::AUTHOR, extra: ['mirror' => 'https://m1'],
         );
     }
@@ -202,7 +284,13 @@ final class DirectDownloadCascadeTest extends TestCase
      * @param array<string, list<string>>       $mirrors
      * @param list<string>                      $priorityIds
      */
-    private function cascade(array $sources, array $mirrors, array $priorityIds, int $threshold = 0, ?FulfillmentLog $log = null): DirectDownloadCascade
+    /**
+     * @param list<ReleaseSourceInterface>      $sources
+     * @param array<string, list<string>>       $mirrors
+     * @param list<string>                      $priorityIds
+     * @param array<string, true>               $blockedKeys blockedKeysForBook() result the stubbed repository serves
+     */
+    private function cascade(array $sources, array $mirrors, array $priorityIds, int $threshold = 0, ?FulfillmentLog $log = null, array $blockedKeys = []): DirectDownloadCascade
     {
         $priority = array_map(static fn (string $id): array => ['id' => $id, 'enabled' => true], $priorityIds);
         $config = DirectDownloadConfig::fromArray(['indexerPriority' => $priority, 'mirrors' => $mirrors], new MirrorListNormalizer());
@@ -211,7 +299,16 @@ final class DirectDownloadCascadeTest extends TestCase
         $settings->method('getDirectDownloadConfig')->willReturn($config);
         $settings->method('getBestMatchPolicy')->willReturn(new BestMatchPolicy(minMatchScore: $threshold));
 
-        return new DirectDownloadCascade($sources, new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $log ?? $this->log());
+        return new DirectDownloadCascade($sources, new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $log ?? $this->log(), $this->blockedRepository($blockedKeys));
+    }
+
+    /** @param array<string, true> $blockedKeys */
+    private function blockedRepository(array $blockedKeys = []): BlockedReleaseRepository
+    {
+        $repository = $this->createStub(BlockedReleaseRepository::class);
+        $repository->method('blockedKeysForBook')->willReturn($blockedKeys);
+
+        return $repository;
     }
 
     /** A FulfillmentLog that records each message into $lines, for asserting log output. */
@@ -232,11 +329,16 @@ final class DirectDownloadCascadeTest extends TestCase
         return new \App\Download\FulfillmentLog($this->createStub(\Doctrine\DBAL\Connection::class), new \Psr\Log\NullLogger());
     }
 
-    private function plan(): ReleaseSearchPlan
+    private function plan(?int $bookId = null): ReleaseSearchPlan
     {
         $book = new Book('t', 'e', self::TITLE);
         $book->setAuthor(self::AUTHOR);
         $book->setIsbn(self::ISBN);
+        if ($bookId !== null) {
+            // Blocklist lookups only run for a persisted book; stamp the id the way
+            // Doctrine would.
+            (new \ReflectionProperty(Book::class, 'id'))->setValue($book, $bookId);
+        }
 
         return new ReleaseSearchPlan(book: $book, isbnCandidates: [self::ISBN], author: self::AUTHOR, titleVariants: [self::TITLE]);
     }

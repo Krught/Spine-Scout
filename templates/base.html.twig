@@ -49,6 +49,14 @@
                         </svg>
                         <span class="nav-text">Requests</span>
                     </a>
+                    <a class="nav-item{% if current_route == 'my_requests' %} active{% endif %}" href="{{ path('my_requests') }}">
+                        <svg class="nav-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+                            <line x1="9" y1="8" x2="15" y2="8"/>
+                            <line x1="9" y1="12" x2="15" y2="12"/>
+                        </svg>
+                        <span class="nav-text">My Requests</span>
+                    </a>
                     {% if is_granted('ROLE_MANAGE_USERS') %}
                     <a class="nav-item{% if current_route starts with 'users' %} active{% endif %}" href="{{ path('users') }}">
                         <svg class="nav-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -165,7 +173,7 @@
                     </div>
                     <div class="topbar-right">
                         {% if app.user %}
-                            <a class="avatar" href="{{ path('app_logout') }}" title="Sign out ({{ app.user.username }})">{{ app.user.username|slice(0, 1)|upper }}</a>
+                            <a class="avatar" href="{{ path('profile') }}" title="Profile ({{ app.user.username }})">{{ app.user.username|slice(0, 1)|upper }}</a>
                             <a class="topbar-logout" href="{{ path('app_logout') }}">Sign out</a>
                         {% endif %}
                     </div>

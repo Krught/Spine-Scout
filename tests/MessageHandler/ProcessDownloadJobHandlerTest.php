@@ -21,6 +21,7 @@ use App\Entity\DownloadJob;
 use App\Entity\User;
 use App\Message\ProcessDownloadJob;
 use App\MessageHandler\ProcessDownloadJobHandler;
+use App\Repository\BlockedReleaseRepository;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\BestMatch\BestMatchSelector;
 use App\Search\DirectDownload\DirectDownloadCascade;
@@ -117,6 +118,100 @@ final class ProcessDownloadJobHandlerTest extends TestCase
         self::assertNotNull($job->getStatusMessage());
     }
 
+    public function testTotalFailureBlocksEveryAttemptedCandidate(): void
+    {
+        // Every mirror/link of the only candidate fails → on the final failure the
+        // handler must blocklist that candidate for the book (keyed candidate
+        // source|sourceId, so the cascade skips it on the next sweep).
+        $http = new MockHttpClient([
+            new MockResponse('', ['http_code' => 500]),
+            new MockResponse('', ['http_code' => 503]),
+        ]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'X', author: 'Y', year: '2000');
+        $book = $job->getBookRequest()?->getBook();
+
+        $blocked = $this->createMock(BlockedReleaseRepository::class);
+        $blocked->expects(self::once())->method('blockRelease')->with(
+            self::identicalTo($book),
+            'libgen',
+            'hash123',
+            'http',
+            null,
+            null,
+            self::callback(static fn (mixed $reason): bool => \is_string($reason) && $reason !== ''),
+        );
+
+        $handler = $this->handler([$client], $this->root . '/library', ['https://m.test/a', 'https://m.test/b'], format: 'epub', blockedReleases: $blocked);
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_ERROR, $job->getStatus());
+    }
+
+    public function testDisallowedDownloadedFormatBlocksTheCandidateImmediately(): void
+    {
+        // The candidate's bytes downloaded fine but as a format outside the
+        // allow-list: the release itself is proven bad, so it is blocked right in
+        // the loop (not only at total-failure time) with the format reason.
+        // The cascade normally gates disallowed formats before download, so this
+        // handler-side safety net only fires when the two policy reads disagree
+        // (the operator changed the format list mid-run) — simulated here by
+        // serving the cascade a permissive policy and the handler a strict one.
+        $http = new MockHttpClient([new MockResponse('BOOKBYTES')]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'X', author: 'Y', year: '2000');
+        $book = $job->getBookRequest()?->getBook();
+
+        $blocked = $this->createMock(BlockedReleaseRepository::class);
+        $blocked->expects(self::once())->method('blockRelease')->with(
+            self::identicalTo($book),
+            'libgen',
+            'hash123',
+            'http',
+            null,
+            null,
+            "Downloaded file format 'raw' is not in the format priority list.",
+        );
+
+        $handler = $this->handler(
+            [$client],
+            $this->root . '/library',
+            ['https://m.test/ok'],
+            format: 'raw',
+            blockedReleases: $blocked,
+            policies: [
+                new BestMatchPolicy(minMatchScore: 0),                     // handler gate: default allow-list, 'raw' disallowed
+                new BestMatchPolicy(formatPriority: [], minMatchScore: 0), // cascade: allow-all, so the candidate gets attempted
+            ],
+        );
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_ERROR, $job->getStatus());
+    }
+
+    public function testSuccessfulDownloadBlocksNothing(): void
+    {
+        // Failed links along the way are only blocked when the whole cascade
+        // fails; a later success for the same candidate proves it good.
+        $http = new MockHttpClient([
+            new MockResponse('nope', ['http_code' => 404]),
+            new MockResponse('BOOKBYTES'),
+        ]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+
+        $blocked = $this->createMock(BlockedReleaseRepository::class);
+        $blocked->expects(self::never())->method('blockRelease');
+
+        $handler = $this->handler([$client], $this->root . '/library', ['https://m.test/fail', 'https://m.test/ok'], format: 'epub', blockedReleases: $blocked);
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_COMPLETE, $job->getStatus());
+    }
+
     public function testMissingOutputDirectoryMarksJobError(): void
     {
         $client = new HttpDownloadClient(new MockHttpClient(new MockResponse('DATA')), $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
@@ -164,8 +259,14 @@ final class ProcessDownloadJobHandlerTest extends TestCase
      * @param list<\App\Download\Client\DownloadClientInterface> $clients
      * @param list<string>                                       $links  links the (single) cascade attempt offers
      */
-    private function handler(array $clients, string $outputDir, array $links, string $format, ?TorrentFulfillmentInterface $torrent = null, ?array $priority = null): ProcessDownloadJobHandler
+    /**
+     * @param list<BestMatchPolicy>|null $policies Policies served to consecutive
+     *        getBestMatchPolicy() calls (1st: the handler's format gate, 2nd: the
+     *        cascade). Null = one permissive policy for both.
+     */
+    private function handler(array $clients, string $outputDir, array $links, string $format, ?TorrentFulfillmentInterface $torrent = null, ?array $priority = null, ?BlockedReleaseRepository $blockedReleases = null, ?array $policies = null): ProcessDownloadJobHandler
     {
+        $blockedReleases ??= $this->createStub(BlockedReleaseRepository::class);
         $em = $this->createStub(EntityManagerInterface::class);
         $em->method('wrapInTransaction')->willReturnCallback(fn (callable $cb) => $cb());
         $em->method('find')->willReturnCallback(fn () => $this->currentJob);
@@ -182,12 +283,16 @@ final class ProcessDownloadJobHandlerTest extends TestCase
 
         $settings = $this->createStub(SearchSettingsProvider::class);
         $settings->method('getDirectDownloadConfig')->willReturn($config);
-        $settings->method('getBestMatchPolicy')->willReturn(new BestMatchPolicy(minMatchScore: 0));
+        if ($policies !== null) {
+            $settings->method('getBestMatchPolicy')->willReturnOnConsecutiveCalls(...$policies);
+        } else {
+            $settings->method('getBestMatchPolicy')->willReturn(new BestMatchPolicy(minMatchScore: 0));
+        }
 
         $log = new FulfillmentLog($this->createStub(Connection::class), new NullLogger());
 
         $source = new CascadeFakeSource('libgen', $format, $links);
-        $cascade = new DirectDownloadCascade([$source], new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $log);
+        $cascade = new DirectDownloadCascade([$source], new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $log, $blockedReleases);
 
         // Injector wired with the toggle off, so downloads in these tests are moved
         // byte-for-byte (the metadata-rewrite path has its own dedicated test).
@@ -211,6 +316,7 @@ final class ProcessDownloadJobHandlerTest extends TestCase
             $torrent ?? $this->noTorrent(),
             $log,
             new NullLogger(),
+            $blockedReleases,
         );
     }
 

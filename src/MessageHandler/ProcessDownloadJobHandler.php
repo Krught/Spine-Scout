@@ -15,6 +15,7 @@ use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Entity\Book;
 use App\Entity\DownloadJob;
 use App\Message\ProcessDownloadJob;
+use App\Repository\BlockedReleaseRepository;
 use App\Repository\BookRepository;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\DirectDownload\DirectDownloadCascade;
@@ -60,6 +61,7 @@ final class ProcessDownloadJobHandler
         private readonly TorrentFulfillmentInterface $torrents,
         private readonly FulfillmentLog $log,
         private readonly LoggerInterface $logger,
+        private readonly BlockedReleaseRepository $blockedReleases,
     ) {
     }
 
@@ -97,14 +99,23 @@ final class ProcessDownloadJobHandler
         $attemptNo = 0;
         $policy = $this->settings->getBestMatchPolicy();
 
+        // Every candidate whose download attempt(s) failed, with the latest error —
+        // captured here because on cascade failure the job still holds its seed
+        // source ('pending'), so the attempted releases only exist inside this loop.
+        /** @var array<string, array{item: ReleaseCandidate, reason: string}> $attempted */
+        $attempted = [];
+
         foreach ($this->cascade->attempts($plan, $subject) as $attempt) {
             ++$attemptNo;
             $client = $this->clientFor($attempt->item->protocol ?? ReleaseCandidate::PROTOCOL_HTTP);
             if ($client === null) {
+                // Environmental (no client for the protocol) — proves nothing about
+                // the release, so it is deliberately not recorded for blocking.
                 $lastError = "No download client for protocol '" . ($attempt->item->protocol ?? '?') . "'.";
                 continue;
             }
 
+            $key = $attempt->item->source . '|' . $attempt->item->sourceId;
             $label = $this->attemptLabel($attempt, $attemptNo);
             $staged = $this->tryLinks($client, $attempt->links, $subject, $label, $lastError);
             if ($staged !== null) {
@@ -119,11 +130,17 @@ final class ProcessDownloadJobHandler
                         $attempt->item->format ?? '?',
                     );
                     $this->log->info($lastError . ' Deleted; trying next candidate.', $subject);
+                    // The release itself is proven bad (its bytes are a disallowed
+                    // format): block it right away so re-search sweeps skip it, and
+                    // drop any earlier link-failure record — this reason is sharper.
+                    $this->blockRelease($request->getBook(), $attempt->item, $lastError, $subject);
+                    unset($attempted[$key]);
                     continue;
                 }
                 $picked = $attempt;
                 break;
             }
+            $attempted[$key] = ['item' => $attempt->item, 'reason' => $lastError];
         }
 
         if ($staged === null || $picked === null) {
@@ -131,6 +148,12 @@ final class ProcessDownloadJobHandler
             // tried first, try it now as a fallback before giving up.
             if ($torrentEnabled && !$torrentFirst && $this->tryTorrent($job, $plan, $subject)) {
                 return;
+            }
+            // Total failure: every attempted candidate failed on every mirror/link,
+            // so block each one (with its captured reason) for this book — the next
+            // automatic sweep then moves straight to other candidates.
+            foreach ($attempted as $failure) {
+                $this->blockRelease($request->getBook(), $failure['item'], $failure['reason'], $subject);
             }
             $this->fail($job, 'All sources/mirrors/items failed: ' . $lastError);
 
@@ -245,6 +268,25 @@ final class ProcessDownloadJobHandler
         }
 
         return null;
+    }
+
+    /**
+     * Blocklist one failed release for this book (idempotent upsert) and log it.
+     * The block is keyed the same way the cascade keys candidates
+     * (candidate source|sourceId), so exclusion matches on re-search.
+     */
+    private function blockRelease(Book $book, ReleaseCandidate $item, string $reason, string $subject): void
+    {
+        $this->blockedReleases->blockRelease(
+            $book,
+            $item->source,
+            $item->sourceId,
+            $item->protocol ?? ReleaseCandidate::PROTOCOL_HTTP,
+            $item->downloadUrl,
+            null,
+            $reason,
+        );
+        $this->log->warn(sprintf('Blocked release %s|%s: %s', $item->source, $item->sourceId, $reason), $subject);
     }
 
     /** Human label for the activity monitor: "Anna's Archive · mirror.host · attempt N". */

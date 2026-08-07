@@ -39,3 +39,6 @@ Thumbs.db
 /application-data/*
 /application-data
 /.env.test
+
+/docs
+/docs/*

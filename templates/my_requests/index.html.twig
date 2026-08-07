@@ -1,0 +1,104 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}My Requests - Spine Scout{% endblock %}
+
+{% block body %}
+    <section class="requests-section" data-controller="requests-filter book-modal request-actions requests-scroll"
+             data-requests-scroll-url-value="{{ path('my_requests') }}"
+             data-requests-scroll-page-value="{{ page }}"
+             data-requests-scroll-pages-value="{{ pages }}">
+        <header class="requests-header">
+            <h1 class="requests-title">My Requests</h1>
+        </header>
+
+        {% for label, messages in app.flashes %}
+            {% for msg in messages %}
+                <div class="flash flash-{{ label }}">{{ msg }}</div>
+            {% endfor %}
+        {% endfor %}
+
+        {% if items is empty %}
+            <div class="requests-empty">You haven't requested anything yet.</div>
+        {% else %}
+            <div class="requests-filters" role="group" aria-label="Filter requests by status">
+                {% for f in filters %}
+                    <button type="button"
+                            class="requests-filter{{ f.key == 'all' ? ' is-active' : '' }}"
+                            data-requests-filter-target="chip"
+                            data-status-key="{{ f.key }}"
+                            data-action="requests-filter#select"
+                            data-requests-filter-key-param="{{ f.key }}">
+                        {{ f.label }} <span class="requests-filter-count">{{ f.count }}</span>
+                    </button>
+                {% endfor %}
+            </div>
+
+            {% if format_filters is not empty %}
+                <div class="requests-filters requests-format-filters" role="group" aria-label="Filter requests by format">
+                    {% for f in format_filters %}
+                        <button type="button"
+                                class="requests-filter{{ f.key == 'all' ? ' is-active' : '' }}"
+                                data-requests-filter-target="formatChip"
+                                data-format-key="{{ f.key }}"
+                                data-action="requests-filter#selectFormat"
+                                data-requests-filter-key-param="{{ f.key }}">
+                            {{ f.label }} <span class="requests-filter-count">{{ f.count }}</span>
+                        </button>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+            <div class="requests-empty requests-filter-empty" data-requests-filter-target="empty" hidden>
+                No requests match these filters.
+            </div>
+
+            <ul class="requests-list" data-requests-scroll-target="list">
+                {% for item in items %}
+                    {{ include('requests/_row.html.twig', {item: item}) }}
+                {% endfor %}
+            </ul>
+
+            {# Endless-scroll sentinel: requests-scroll fetches the next server page
+               when this nears the viewport, and removes it once every page is loaded.
+               The status/format chips above filter the loaded rows only, so their
+               counts grow as more pages stream in. #}
+            {% if page < pages %}
+                <div class="requests-scroll-sentinel" data-requests-scroll-target="sentinel" aria-hidden="true">
+                    <span class="requests-scroll-spinner"></span> Loading more…
+                </div>
+            {% endif %}
+        {% endif %}
+
+        {# Book detail popup, opened by clicking a request's cover/title. No interactive-search
+           panel here (admins use the per-row button), so the modal's own Interactive Search
+           button is hidden via CSS. #}
+        <div class="book-modal" data-book-modal-target="modal" data-action="click->book-modal#backdropClick keydown.esc@window->book-modal#close interactive-search:downloaded@window->book-modal#onDownloaded" hidden>
+            <div class="book-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="book-modal-title">
+                <button type="button" class="book-modal-refresh" aria-label="Refresh metadata" title="Refresh metadata" data-book-modal-target="refresh" data-action="click->book-modal#refreshMetadata">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                        <path d="M21 3v6h-6"/>
+                    </svg>
+                </button>
+                <button type="button" class="book-modal-close" aria-label="Close" data-action="click->book-modal#close">×</button>
+                <div class="book-modal-body">
+                    <div class="book-modal-cover-wrap">
+                        <div class="book-modal-cover" data-book-modal-target="cover"></div>
+                        <button type="button" class="book-modal-action" data-book-modal-target="action" data-action="click->book-modal#requestBook" hidden></button>
+                        <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        <button type="button" class="book-modal-search book-modal-recommend" data-book-modal-target="recommend" data-action="click->book-modal#moreLikeThis" hidden>More like this</button>
+                    </div>
+                    <div class="book-modal-content">
+                        <h2 class="book-modal-title" id="book-modal-title" data-book-modal-target="title"></h2>
+                        <div class="book-modal-author" data-book-modal-target="author"></div>
+                        <div class="book-modal-format" data-book-modal-target="format" hidden></div>
+                        <div class="book-modal-status" data-book-modal-target="status">Loading…</div>
+                        <dl class="book-modal-facts" data-book-modal-target="facts"></dl>
+                        <div class="book-modal-genres" data-book-modal-target="genres"></div>
+                        <div class="book-modal-description" data-book-modal-target="description"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+{% endblock %}

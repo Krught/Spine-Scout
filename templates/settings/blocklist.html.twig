@@ -1,0 +1,61 @@
+{% extends 'settings/_layout.html.twig' %}
+
+{% block settings_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">Blocked releases</h2>
+        <p class="panel-sub">
+            Releases that failed in a way that proved the release itself was bad (junk or empty
+            content, disallowed downloaded format, every mirror dead). Automatic re-search sweeps
+            skip them so selection moves to the next candidate. Blocks expire automatically after
+            30 days; unblock one to let the next sweep retry it.
+        </p>
+    </div>
+
+    {% if blocks is empty %}
+        <p class="form-note">No releases are currently blocked.</p>
+    {% else %}
+        <table class="users-table">
+            <thead>
+                <tr>
+                    <th>Book</th>
+                    <th>Source</th>
+                    <th>Release</th>
+                    <th>Protocol</th>
+                    <th>Reason</th>
+                    <th>Blocked</th>
+                    <th>Expires</th>
+                    <th class="users-table__actions-col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for block in blocks %}
+                    <tr>
+                        <td>{{ block.book.title }}</td>
+                        <td>{{ block.source }}</td>
+                        <td title="{{ block.sourceId }}">
+                            {{- block.sourceId|length > 24 ? block.sourceId|slice(0, 24) ~ '…' : block.sourceId -}}
+                        </td>
+                        <td>{{ block.protocol }}</td>
+                        <td>{{ block.reason }}</td>
+                        <td class="users-muted">{{ block.createdAt|date('Y-m-d H:i') }}</td>
+                        <td class="users-muted">
+                            {{ block.expiresAt|date('Y-m-d H:i') }}
+                            {% if block.expiresAt <= now %}<span class="users-badge">Expired</span>{% endif %}
+                        </td>
+                        <td class="users-table__actions">
+                            <form method="post" action="{{ path('settings_blocklist_unblock', { id: block.id }) }}">
+                                <input type="hidden" name="_token" value="{{ csrf_token('settings_blocklist_unblock') }}">
+                                <button type="submit" class="btn btn-ghost btn-sm">Unblock</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <form method="post" action="{{ path('settings_blocklist_clear_expired') }}" class="form-actions">
+            <input type="hidden" name="_token" value="{{ csrf_token('settings_blocklist_clear_expired') }}">
+            <button type="submit" class="btn btn-secondary">Clear expired</button>
+        </form>
+    {% endif %}
+{% endblock %}

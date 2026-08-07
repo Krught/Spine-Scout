@@ -14,7 +14,11 @@ use App\Download\Metadata\AudiobookTagWriter;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Torrent\TorrentFinalizer;
 use App\Download\Torrent\TorrentMover;
+use App\Entity\Book;
+use App\Entity\BookRequest;
 use App\Entity\DownloadJob;
+use App\Entity\User;
+use App\Repository\BlockedReleaseRepository;
 use App\Repository\IntegrationRepository;
 use App\Search\Source\ReleaseCandidate;
 use Doctrine\DBAL\Connection;
@@ -125,9 +129,60 @@ final class TorrentFinalizerTest extends TestCase
         self::assertSame(0, $client->statusQueries);
     }
 
+    public function testFailWithBlockReleaseRecordsABlockForTheJobsBook(): void
+    {
+        // A junk-content failure (blockRelease: true) must blocklist the job's
+        // release for its book — keyed off the job stamp: source/guid plus the
+        // magnet and infohash, with the failure message as the reason.
+        $book = new Book('grimmory', 'ext-1', 'Red Rising');
+        $magnet = 'magnet:?xt=urn:btih:3601266b0873bfc80fd1f782632b38f9a60bf5a1';
+        $job = (new DownloadJob('torrent', 'guid-junk', ReleaseCandidate::PROTOCOL_TORRENT, new BookRequest(new User('u'), $book)))
+            ->setClientRef('abc123')
+            ->setDownloadUrl($magnet);
+
+        $repository = $this->createMock(BlockedReleaseRepository::class);
+        $repository->expects(self::once())->method('blockRelease')->with(
+            self::identicalTo($book),
+            'torrent',
+            'guid-junk',
+            ReleaseCandidate::PROTOCOL_TORRENT,
+            $magnet,
+            'abc123',
+            'No ebook files found in the completed torrent at /x.',
+        );
+
+        $this->finalizer($repository)->fail($job, 'No ebook files found in the completed torrent at /x.', blockRelease: true);
+
+        self::assertSame(DownloadJob::STATUS_ERROR, $job->getStatus());
+        self::assertSame(DownloadJob::STATUS_ERROR, $job->getBookRequest()?->getDeliveryStatus());
+    }
+
+    public function testFailWithoutBlockFlagNeverTouchesTheBlocklist(): void
+    {
+        // Environmental failures (missing mount, unconfigured destination, move
+        // errors, poller-detected client problems) must never produce a block.
+        $repository = $this->createMock(BlockedReleaseRepository::class);
+        $repository->expects(self::never())->method('blockRelease');
+
+        $book = new Book('grimmory', 'ext-1', 'Red Rising');
+        $job = new DownloadJob('torrent', 'guid-1', ReleaseCandidate::PROTOCOL_TORRENT, new BookRequest(new User('u'), $book));
+
+        $this->finalizer($repository)->fail($job, 'Move into library failed: disk full');
+
+        self::assertSame(DownloadJob::STATUS_ERROR, $job->getStatus());
+    }
+
+    public function testFailWithBlockFlagButNoBookDoesNotBlock(): void
+    {
+        $repository = $this->createMock(BlockedReleaseRepository::class);
+        $repository->expects(self::never())->method('blockRelease');
+
+        $this->finalizer($repository)->fail($this->job(), 'Completed torrent is implausibly small.', blockRelease: true);
+    }
+
     // --- helpers ----------------------------------------------------------
 
-    private function finalizer(): TorrentFinalizer
+    private function finalizer(?BlockedReleaseRepository $blockedReleases = null): TorrentFinalizer
     {
         // sourceAvailability() touches only the client and the filesystem; the
         // pipeline collaborators are final classes, so hand over uninitialized
@@ -146,6 +201,7 @@ final class TorrentFinalizerTest extends TestCase
             $this->createStub(MessageBusInterface::class),
             new FulfillmentLog($this->createStub(Connection::class), new NullLogger()),
             new NullLogger(),
+            $blockedReleases ?? $reflect(BlockedReleaseRepository::class),
             $this->root,
         );
     }

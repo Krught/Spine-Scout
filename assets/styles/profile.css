@@ -1,0 +1,47 @@
+/* Profile page: account facts + self-service password change. Leans on the
+   settings panel/form styles; only the facts list and capability chips are new. */
+
+.profile-panel { margin-bottom: 1.5rem; }
+
+.profile-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.6rem 1.5rem;
+    margin: 0;
+}
+
+.profile-facts dt {
+    color: var(--fg-muted);
+    font-size: 0.9rem;
+    align-self: center;
+}
+
+.profile-facts dd {
+    margin: 0;
+    font-weight: 500;
+}
+
+.profile-caps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.profile-cap {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.profile-cap-admin {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.profile-cap-none {
+    color: var(--fg-muted);
+}

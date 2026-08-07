@@ -72,6 +72,10 @@ final class HardcoverClient
         }
         GQL;
 
+    /** Series-books cache — the modal's "Request series" panel re-opens often; 15 minutes. */
+    private const SERIES_BOOKS_CACHE_PREFIX = 'hardcover.series_books.v1.';
+    private const SERIES_BOOKS_CACHE_TTL = 900;
+
     /** Genre tag list cache — Hardcover's Genre vocabulary changes rarely, so refresh daily. */
     private const GENRE_TAGS_CACHE_KEY = 'hardcover.genre_tags.v1';
     private const GENRE_TAGS_CACHE_TTL = 86400;
@@ -419,6 +423,152 @@ final class HardcoverClient
                 audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
             );
         }
+        return $out;
+    }
+
+    /**
+     * All books in a named series, for the modal's "Request series" panel.
+     *
+     * Same two-step recipe as {@see searchBooksByEntity()} with query_type "Series", but only
+     * the top-ranked series hit is used — mixing in namesake fallbacks would merge unrelated
+     * series into one list. Books are hydrated with their book_series join row so each carries
+     * its position within *this* series (books can belong to several), then sorted position
+     * asc with unnumbered entries last (popularity order, as returned, breaks ties) and
+     * de-duplicated by slug.
+     *
+     * @return array{
+     *     series: string,
+     *     books: list<array{
+     *         slug: string,
+     *         title: string,
+     *         author: ?string,
+     *         coverUrl: ?string,
+     *         isbns: list<string>,
+     *         position: ?float,
+     *         audiobook: bool,
+     *     }>,
+     * }
+     *
+     * @throws HardcoverException
+     */
+    public function fetchSeriesBooks(Integration $integration, string $seriesName, int $limit = 100): array
+    {
+        $seriesName = trim($seriesName);
+        if ($seriesName === '') {
+            return ['series' => $seriesName, 'books' => []];
+        }
+        $limit = max(1, min(200, $limit));
+
+        $normalized = strtolower(preg_replace('/\s+/', ' ', $seriesName) ?? $seriesName);
+        $item = $this->cache->getItem(self::SERIES_BOOKS_CACHE_PREFIX . $limit . '.' . md5($normalized));
+        if ($item->isHit()) {
+            $cached = $item->get();
+            if (is_array($cached) && isset($cached['series'], $cached['books'])) {
+                /** @var array{series: string, books: list<array<string, mixed>>} $cached */
+                return $cached;
+            }
+        }
+
+        // 1) name → best-matching series id (top hit only).
+        $resolveQuery = <<<'GQL'
+            query SpineScoutResolveSeriesTop($q: String!) {
+              search(query: $q, query_type: "Series", per_page: 3, page: 1) {
+                ids
+              }
+            }
+            GQL;
+        $resolved = $this->graphql($integration, $resolveQuery, ['q' => $seriesName]);
+        $hits = $resolved['search'] ?? null;
+        if (!is_array($hits) || !isset($hits['ids']) || !is_array($hits['ids'])) {
+            throw new HardcoverException('Unexpected search payload: missing search.ids');
+        }
+        $ids = array_values(array_filter(array_map('intval', $hits['ids'])));
+        if ($ids === []) {
+            $this->logger->info('Hardcover resolved no series for name', ['series' => $seriesName]);
+            $out = ['series' => $seriesName, 'books' => []];
+            $item->set($out);
+            $item->expiresAfter(self::SERIES_BOOKS_CACHE_TTL);
+            $this->cache->save($item);
+
+            return $out;
+        }
+        $seriesId = $ids[0];
+
+        // 2) every book in that series, most popular first (the position sort happens
+        //    client-side because Hasura can't order by a filtered join-row column).
+        $booksQuery = '
+            query SpineScoutSeriesBooks($where: books_bool_exp!, $limit: Int!) {
+              books(
+                where: $where
+                order_by: {users_count: desc_nulls_last}
+                limit: $limit
+              ) { ' . self::BOOKS_FIELDS . '
+                book_series { position series { id name } }
+              }
+            }
+        ';
+        $data = $this->graphql($integration, $booksQuery, [
+            'where' => ['book_series' => ['series_id' => ['_in' => [$seriesId]]]],
+            'limit' => $limit,
+        ]);
+        $rows = $data['books'] ?? null;
+        if (!is_array($rows)) {
+            throw new HardcoverException('Unexpected books payload: missing `books`.');
+        }
+
+        $prefs = $integration->getHardcoverEditionPreferences();
+        $resolvedName = null;
+        $books = [];
+        $seenSlugs = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || empty($row['title']) || empty($row['slug'])) {
+                continue;
+            }
+            $slug = (string) $row['slug'];
+            if (isset($seenSlugs[$slug])) {
+                continue;
+            }
+            $seenSlugs[$slug] = true;
+
+            $position = null;
+            foreach ($row['book_series'] ?? [] as $bs) {
+                if (!is_array($bs) || (int) (($bs['series']['id'] ?? 0)) !== $seriesId) {
+                    continue;
+                }
+                if (isset($bs['position']) && is_numeric($bs['position'])) {
+                    $position = (float) $bs['position'];
+                }
+                if ($resolvedName === null && !empty($bs['series']['name'])) {
+                    $resolvedName = (string) $bs['series']['name'];
+                }
+                break;
+            }
+
+            $books[] = [
+                'slug'      => $slug,
+                'title'     => (string) $row['title'],
+                'author'    => $this->extractAuthor($row['cached_contributors'] ?? null),
+                'coverUrl'  => $this->extractCoverUrl($row['cached_image'] ?? null),
+                'isbns'     => $this->extractIsbns($row['editions'] ?? null, $prefs),
+                'position'  => $position,
+                'audiobook' => $this->hasAudiobookEdition($row['editions'] ?? null),
+            ];
+        }
+
+        // Position asc, unnumbered last. usort() is stable (PHP ≥ 8.0), so equal/null
+        // positions keep the popularity order the API returned.
+        usort($books, static function (array $a, array $b): int {
+            if ($a['position'] === null || $b['position'] === null) {
+                return ($a['position'] === null ? 1 : 0) <=> ($b['position'] === null ? 1 : 0);
+            }
+            return $a['position'] <=> $b['position'];
+        });
+
+        $out = ['series' => $resolvedName ?? $seriesName, 'books' => $books];
+        $item->set($out);
+        $item->expiresAfter(self::SERIES_BOOKS_CACHE_TTL);
+        $this->cache->save($item);
+
         return $out;
     }
 

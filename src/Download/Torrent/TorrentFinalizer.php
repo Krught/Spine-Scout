@@ -14,6 +14,7 @@ use App\Download\Metadata\AudiobookTagWriter;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Entity\DownloadJob;
 use App\Message\TriggerGrimmorySidecarImport;
+use App\Repository\BlockedReleaseRepository;
 use App\Repository\IntegrationRepository;
 use App\Support\EbookFormat;
 use Doctrine\ORM\EntityManagerInterface;
@@ -52,6 +53,7 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         private readonly MessageBusInterface $bus,
         private readonly FulfillmentLog $log,
         private readonly LoggerInterface $logger,
+        private readonly BlockedReleaseRepository $blockedReleases,
         private readonly string $downloadsRoot = TorrentClientConfig::DOWNLOADS_MOUNT,
     ) {
     }
@@ -102,13 +104,49 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         return file_exists($sourcePath) ? $sourcePath : null;
     }
 
-    public function fail(DownloadJob $job, string $message): void
+    /**
+     * @param bool $blockRelease True only when the failure proves the RELEASE itself
+     *                           is junk (no audio/ebook files, implausibly small,
+     *                           unstageable content) — never for environmental
+     *                           problems (missing mount, unconfigured destination,
+     *                           move failure), which would block a good release.
+     */
+    public function fail(DownloadJob $job, string $message, bool $blockRelease = false): void
     {
+        if ($blockRelease) {
+            $this->blockFailedRelease($job, $message);
+        }
         $job->setStatus(DownloadJob::STATUS_ERROR)->setStatusMessage($message);
         $job->getBookRequest()?->setDeliveryStatus(DownloadJob::STATUS_ERROR);
         $this->em->flush();
         $this->log->error('Torrent download failed: ' . $message, $job->getBookRequest()?->getBook()->getTitle());
         $this->logger->warning('Torrent job failed', ['job' => $job->getId(), 'error' => $message]);
+    }
+
+    /**
+     * Blocklist the job's release for its book so re-search sweeps skip it: keyed
+     * by the job's source/sourceId (guid) with the magnet and infohash alongside.
+     */
+    private function blockFailedRelease(DownloadJob $job, string $reason): void
+    {
+        $book = $job->getBookRequest()?->getBook();
+        if ($book === null) {
+            return;
+        }
+
+        $this->blockedReleases->blockRelease(
+            $book,
+            $job->getSource(),
+            $job->getSourceId(),
+            $job->getProtocol(),
+            $job->getDownloadUrl(),
+            $job->getClientRef(),
+            $reason,
+        );
+        $this->log->warn(
+            sprintf('Blocked release %s|%s: %s', $job->getSource(), $job->getSourceId(), $reason),
+            $book->getTitle(),
+        );
     }
 
     /**
@@ -137,12 +175,12 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
 
         $audioFiles = TorrentMover::audioFiles($sourcePath);
         if ($audioFiles === []) {
-            $this->fail($job, 'No audio files found in the completed torrent at ' . $sourcePath . '.');
+            $this->fail($job, 'No audio files found in the completed torrent at ' . $sourcePath . '.', blockRelease: true);
 
             return;
         }
         if ($this->totalBytes($audioFiles) < self::MIN_SANE_BYTES) {
-            $this->fail($job, 'Completed torrent is implausibly small.');
+            $this->fail($job, 'Completed torrent is implausibly small.', blockRelease: true);
 
             return;
         }
@@ -206,7 +244,7 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
 
         $ebookFiles = TorrentMover::filesMatching($sourcePath, static fn (string $p): bool => EbookFormat::isEbook(pathinfo($p, PATHINFO_EXTENSION)));
         if ($ebookFiles === []) {
-            $this->fail($job, 'No ebook files found in the completed torrent at ' . $sourcePath . '.');
+            $this->fail($job, 'No ebook files found in the completed torrent at ' . $sourcePath . '.', blockRelease: true);
 
             return;
         }
@@ -219,7 +257,7 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         });
         $best = $ebookFiles[0];
         if ((int) (@filesize($best) ?: 0) < self::MIN_SANE_BYTES) {
-            $this->fail($job, 'Completed torrent is implausibly small.');
+            $this->fail($job, 'Completed torrent is implausibly small.', blockRelease: true);
 
             return;
         }
@@ -239,7 +277,7 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         // embedded metadata, then move it into the library.
         $staged = $this->stageCopy($best);
         if ($staged === null) {
-            $this->fail($job, 'Could not stage the ebook file for import.');
+            $this->fail($job, 'Could not stage the ebook file for import.', blockRelease: true);
 
             return;
         }

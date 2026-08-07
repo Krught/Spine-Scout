@@ -8,6 +8,7 @@ use App\Download\Client\DownloadClientInterface;
 use App\Download\FulfillmentLog;
 use App\Entity\DownloadJob;
 use App\Integration\Prowlarr\ProwlarrClient;
+use App\Repository\BlockedReleaseRepository;
 use App\Repository\IntegrationRepository;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
@@ -35,6 +36,7 @@ final class TorrentFulfillment implements TorrentFulfillmentInterface
         private readonly TorrentMatchScorer $scorer,
         private readonly IntegrationRepository $integrations,
         private readonly FulfillmentLog $log,
+        private readonly BlockedReleaseRepository $blockedReleases,
     ) {
     }
 
@@ -60,6 +62,10 @@ final class TorrentFulfillment implements TorrentFulfillmentInterface
         }
 
         $candidates = $this->indexers->search($plan);
+        if ($candidates === []) {
+            return false;
+        }
+        $candidates = $this->withoutBlocked($candidates, $plan, $subject);
         if ($candidates === []) {
             return false;
         }
@@ -113,6 +119,41 @@ final class TorrentFulfillment implements TorrentFulfillmentInterface
         );
 
         return true;
+    }
+
+    /**
+     * Drop candidates that are on the book's release blocklist (a previous grab of
+     * that guid/magnet completed with junk content). Torrent blocks are recorded
+     * off the job stamp, so the set is keyed 'torrent|<guid>' plus the raw magnet.
+     * Logs when anything was skipped; when everything was, the caller returns
+     * false and the pipeline falls through to the next source.
+     *
+     * @param list<ReleaseCandidate> $candidates
+     * @return list<ReleaseCandidate>
+     */
+    private function withoutBlocked(array $candidates, ReleaseSearchPlan $plan, string $subject): array
+    {
+        $bookId = $plan->book->getId();
+        $blocked = $bookId !== null ? $this->blockedReleases->blockedKeysForBook($bookId) : [];
+        if ($blocked === []) {
+            return $candidates;
+        }
+
+        $kept = [];
+        foreach ($candidates as $c) {
+            $key = 'torrent|' . mb_substr($c->sourceId, 0, 255);
+            if (isset($blocked[$key]) || ($c->downloadUrl !== null && $c->downloadUrl !== '' && isset($blocked[$c->downloadUrl]))) {
+                continue;
+            }
+            $kept[] = $c;
+        }
+
+        $dropped = \count($candidates) - \count($kept);
+        if ($dropped > 0) {
+            $this->log->info(sprintf('Torrent search — skipped %d blocked release(s)', $dropped), $subject);
+        }
+
+        return $kept;
     }
 
     private function client(): ?DownloadClientInterface

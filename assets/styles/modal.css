@@ -389,3 +389,228 @@ body.book-modal-open { overflow: hidden; }
         margin: 0 auto;
     }
 }
+
+/* --- "Request series" panel (book_modal_controller, JS-rendered) ------------------ */
+/* Small pill next to the Series fact row that opens the panel. */
+.book-modal-series-request {
+    display: inline-block;
+    margin-left: 0.45rem;
+    padding: 0.12rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev-2);
+    color: var(--fg-muted);
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    vertical-align: 1px;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.book-modal-series-request:hover,
+.book-modal-series-request:focus-visible {
+    background: var(--bg-elev);
+    border-color: var(--accent);
+    color: var(--fg);
+    outline: none;
+}
+
+/* The panel replaces .book-modal-body inside the same dialog while open. */
+.book-modal-series-panel {
+    padding: 1.5rem 1.75rem 1.75rem;
+}
+.book-modal-series-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    /* Leave room for the dialog's absolute-positioned refresh/close buttons. */
+    padding-right: 4.5rem;
+    margin-bottom: 1rem;
+}
+.book-modal-series-title {
+    margin: 0;
+    font-size: 1.25rem;
+    color: var(--fg);
+    line-height: 1.25;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.book-modal-series-back {
+    flex: none;
+    padding: 0.35rem 0.8rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev-2);
+    color: var(--fg-muted);
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.book-modal-series-back:hover {
+    background: var(--bg-elev);
+    border-color: var(--accent);
+    color: var(--fg);
+}
+.book-modal-series-note {
+    color: var(--fg-dim);
+    font-size: 0.9rem;
+    padding: 0.5rem 0;
+}
+.book-modal-series-note.is-error { color: rgb(220, 120, 120); }
+.book-modal-series-retry {
+    margin-left: 0.35rem;
+    padding: 0.2rem 0.7rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev-2);
+    color: var(--fg-muted);
+    font-family: inherit;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+.book-modal-series-retry:hover { border-color: var(--accent); color: var(--fg); }
+
+.book-modal-series-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    max-height: 55vh;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+.book-modal-series-row {
+    display: grid;
+    grid-template-columns: auto 40px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.45rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-elev-2);
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+}
+.book-modal-series-row:hover { border-color: var(--accent); }
+.book-modal-series-row.is-disabled {
+    cursor: default;
+    opacity: 0.78;
+}
+.book-modal-series-row.is-disabled:hover { border-color: var(--border); }
+.book-modal-series-check {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: inherit;
+}
+.book-modal-series-thumb {
+    width: 40px;
+    height: 60px;
+    border-radius: 6px;
+    background: var(--bg-elev) center/cover no-repeat;
+    border: 1px solid var(--border);
+}
+.book-modal-series-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+}
+.book-modal-series-book-title {
+    color: var(--fg);
+    font-size: 0.92rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.book-modal-series-pos { color: var(--accent); font-weight: 700; }
+.book-modal-series-book-author {
+    color: var(--fg-muted);
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.book-modal-series-state { justify-self: end; }
+/* Status chips mirror the .book-modal-action state colours. */
+.book-modal-series-chip {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.book-modal-series-chip.is-have        { background: #008080; color: #ffffff; }
+.book-modal-series-chip.is-pending     { background: rgb(240, 180, 41); color: #1a1a1a; }
+.book-modal-series-chip.is-approved    { background: rgb(99, 102, 241); color: #ffffff; }
+.book-modal-series-chip.is-rejected    { background: rgb(180, 60, 60); color: #ffffff; }
+.book-modal-series-chip.is-downloaded  { background: rgb(45, 166, 184); color: #ffffff; }
+.book-modal-series-chip.is-requested-ok { background: rgb(52, 168, 83); color: #ffffff; }
+.book-modal-series-chip.is-failed      { background: rgb(180, 60, 60); color: #ffffff; }
+.book-modal-series-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: book-modal-spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+    .book-modal-series-spinner { animation: none; }
+}
+.book-modal-series-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+.book-modal-series-summary {
+    margin-right: auto;
+    color: var(--fg);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+.book-modal-series-submit {
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    border: 0;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-family: inherit;
+    font-size: 0.88rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: filter 0.12s;
+}
+.book-modal-series-submit:hover:not(:disabled) { filter: brightness(1.15); }
+.book-modal-series-submit:disabled { cursor: default; opacity: 0.6; }
+.book-modal-series-cancel {
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev-2);
+    color: var(--fg-muted);
+    font-family: inherit;
+    font-size: 0.88rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.book-modal-series-cancel:hover {
+    background: var(--bg-elev);
+    border-color: var(--accent);
+    color: var(--fg);
+}

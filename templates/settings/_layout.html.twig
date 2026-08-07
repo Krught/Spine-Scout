@@ -18,7 +18,8 @@
                 { id: 'ebooks',           label: 'Ebooks',            route: 'settings_ebooks' },
                 { id: 'audiobooks',       label: 'Audiobooks',        route: 'settings_audiobooks' },
                 { id: 'torrents',         label: 'Torrents',          route: 'settings_torrents' },
-                { id: 'best_match',       label: 'Best Match',        route: 'settings_best_match' }
+                { id: 'best_match',       label: 'Best Match',        route: 'settings_best_match' },
+                { id: 'blocklist',        label: 'Blocklist',         route: 'settings_blocklist' }
             ] %}
             {% for tab in tabs %}
                 <a class="settings-tab{% if active_tab == tab.id %} active{% endif %}" href="{{ path(tab.route) }}">{{ tab.label }}</a>

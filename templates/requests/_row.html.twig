@@ -120,9 +120,19 @@
             </form>
         {% endif %}
         {% if can_delete %}
+            {# An active torrent swaps the plain confirm for the keep-seeding /
+               remove-from-client dialog (which carries its own Cancel). The keys
+               default to off for renderers whose view-model doesn't compute them
+               (my-requests) — the server still answers needsTorrentDecision there,
+               so the dialog opens on the response instead. #}
             <form method="post" action="{{ path('requests_delete', {id: r.id}) }}"
                   data-action="submit->request-actions#submit"
-                  data-request-actions-confirm-param="Remove this request?">
+                  {% if item.torrent_active|default(false) %}
+                  data-request-actions-torrent-param="1"
+                  data-request-actions-torrent-state-param="{{ item.torrent_state|default('downloading') }}"
+                  {% else %}
+                  data-request-actions-confirm-param="Remove this request?"
+                  {% endif %}>
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token('delete-request-' ~ r.id) }}">
                 <button type="submit" class="request-btn request-btn-delete">Remove Request</button>
             </form>

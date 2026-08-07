@@ -6,6 +6,10 @@ export default class extends Controller {
 
     connect() {
         this.requestSeq = 0;
+        // Separate guard for the series panel so its fetches/submissions can be
+        // invalidated without cancelling an in-flight metadata render (and vice versa).
+        this.seriesSeq = 0;
+        this.seriesPanel = null;
         this.currentBookId = null;
         this.currentSeed = null;
         this.currentIsbn = null;
@@ -29,6 +33,8 @@ export default class extends Controller {
         // Opening a (new) book always starts on the details view, never a stale
         // Interactive Search panel left open from a previous book.
         this.dispatch('close', { prefix: 'book-modal', bubbles: true });
+        // Nor a stale series panel.
+        this.closeSeriesPanel();
 
         this.titleTarget.textContent = params.bookModalTitleParam || '';
         this.renderAuthor(params.bookModalAuthorParam || '');
@@ -295,7 +301,9 @@ export default class extends Controller {
             const badgeHtml = badge !== ''
                 ? ` <span class="book-modal-series-badge">${escapeHtml(badge)}</span>`
                 : '';
-            facts.push(['Series', `<span class="book-modal-link" role="link" tabindex="0" data-action="click->book-modal#searchFor keydown.enter->book-modal#searchFor keydown.space->book-modal#searchFor" data-search-term="${escapeAttr(book.series)}" data-search-type="series">${escapeHtml(book.series)}</span>${badgeHtml}`]);
+            const requestSeriesBtn =
+                ' <button type="button" class="book-modal-series-request" data-action="click->book-modal#openSeriesPanel">Request series</button>';
+            facts.push(['Series', `<span class="book-modal-link" role="link" tabindex="0" data-action="click->book-modal#searchFor keydown.enter->book-modal#searchFor keydown.space->book-modal#searchFor" data-search-term="${escapeAttr(book.series)}" data-search-type="series">${escapeHtml(book.series)}</span>${badgeHtml}${requestSeriesBtn}`]);
         }
         if (audio) {
             if (book.narrator) facts.push(['Narrator', escapeHtml(book.narrator)]);
@@ -387,6 +395,237 @@ export default class extends Controller {
             this.statusTarget.textContent = "Couldn't create request.";
             this.statusTarget.hidden = false;
         }
+    }
+
+    // ---- "Request series" panel ------------------------------------------------------------
+    // Entirely JS-rendered overlay inside the dialog (the Twig templates know nothing about
+    // it): lists every book in the current book's series with per-book request checkboxes.
+    // The normal modal body is hidden while the panel is open and restored on back/close.
+
+    openSeriesPanel(event) {
+        if (event && event.preventDefault) event.preventDefault();
+        const series = this.bookData && this.bookData.series ? String(this.bookData.series) : '';
+        if (!series) return;
+        const dialog = this.modalTarget.querySelector('.book-modal-dialog');
+        const body = this.modalTarget.querySelector('.book-modal-body');
+        if (!dialog || !body) return;
+
+        this.closeSeriesPanel();
+        body.hidden = true;
+
+        const panel = document.createElement('div');
+        panel.className = 'book-modal-series-panel';
+        panel.dataset.series = series;
+        panel.innerHTML =
+            '<div class="book-modal-series-head">' +
+            `<h3 class="book-modal-series-title">${escapeHtml(series)}</h3>` +
+            '<button type="button" class="book-modal-series-back" data-action="click->book-modal#closeSeriesPanelAction">&#8592; Back</button>' +
+            '</div>' +
+            '<div class="book-modal-series-content"></div>';
+        dialog.appendChild(panel);
+        this.seriesPanel = panel;
+        this.loadSeriesBooks(series);
+    }
+
+    closeSeriesPanelAction(event) {
+        if (event && event.preventDefault) event.preventDefault();
+        this.closeSeriesPanel();
+    }
+
+    closeSeriesPanel() {
+        // Invalidate any in-flight series fetch or request submission loop.
+        this.seriesSeq++;
+        if (this.seriesPanel) {
+            this.seriesPanel.remove();
+            this.seriesPanel = null;
+        }
+        const body = this.modalTarget.querySelector('.book-modal-body');
+        if (body) body.hidden = false;
+    }
+
+    async loadSeriesBooks(series) {
+        const content = this.seriesPanel ? this.seriesPanel.querySelector('.book-modal-series-content') : null;
+        if (!content) return;
+        const seq = ++this.seriesSeq;
+        content.innerHTML = '<div class="book-modal-series-note">Loading series&hellip;</div>';
+        const params = new URLSearchParams({
+            name: series,
+            audiobook: this.currentMode === 'audiobook' ? '1' : '0',
+        });
+        try {
+            const res = await fetch(`/series/books?${params.toString()}`, {
+                headers: { Accept: 'application/json' },
+                credentials: 'same-origin',
+            });
+            if (seq !== this.seriesSeq) return;
+            const data = res.ok ? await res.json() : null;
+            if (seq !== this.seriesSeq) return;
+            if (!data || data.ok !== true) {
+                this.renderSeriesError(content);
+                return;
+            }
+            this.renderSeriesList(content, data);
+        } catch (e) {
+            if (seq !== this.seriesSeq) return;
+            this.renderSeriesError(content);
+        }
+    }
+
+    renderSeriesError(content) {
+        content.innerHTML =
+            '<div class="book-modal-series-note is-error">' +
+            "Couldn't load the series. " +
+            '<button type="button" class="book-modal-series-retry" data-action="click->book-modal#retrySeriesLoad">Retry</button>' +
+            '</div>';
+    }
+
+    retrySeriesLoad(event) {
+        if (event && event.preventDefault) event.preventDefault();
+        const series = this.seriesPanel ? this.seriesPanel.dataset.series || '' : '';
+        if (series) this.loadSeriesBooks(series);
+    }
+
+    renderSeriesList(content, data) {
+        const books = Array.isArray(data.books) ? data.books : [];
+        if (this.seriesPanel && data.series) {
+            const titleEl = this.seriesPanel.querySelector('.book-modal-series-title');
+            if (titleEl) titleEl.textContent = String(data.series);
+        }
+        if (books.length === 0) {
+            content.innerHTML = '<div class="book-modal-series-note">No books found for this series.</div>';
+            return;
+        }
+
+        const chip = (cls, label) => `<span class="book-modal-series-chip ${cls}">${escapeHtml(label)}</span>`;
+        let selectable = 0;
+        const rows = books.map((b) => {
+            const slug = b && b.slug ? String(b.slug) : '';
+            const title = b && b.title ? String(b.title) : '';
+            const author = b && b.author ? String(b.author) : '';
+            const coverUrl = b && b.coverUrl ? String(b.coverUrl) : '';
+            // Strip characters that could terminate the CSS url('...') string.
+            const cssUrl = coverUrl.replace(/["'()\\\s]/g, '');
+            const pos = b && typeof b.position === 'number' && isFinite(b.position) ? `#${b.position}` : '';
+            const status = b && b.requestStatus ? String(b.requestStatus) : null;
+
+            let checkbox;
+            let state;
+            if (b && b.owned) {
+                checkbox = '<input type="checkbox" class="book-modal-series-check" disabled>';
+                state = chip('is-have', 'In Library');
+            } else if (status) {
+                checkbox = '<input type="checkbox" class="book-modal-series-check" disabled>';
+                state = chip(SERIES_STATUS_CLASS[status] || 'is-pending', SERIES_STATUS_LABEL[status] || status);
+            } else {
+                selectable++;
+                checkbox = '<input type="checkbox" class="book-modal-series-check" checked data-action="change->book-modal#seriesSelectionChanged">';
+                state = '';
+            }
+            const disabled = !!(b && (b.owned || status));
+
+            return (
+                `<label class="book-modal-series-row${disabled ? ' is-disabled' : ''}"` +
+                ` data-slug="${escapeAttr(slug)}" data-title="${escapeAttr(title)}"` +
+                ` data-author="${escapeAttr(author)}" data-cover="${escapeAttr(coverUrl)}">` +
+                checkbox +
+                (cssUrl
+                    ? `<span class="book-modal-series-thumb" style="background-image:url('${escapeAttr(cssUrl)}')"></span>`
+                    : '<span class="book-modal-series-thumb"></span>') +
+                '<span class="book-modal-series-info">' +
+                `<span class="book-modal-series-book-title">${pos ? `<span class="book-modal-series-pos">${escapeHtml(pos)}</span> ` : ''}${escapeHtml(title)}</span>` +
+                (author ? `<span class="book-modal-series-book-author">${escapeHtml(author)}</span>` : '') +
+                '</span>' +
+                `<span class="book-modal-series-state">${state}</span>` +
+                '</label>'
+            );
+        });
+
+        content.innerHTML =
+            `<div class="book-modal-series-list">${rows.join('')}</div>` +
+            '<div class="book-modal-series-footer">' +
+            '<div class="book-modal-series-summary" hidden></div>' +
+            `<button type="button" class="book-modal-series-submit" data-action="click->book-modal#submitSeriesRequests"${selectable === 0 ? ' disabled' : ''}>Request selected (${selectable})</button>` +
+            '<button type="button" class="book-modal-series-cancel" data-action="click->book-modal#closeSeriesPanelAction">Cancel</button>' +
+            '</div>';
+    }
+
+    seriesSelectionChanged() {
+        if (!this.seriesPanel) return;
+        const n = this.seriesPanel.querySelectorAll('.book-modal-series-check:checked:not(:disabled)').length;
+        const submit = this.seriesPanel.querySelector('.book-modal-series-submit');
+        if (submit) {
+            submit.textContent = `Request selected (${n})`;
+            submit.disabled = n === 0;
+        }
+    }
+
+    // Sequential POSTs (one per selected book) so the server's per-request duplicate
+    // guard and auto-approval run normally; each row is updated in place as its
+    // request settles, then a summary line reports the total.
+    async submitSeriesRequests(event) {
+        if (event && event.preventDefault) event.preventDefault();
+        if (!this.seriesPanel) return;
+        const rows = Array.from(this.seriesPanel.querySelectorAll('.book-modal-series-row')).filter((row) => {
+            const check = row.querySelector('.book-modal-series-check');
+            return check && check.checked && !check.disabled;
+        });
+        if (rows.length === 0) return;
+
+        const seq = this.seriesSeq;
+        const tokenEl = document.querySelector('meta[name="csrf-token"]');
+        const token = tokenEl ? tokenEl.getAttribute('content') : '';
+        const audiobook = this.currentMode === 'audiobook';
+
+        const submit = this.seriesPanel.querySelector('.book-modal-series-submit');
+        const cancel = this.seriesPanel.querySelector('.book-modal-series-cancel');
+        if (submit) { submit.disabled = true; submit.textContent = 'Requesting…'; }
+        this.seriesPanel.querySelectorAll('.book-modal-series-check').forEach((c) => { c.disabled = true; });
+
+        let done = 0;
+        for (const row of rows) {
+            if (seq !== this.seriesSeq) return; // panel closed / reloaded mid-flight
+            const state = row.querySelector('.book-modal-series-state');
+            if (state) state.innerHTML = '<span class="book-modal-series-spinner" role="status" aria-label="Requesting"></span>';
+
+            const payload = {
+                _csrf_token: token,
+                source: 'hardcover',
+                externalId: row.dataset.slug || '',
+                title: row.dataset.title || '',
+                author: row.dataset.author || '',
+            };
+            if (row.dataset.cover) payload.coverUrl = row.dataset.cover;
+            if (audiobook) payload.audiobook = 1;
+
+            let ok = false;
+            try {
+                const res = await fetch('/requests/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload),
+                });
+                ok = res.ok;
+            } catch (e) {
+                ok = false;
+            }
+            if (seq !== this.seriesSeq) return;
+            if (state) {
+                state.innerHTML = ok
+                    ? '<span class="book-modal-series-chip is-requested-ok">&#10003; Requested</span>'
+                    : '<span class="book-modal-series-chip is-failed">&#10007; Failed</span>';
+            }
+            if (ok) done++;
+        }
+
+        if (seq !== this.seriesSeq) return;
+        const summary = this.seriesPanel.querySelector('.book-modal-series-summary');
+        if (summary) {
+            summary.textContent = `Requested ${done} of ${rows.length}`;
+            summary.hidden = false;
+        }
+        if (submit) submit.hidden = true;
+        if (cancel) cancel.textContent = 'Done';
     }
 
     // Manual "refresh metadata": force a fresh upstream fetch and re-render in place. Keeps the
@@ -553,6 +792,7 @@ export default class extends Controller {
 
     close() {
         this.modalTarget.hidden = true;
+        this.closeSeriesPanel();
         // Collapse the Interactive Search panel too, so it isn't still revealed
         // (hiding the book body via CSS) the next time a book opens.
         this.dispatch('close', { prefix: 'book-modal', bubbles: true });
@@ -653,6 +893,23 @@ const STATUS_BADGE_LABEL = {
     approved: 'Approved',
     rejected: 'Rejected',
     downloaded: 'Downloaded',
+};
+
+// Chip label/class per request status for the series panel rows. 'available' means the
+// request was fulfilled into the library, so it reads as ownership.
+const SERIES_STATUS_LABEL = {
+    pending: 'Pending',
+    approved: 'Approved',
+    rejected: 'Rejected',
+    downloaded: 'Downloaded',
+    available: 'In Library',
+};
+const SERIES_STATUS_CLASS = {
+    pending: 'is-pending',
+    approved: 'is-approved',
+    rejected: 'is-rejected',
+    downloaded: 'is-downloaded',
+    available: 'is-have',
 };
 
 // Fake, blurred metadata placeholders. The text itself is never read (blurred +

@@ -605,6 +605,9 @@ final class SettingsController extends AbstractController
                     'category'               => (string) $req->get('qbittorrent_category', ''),
                     'removeOnComplete'       => $req->getBoolean('remove_on_complete'),
                     'reconcileIntervalHours' => $req->get('reconcile_interval_hours', ''),
+                    'deletePromptEnabled'    => $req->getBoolean('delete_prompt_enabled'),
+                    'deleteDefaultAction'    => (string) $req->get('delete_default_action', ''),
+                    'releasedTag'            => (string) $req->get('released_tag', ''),
                 ],
             ));
             $qbittorrent->setEnabled(

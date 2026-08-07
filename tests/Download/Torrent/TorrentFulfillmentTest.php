@@ -10,6 +10,7 @@ use App\Download\FulfillmentLog;
 use App\Download\Torrent\TorrentFulfillment;
 use App\Entity\DownloadJob;
 use App\Integration\Prowlarr\ProwlarrClient;
+use App\Repository\BlockedReleaseRepository;
 use App\Repository\IntegrationRepository;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Torrent\TorrentMatchScorer;
@@ -115,6 +116,7 @@ final class TorrentFulfillmentTest extends TestCase
             $reflect(TorrentMatchScorer::class),
             $reflect(IntegrationRepository::class),
             new FulfillmentLog($this->createStub(Connection::class), new NullLogger()),
+            $reflect(BlockedReleaseRepository::class),
         );
     }
 

@@ -288,6 +288,53 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
     }
 
     /**
+     * Apply one or more (comma-separated) tags to a torrent. Idempotent: qBittorrent
+     * answers 200 for already-tagged and unknown hashes alike, and a missing endpoint
+     * or unknown-hash style 404/409 is tolerated too. Transport/auth failures throw —
+     * callers doing best-effort re-tagging catch and degrade.
+     *
+     * The tag is created first (older clients don't auto-create on addTags).
+     */
+    public function addTags(string $hash, string $tags): void
+    {
+        $row = $this->requireRow();
+        $sid = $this->login($row);
+
+        $this->createTag($row, $sid, $tags);
+
+        $response = $this->httpClient->request('POST', $this->baseUrl($row) . '/api/v2/torrents/addTags', [
+            'headers' => $this->authHeaders($row, $sid),
+            'body'    => ['hashes' => strtolower($hash), 'tags' => $tags],
+            'timeout' => self::TIMEOUT_SECONDS,
+        ]);
+        $status = $response->getStatusCode();
+        if (($status < 200 || $status >= 300) && $status !== 404 && $status !== 409) {
+            throw new \RuntimeException('The download client rejected the tag update (HTTP ' . $status . ').');
+        }
+    }
+
+    /**
+     * Delete a torrent from the client, optionally with its downloaded files.
+     * Idempotent: an already-gone hash answers 200 (and 404/409 is tolerated).
+     * Transport/auth failures throw — callers catch and degrade.
+     */
+    public function deleteTorrent(string $hash, bool $deleteFiles): void
+    {
+        $row = $this->requireRow();
+        $sid = $this->login($row);
+
+        $response = $this->httpClient->request('POST', $this->baseUrl($row) . '/api/v2/torrents/delete', [
+            'headers' => $this->authHeaders($row, $sid),
+            'body'    => ['hashes' => strtolower($hash), 'deleteFiles' => $deleteFiles ? 'true' : 'false'],
+            'timeout' => self::TIMEOUT_SECONDS,
+        ]);
+        $status = $response->getStatusCode();
+        if (($status < 200 || $status >= 300) && $status !== 404 && $status !== 409) {
+            throw new \RuntimeException('The download client rejected the torrent delete (HTTP ' . $status . ').');
+        }
+    }
+
+    /**
      * All torrents in the configured category. Best-effort per the interface
      * contract: an unconfigured client or a failed login/query returns [].
      *
