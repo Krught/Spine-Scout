@@ -76,6 +76,7 @@ final class UsersControllerTest extends WebTestCase
             'password' => 'password-123',
             'password_confirm' => 'password-123',
             'manage_settings' => '1',
+            'interactive_search' => '1',
             'auto_approve' => '1',
         ]);
 
@@ -84,6 +85,7 @@ final class UsersControllerTest extends WebTestCase
         self::assertNotNull($alice);
         self::assertTrue($alice->canManageSettings());
         self::assertFalse($alice->canManageUsers());
+        self::assertTrue($alice->canUseInteractiveSearch());
         self::assertTrue($alice->isAutoApproveRequests());
         self::assertFalse($alice->isMaster());
     }
@@ -108,6 +110,44 @@ final class UsersControllerTest extends WebTestCase
         self::assertTrue($bob->canManageUsers());
         self::assertFalse($bob->canManageSettings());
         self::assertTrue($bob->isAutoApproveRequests());
+    }
+
+    public function testInteractiveSearchCapabilityGrantAndRevokeRoundTrip(): void
+    {
+        $master = $this->seedUser('master', [User::ROLE_ADMIN], master: true);
+        $carol = $this->seedUser('carol', []);
+        $this->client->loginUser($master);
+
+        self::assertFalse($carol->canUseInteractiveSearch(), 'Regular users start without interactive search.');
+        self::assertTrue($master->canUseInteractiveSearch(), 'The master admin always has interactive search.');
+
+        // Grant.
+        $this->client->request('POST', '/users/'.$carol->getId().'/update', [
+            '_token' => $this->editToken($carol->getId()),
+            'username' => 'carol',
+            'interactive_search' => '1',
+        ]);
+        self::assertResponseRedirects('/users');
+        $this->em->clear();
+        $carol = $this->users->findOneByUsername('carol');
+        self::assertTrue($carol->canUseInteractiveSearch());
+        self::assertFalse($carol->canManageSettings());
+        self::assertFalse($carol->canManageUsers());
+
+        // The edit button reflects the granted state.
+        $crawler = $this->client->request('GET', '/users');
+        self::assertSame('1', $crawler->filter('button[data-user-modal-id-param="'.$carol->getId().'"]')
+            ->attr('data-user-modal-interactive-search-param'));
+
+        // Revoke.
+        $this->client->request('POST', '/users/'.$carol->getId().'/update', [
+            '_token' => $this->editToken($carol->getId()),
+            'username' => 'carol',
+        ]);
+        self::assertResponseRedirects('/users');
+        $this->em->clear();
+        $carol = $this->users->findOneByUsername('carol');
+        self::assertFalse($carol->canUseInteractiveSearch());
     }
 
     public function testMasterCannotBeDeleted(): void

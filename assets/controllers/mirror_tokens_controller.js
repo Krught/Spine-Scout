@@ -14,6 +14,7 @@ import { Controller } from '@hotwired/stimulus';
  * server-side blob normalization (MirrorListNormalizer::normalizeBlob) picks it
  * up unchanged (it preserves order).
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = ['chips', 'input', 'hidden'];
     static values = { initial: { type: Array, default: [] } };

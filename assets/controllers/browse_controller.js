@@ -24,12 +24,19 @@ function readCookie(name) {
     return null;
 }
 
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
-    static targets = ['grid', 'sentinel', 'status', 'sort', 'dir', 'dirText', 'rowTitle', 'format'];
-    static values = { itemsUrl: String, searchUrl: String, similarUrl: String };
+    static targets = ['grid', 'sentinel', 'status', 'sort', 'dir', 'dirText', 'rowTitle', 'format', 'shelfChip'];
+    static values = { itemsUrl: String, searchUrl: String, similarUrl: String, shelf: String, shelfLabel: String };
 
     connect() {
         this.resetState();
+
+        // Shelf mode (?shelf=<slug>, from a home row's "See all"): the server resolves and
+        // validates the slug, so trust its value rather than re-parsing the URL. An unknown
+        // slug arrives here as '' and we behave like a plain /browse.
+        this.shelf = (this.hasShelfValue && this.shelfValue) ? this.shelfValue : null;
+        this.shelfLabel = this.hasShelfLabelValue ? this.shelfLabelValue : '';
 
         const initialUrl = new URL(window.location.href);
         const initialQuery = initialUrl.searchParams.get('q');
@@ -41,10 +48,13 @@ export default class extends Controller {
         const like = initialUrl.searchParams.get('like');
         this.similarSeed = like && like.trim() !== '' ? like.trim() : null;
         this.similarTitle = (initialUrl.searchParams.get('likeTitle') || '').trim();
+        // A ?q= / ?like= on the URL wins over the shelf — those modes replace the grid entirely.
         if (this.similarSeed) {
             this.searchQuery = null;
+            this.clearShelf();
             this.applySimilarMode();
         } else if (this.searchQuery) {
+            this.clearShelf();
             this.applySearchMode();
         }
 
@@ -175,8 +185,9 @@ export default class extends Controller {
         const rawType = event.detail && typeof event.detail.type === 'string' ? event.detail.type : 'title';
         const type = ['title', 'author', 'genre', 'series', 'publisher'].includes(rawType) ? rawType : 'title';
         this.searchType = type;
-        // A search always leaves "More like this" mode.
+        // A search always leaves "More like this" and shelf mode.
         this.similarSeed = null;
+        this.clearShelf();
         if (query === '') {
             this.searchQuery = null;
             this.applyTrendingMode();
@@ -185,6 +196,7 @@ export default class extends Controller {
             url.searchParams.delete('type');
             url.searchParams.delete('like');
             url.searchParams.delete('likeTitle');
+            url.searchParams.delete('shelf');
             window.history.replaceState(null, '', url.toString());
         } else {
             this.searchQuery = query;
@@ -193,6 +205,7 @@ export default class extends Controller {
             url.searchParams.set('q', query);
             url.searchParams.delete('like');
             url.searchParams.delete('likeTitle');
+            url.searchParams.delete('shelf');
             if (type === 'title') {
                 url.searchParams.delete('type');
             } else {
@@ -240,8 +253,17 @@ export default class extends Controller {
 
     applyTrendingMode() {
         if (this.hasRowTitleTarget) {
-            this.rowTitleTarget.textContent = 'Trending';
+            this.rowTitleTarget.textContent = this.shelf ? (this.shelfLabel || 'Trending') : 'Trending';
         }
+    }
+
+    // Leaving shelf mode: drop the param from the URL and hide the shelf chip, so a
+    // subsequent search / "clear search" doesn't silently stay scoped to the shelf.
+    clearShelf() {
+        if (!this.shelf) return;
+        this.shelf = null;
+        this.shelfLabel = '';
+        if (this.hasShelfChipTarget) this.shelfChipTarget.hidden = true;
     }
 
     applySimilarMode() {
@@ -353,6 +375,9 @@ export default class extends Controller {
         } else if (isSearch) {
             params.set('q', this.searchQuery);
             if (this.searchType && this.searchType !== 'title') params.set('type', this.searchType);
+        } else if (this.shelf) {
+            // Shelf mode rides the items endpoint so infinite scroll stays inside the dataset.
+            params.set('shelf', this.shelf);
         }
         const baseUrl = isSimilar ? this.similarUrlValue : (isSearch ? this.searchUrlValue : this.itemsUrlValue);
         const url = `${baseUrl}?${params.toString()}`;
@@ -360,6 +385,7 @@ export default class extends Controller {
         const requestDir = this.currentDir();
         const requestQuery = this.searchQuery;
         const requestFormat = this.currentFormat();
+        const requestShelf = this.shelf;
 
         try {
             const res = await fetch(url, { headers: { Accept: 'application/json' } });
@@ -367,7 +393,7 @@ export default class extends Controller {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             if (this.cancelled) return;
-            if (requestSort !== this.currentSort() || requestDir !== this.currentDir() || requestQuery !== this.searchQuery || requestFormat !== this.currentFormat()) {
+            if (requestSort !== this.currentSort() || requestDir !== this.currentDir() || requestQuery !== this.searchQuery || requestFormat !== this.currentFormat() || requestShelf !== this.shelf) {
                 return;
             }
             const batch = data.items || [];
@@ -385,7 +411,9 @@ export default class extends Controller {
                     ? 'No similar books found.'
                     : (isSearch
                         ? `No results for "${requestQuery}".`
-                        : 'No trending books available yet.');
+                        : (requestShelf
+                            ? `Nothing in ${this.shelfLabelValue || 'this shelf'} yet.`
+                            : 'No trending books available yet.'));
             } else {
                 this.statusTarget.textContent = 'End of list.';
             }

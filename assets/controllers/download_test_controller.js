@@ -8,6 +8,7 @@ import { Controller } from '@hotwired/stimulus';
  * ability. Downloads run server-side and can take a while per link, so the
  * button is disabled while the request is in flight.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = ['button', 'results'];
     static values = { url: String, token: String, links: Array };

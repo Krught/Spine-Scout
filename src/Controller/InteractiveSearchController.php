@@ -12,14 +12,22 @@ use App\Download\Progress\CollectingDownloadProgressReporter;
 use App\Entity\Book;
 use App\Entity\BookRequest;
 use App\Entity\DownloadJob;
+use App\Download\Torrent\TorrentFulfillmentInterface;
 use App\Entity\User;
+use App\Integration\Prowlarr\ProwlarrClient;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
+use App\Repository\DownloadJobRepository;
+use App\Repository\IntegrationRepository;
 use App\Search\DirectDownload\DirectDownloadProbe;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\DirectDownload\ScoredCandidate;
 use App\Search\Source\ReleaseCandidate;
+use App\Search\Source\ReleaseSearchPlan;
+use App\Search\Torrent\ScoredRelease;
+use App\Search\Torrent\TorrentMatchScorer;
 use App\Service\BookMetadataService;
+use App\Support\AudioFormat;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -42,13 +50,18 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  * template → FileMover) for the real download — here driven by a single
  * user-chosen candidate instead of the full cascade.
  *
- * Open to any logged-in user (unlike the ROLE_ADMIN, non-prod-only dev probe).
+ * Gated on the per-user ROLE_INTERACTIVE_SEARCH permission (admins inherit it via
+ * role_hierarchy) — a logged-in user without it gets 403 from every route here, and
+ * the UI that drives them is not rendered at all.
  */
-#[IsGranted('ROLE_USER')]
+#[IsGranted('ROLE_INTERACTIVE_SEARCH')]
 final class InteractiveSearchController extends AbstractController
 {
     /** Server-side cap on returned rows — scoring fetches a detail page per row. */
     private const MAX_RESULTS = 25;
+
+    /** Cap on the category labels echoed per torrent row — the panel shows chips. */
+    private const MAX_CATEGORIES = 4;
 
     private const CSRF_ID = 'interactive_search';
 
@@ -65,13 +78,18 @@ final class InteractiveSearchController extends AbstractController
         private readonly BookMetadataService $metadata,
         private readonly BookRepository $books,
         private readonly BookRequestRepository $requests,
+        private readonly DownloadJobRepository $jobs,
+        private readonly IntegrationRepository $integrations,
+        private readonly ProwlarrClient $prowlarr,
+        private readonly TorrentMatchScorer $scorer,
+        private readonly TorrentFulfillmentInterface $torrents,
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface $logger,
     ) {
     }
 
     /**
-     * The four sources with their operator-configured mirror URLs, so the panel
+     * The operator-enabled sources with their configured mirror URLs, so the panel
      * can render the source buttons and the mirror toggle. URLs are never shipped
      * in code — they come entirely from the saved config.
      */
@@ -84,29 +102,35 @@ final class InteractiveSearchController extends AbstractController
 
         $config = $this->probe->config();
 
-        // Operator priority order first (so the panel defaults to their highest
-        // source), then any source not yet in their saved priority list.
-        // HTTP mirror sources only — torrent isn't a manual, link-resolving source.
-        $orderedIds = [];
+        // Walk the operator's priority list in order, so the panel's first entry —
+        // the one it preselects — is their highest-priority source. A source the
+        // operator switched off is omitted entirely: the same
+        // DirectDownloadConfig::isIndexerEnabled() predicate the automatic cascade
+        // gates on (ProcessDownloadJobHandler, DirectDownloadEvaluator, the source
+        // adapters), so the panel offers exactly what the pipeline would try.
+        // Sources absent from the saved priority list are off by that predicate and
+        // therefore also absent here. Torrent rides along with the mirror sources:
+        // it has no mirror URLs, but is a pickable source backed by the indexer stack.
+        $sources = [];
+        $seen = [];
         foreach ($config->indexerPriority as $row) {
             $id = $row['id'] ?? null;
-            if (is_string($id) && DirectDownloadSource::tryFromId($id)?->usesMirrors() && !in_array($id, $orderedIds, true)) {
-                $orderedIds[] = $id;
+            $source = is_string($id) ? DirectDownloadSource::tryFromId($id) : null;
+            if ($source === null || isset($seen[$source->value]) || !$config->isIndexerEnabled($source->value)) {
+                continue;
             }
-        }
-        foreach (DirectDownloadSource::mirrorIds() as $id) {
-            if (!in_array($id, $orderedIds, true)) {
-                $orderedIds[] = $id;
-            }
-        }
+            $seen[$source->value] = true;
 
-        $sources = [];
-        foreach ($orderedIds as $id) {
+            // `enabled` is "usable right now", not "switched on": a source the
+            // operator enabled but never finished configuring (no mirrors / no
+            // torrent stack) still shows, greyed out, so they can see why.
+            $isTorrent = $source === DirectDownloadSource::Torrent;
+            $mirrors = $isTorrent ? [] : $config->mirrorsFor($source->value)->toArray();
             $sources[] = [
-                'id'      => $id,
-                'label'   => DirectDownloadSource::tryFromId($id)?->label() ?? $id,
-                'enabled' => $config->isIndexerEnabled($id),
-                'mirrors' => $config->mirrorsFor($id)->toArray(),
+                'id'      => $source->value,
+                'label'   => $source->label(),
+                'enabled' => $isTorrent ? $this->torrents->isAvailable() : $mirrors !== [],
+                'mirrors' => $mirrors,
             ];
         }
 
@@ -129,6 +153,9 @@ final class InteractiveSearchController extends AbstractController
         $sourceId = trim((string) ($payload['source'] ?? ''));
         if (DirectDownloadSource::tryFromId($sourceId) === null) {
             return $this->json(['error' => 'Unknown source.'], 400);
+        }
+        if ($sourceId === DirectDownloadSource::Torrent->value) {
+            return $this->runTorrent($payload);
         }
         $config = $this->probe->config();
 
@@ -162,6 +189,159 @@ final class InteractiveSearchController extends AbstractController
             'threshold' => $this->probe->matchThreshold(),
             'truncated' => \count($scored) > self::MAX_RESULTS,
             'results'   => $rows,
+        ]);
+    }
+
+    /**
+     * The torrent half of run(): search the configured indexers for the (possibly
+     * user-edited) metadata and rank the releases with the same weighted policy the
+     * automatic audiobook pipeline uses. No mirror is involved — the indexer manager
+     * is the single search surface — so `mirror`/`searchUrl` come back null.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function runTorrent(array $payload): JsonResponse
+    {
+        if (!$this->torrents->isAvailable()) {
+            return $this->json(['error' => 'Torrent search is not configured.'], 409);
+        }
+
+        // When the panel identifies a real book we can search as the pipeline does;
+        // an audiobook needs the audiobook plan (indexer categories key off the
+        // plan's content type). Otherwise fall back to the free-text probe plan.
+        $book = $this->resolveBook($payload);
+        $plan = ($book !== null && self::isAudiobook($book))
+            ? self::audiobookPlanFor($book)
+            : $this->probe->buildPlan(
+                trim((string) ($payload['isbn'] ?? '')),
+                trim((string) ($payload['author'] ?? '')),
+                trim((string) ($payload['title'] ?? '')),
+                trim((string) ($payload['publisher'] ?? '')),
+                trim((string) ($payload['year'] ?? '')),
+                trim((string) ($payload['language'] ?? '')),
+            );
+
+        $scored = $this->scorer->scored(
+            $this->prowlarr->search($plan),
+            $plan,
+            $this->integrations->getProwlarrConfig()->matchPolicy(),
+        );
+
+        $threshold = $this->probe->matchThreshold();
+        $rows = array_map(
+            static fn (ScoredRelease $sr): array => self::torrentRow($sr, $threshold, $plan->contentType),
+            array_slice($scored, 0, self::MAX_RESULTS),
+        );
+
+        return $this->json([
+            'source'    => DirectDownloadSource::Torrent->value,
+            'mirror'    => null,
+            'searchUrl' => null,
+            'threshold' => $threshold,
+            'truncated' => \count($scored) > self::MAX_RESULTS,
+            'results'   => $rows,
+        ]);
+    }
+
+    /**
+     * Send one user-picked torrent to the download client, through the same grab
+     * step the automatic pipeline uses. Returns as soon as the client accepts the
+     * magnet — the async torrent poller finalizes the job and mirrors its status
+     * onto the request.
+     */
+    #[Route('/interactive-search/grab', name: 'interactive_search_grab', methods: ['POST'])]
+    public function grab(Request $request): JsonResponse
+    {
+        if (($error = $this->guardCsrf($request)) !== null) {
+            return $error;
+        }
+        $payload = $this->payload($request);
+
+        $book = $this->resolveBook($payload);
+        if ($book === null) {
+            return $this->json(['error' => 'Could not resolve the book to download.'], 400);
+        }
+
+        $link = (string) ($this->blankToNull($payload['link'] ?? null) ?? '');
+        $title = (string) ($this->blankToNull($payload['title'] ?? null) ?? '');
+        if ($link === '' || $title === '') {
+            return $this->json(['error' => 'This result has no download link.'], 400);
+        }
+
+        if (!$this->torrents->isAvailable()) {
+            return $this->json(['error' => 'Torrent downloading is not configured.'], 409);
+        }
+
+        $audiobook = self::isAudiobook($book);
+
+        /** @var User $user */
+        $user = $this->getUser();
+        // Book and audiobook are independent requests for the same work, so the
+        // lookup is scoped to the edition this grab is for (RequestsController::create).
+        $bookRequest = $this->requests->findOneByUserAndBook($user, $book, $audiobook);
+        if ($bookRequest === null) {
+            $bookRequest = new BookRequest($user, $book);
+            $bookRequest->setAudiobook($audiobook);
+            $this->em->persist($bookRequest);
+        }
+        $bookRequest->setStatus(BookRequest::STATUS_APPROVED);
+
+        if ($bookRequest->getId() !== null && $this->jobs->hasActiveJobForRequest($bookRequest)) {
+            return $this->json(['error' => 'A download is already in progress for this book.'], 409);
+        }
+
+        $sourceId = (string) ($this->blankToNull($payload['id'] ?? null) ?? $link);
+        $job = new DownloadJob(
+            source: DirectDownloadSource::Torrent->value,
+            sourceId: mb_substr($sourceId, 0, 255),
+            protocol: ReleaseCandidate::PROTOCOL_TORRENT,
+            bookRequest: $bookRequest,
+        );
+        $job->setStatus(DownloadJob::STATUS_QUEUED);
+        $bookRequest->setDeliveryStatus(DownloadJob::STATUS_QUEUED);
+        $this->em->persist($job);
+
+        $candidate = new ReleaseCandidate(
+            source: 'prowlarr',
+            sourceId: $sourceId,
+            title: $title,
+            format: $this->blankToNull($payload['format'] ?? null),
+            sizeBytes: isset($payload['sizeBytes']) && is_numeric($payload['sizeBytes']) ? (int) $payload['sizeBytes'] : null,
+            downloadUrl: $link,
+            protocol: ReleaseCandidate::PROTOCOL_TORRENT,
+            indexer: $this->blankToNull($payload['indexer'] ?? null),
+            seeders: isset($payload['seeders']) && is_numeric($payload['seeders']) ? (int) $payload['seeders'] : null,
+            contentType: $audiobook ? ReleaseCandidate::CONTENT_AUDIOBOOK : ReleaseCandidate::CONTENT_EBOOK,
+        );
+
+        // Soft failure at 200, matching download(): the panel renders the message
+        // inline instead of treating it as a transport error.
+        try {
+            $added = $this->torrents->grab($job, $candidate, $book->getTitle());
+            $error = $added ? null : 'No torrent download client is configured.';
+        } catch (\Throwable $e) {
+            $error = 'Download client add failed: ' . $e->getMessage();
+        }
+
+        if ($error !== null) {
+            $job->setStatus(DownloadJob::STATUS_ERROR)->setStatusMessage($error);
+            $bookRequest->setDeliveryStatus(DownloadJob::STATUS_ERROR);
+            $this->em->flush();
+            $this->logger->warning('Interactive torrent grab failed', ['book' => $book->getId(), 'error' => $error]);
+
+            return $this->json(['ok' => false, 'queued' => false, 'error' => $error]);
+        }
+
+        $this->em->flush();
+        $this->logger->info('Interactive torrent grab queued', [
+            'book' => $book->getId(), 'job' => $job->getId(), 'hash' => $job->getClientRef(),
+        ]);
+
+        return $this->json([
+            'ok'     => true,
+            'queued' => true,
+            'jobId'  => $job->getId(),
+            'error'  => null,
         ]);
     }
 
@@ -386,6 +566,121 @@ final class InteractiveSearchController extends AbstractController
             'qualifies' => $sc->qualifies,
             'links'     => $sc->detailLinks,
         ];
+    }
+
+    /**
+     * One ranked torrent release in the same row shape the mirror sources emit,
+     * plus a `torrent` block with the swarm facts the panel shows. `$planContentType`
+     * is what we actually searched for, and stands in whenever a row's own categories
+     * don't say — the panel always gets an audiobook/ebook label to render.
+     *
+     * @return array<string, mixed>
+     */
+    private static function torrentRow(ScoredRelease $sr, int $threshold, string $planContentType): array
+    {
+        $c = $sr->candidate;
+        $leechers = $c->extra['leechers'] ?? null;
+        $flags = $c->extra['flags'] ?? [];
+        $type = $c->extra['type'] ?? null;
+        $categories = $c->extra['categories'] ?? [];
+        $published = $c->extra['publishDate'] ?? null;
+        $matchPct = self::matchPct($sr);
+        $link = trim((string) ($c->downloadUrl ?? ''));
+
+        return [
+            'id'        => $c->sourceId,
+            'title'     => $c->title,
+            'author'    => $c->author,
+            'format'    => $c->format,
+            'language'  => $c->language,
+            'publisher' => $c->publisher,
+            'year'      => $c->year,
+            'size'      => self::humanBytes($c->sizeBytes),
+            'sizeBytes' => $c->sizeBytes,
+            'infoUrl'   => $c->infoUrl,
+            'isbns'     => $c->isbns,
+            'matchPct'  => $matchPct,
+            'qualifies' => $matchPct >= $threshold,
+            'links'     => $link !== '' ? [$link] : [],
+            'torrent'   => [
+                'indexer'  => $c->indexer,
+                'seeders'  => $c->seeders,
+                'leechers' => is_numeric($leechers) ? (int) $leechers : null,
+                'grabs'    => $c->downloads,
+                'flags'    => is_array($flags) ? array_values(array_filter($flags, 'is_string')) : [],
+                'score'    => (int) round($sr->score * 100),
+                'type'     => is_string($type) && $type !== '' ? $type : $planContentType,
+                // Capped: indexers can tag a release with a whole category tree and
+                // the panel only has room for a couple of chips.
+                'categories' => is_array($categories)
+                    ? array_slice(array_values(array_filter($categories, 'is_string')), 0, self::MAX_CATEGORIES)
+                    : [],
+                'published' => is_string($published) && $published !== '' ? $published : null,
+            ],
+        ];
+    }
+
+    /**
+     * The title-match axis as a 0-100 percentage, so a torrent row is directly
+     * comparable to the direct-download match threshold. Tolerant of the component
+     * being expressed either as a 0..1 fraction or as an already-scaled percentage.
+     */
+    private static function matchPct(ScoredRelease $sr): int
+    {
+        $match = (float) ($sr->components['match'] ?? 0.0);
+
+        return (int) round($match <= 1.0 ? $match * 100 : $match);
+    }
+
+    /**
+     * True when this book is the audiobook edition rather than the ebook — the same
+     * distinction RequestsController routes on (audiobooks go to the torrent
+     * pipeline) and the format field Book documents for owned audio.
+     */
+    private static function isAudiobook(Book $book): bool
+    {
+        return AudioFormat::isAudio($book->getFormat());
+    }
+
+    /** Audiobook search plan, mirroring ProcessTorrentJobHandler::planFor(). */
+    private static function audiobookPlanFor(Book $book): ReleaseSearchPlan
+    {
+        $isbns = [];
+        $seen = [];
+        foreach ([$book->getIsbn(), ...$book->getIsbns()] as $raw) {
+            $normalized = BookRepository::normalizeIsbn($raw);
+            if ($normalized !== null && !isset($seen[$normalized])) {
+                $seen[$normalized] = true;
+                $isbns[] = $normalized;
+            }
+        }
+
+        return new ReleaseSearchPlan(
+            book: $book,
+            isbnCandidates: $isbns,
+            author: (string) $book->getAuthor(),
+            titleVariants: [$book->getTitle()],
+            contentType: ReleaseCandidate::CONTENT_AUDIOBOOK,
+        );
+    }
+
+    /** Indexer sizes are raw byte counts; the mirror sources already ship a string. */
+    private static function humanBytes(?int $bytes): ?string
+    {
+        if ($bytes === null || $bytes < 0) {
+            return null;
+        }
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $value = (float) $bytes;
+        $i = 0;
+        while ($value >= 1024 && $i < \count($units) - 1) {
+            $value /= 1024;
+            ++$i;
+        }
+
+        return $i === 0
+            ? sprintf('%d %s', (int) $value, $units[$i])
+            : sprintf('%.1f %s', $value, $units[$i]);
     }
 
     private function guardCsrf(Request $request): ?JsonResponse

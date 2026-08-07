@@ -11,6 +11,7 @@ use App\Message\DispatchTorrentSearch;
 use App\Message\ProcessTorrentJob;
 use App\Repository\BookRequestRepository;
 use App\Repository\DownloadJobRepository;
+use App\Search\SearchSettingsProvider;
 use App\Search\Source\ReleaseCandidate;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -31,6 +32,7 @@ final class DispatchTorrentSearchHandler
         private readonly EntityManagerInterface $em,
         private readonly MessageBusInterface $bus,
         private readonly FulfillmentLog $log,
+        private readonly SearchSettingsProvider $settings,
     ) {
     }
 
@@ -38,6 +40,15 @@ final class DispatchTorrentSearchHandler
     {
         $request = $this->requests->find($message->bookRequestId);
         if ($request === null || $request->getStatus() !== BookRequest::STATUS_APPROVED) {
+            return;
+        }
+        // Manual fulfillment mode: no automatic job creation. The request stays
+        // APPROVED for an operator to fulfil through interactive search.
+        if (!$this->settings->isAutomaticFulfillmentEnabled()) {
+            $this->log->info(
+                'Automatic fulfillment is off — awaiting manual search.',
+                $request->getBook()->getTitle(),
+            );
             return;
         }
         if ($this->jobs->hasActiveJobForRequest($request)) {

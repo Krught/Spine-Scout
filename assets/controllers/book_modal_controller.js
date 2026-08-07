@@ -1,5 +1,6 @@
 import { Controller } from '@hotwired/stimulus';
 
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = ['modal', 'cover', 'action', 'search', 'recommend', 'title', 'author', 'status', 'facts', 'genres', 'description', 'format', 'refresh'];
 
@@ -170,7 +171,11 @@ export default class extends Controller {
         }
         // Hide Interactive Search once the book is in the library or its file has
         // already been downloaded ('downloaded' pseudo-status = approved + delivered).
-        this.searchTarget.hidden = downloaded || requestStatus === 'downloaded';
+        // The button is only rendered for users holding ROLE_INTERACTIVE_SEARCH, so it
+        // is legitimately absent — never assume the target exists.
+        if (this.hasSearchTarget) {
+            this.searchTarget.hidden = downloaded || requestStatus === 'downloaded';
+        }
     }
 
     // Render the Book/Audiobook control into the format slot: a segmented toggle when an
@@ -433,6 +438,9 @@ export default class extends Controller {
     // looking at. The panel (interactive-search controller) listens on @window.
     openSearch(event) {
         if (event && event.preventDefault) event.preventDefault();
+        // No button, no panel: without ROLE_INTERACTIVE_SEARCH neither is rendered, so
+        // a stray invocation must be a no-op rather than opening nothing.
+        if (!this.hasSearchTarget) return;
         this.dispatch('opensearch', {
             prefix: 'book-modal',
             bubbles: true,

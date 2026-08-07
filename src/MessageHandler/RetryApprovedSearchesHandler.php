@@ -9,6 +9,7 @@ use App\Message\DispatchTorrentSearch;
 use App\Message\RetryApprovedSearches;
 use App\Repository\BookRequestRepository;
 use App\Repository\DownloadJobRepository;
+use App\Search\SearchSettingsProvider;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -28,11 +29,18 @@ final class RetryApprovedSearchesHandler
         private readonly BookRequestRepository $requests,
         private readonly DownloadJobRepository $jobs,
         private readonly MessageBusInterface $bus,
+        private readonly SearchSettingsProvider $settings,
     ) {
     }
 
     public function __invoke(RetryApprovedSearches $message): void
     {
+        // Manual fulfillment mode: the sweep is an automatic initiator, so it does
+        // nothing at all — no reclaim, no re-dispatch.
+        if (!$this->settings->isAutomaticFulfillmentEnabled()) {
+            return;
+        }
+
         $this->jobs->reclaimStale();
 
         foreach ($this->requests->findApprovedNeedingSearch() as $request) {

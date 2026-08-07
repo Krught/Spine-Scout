@@ -10,7 +10,11 @@
                     <div>
                         <h2 class="row-title">{{ section.title }}</h2>
                     </div>
-                    <a class="row-more" href="#">See all →</a>
+                    {% if section.more_shelf is defined %}
+                        <a class="row-more" href="{{ path('browse', {shelf: section.more_shelf}) }}">See all →</a>
+                    {% elseif section.more_route is defined %}
+                        <a class="row-more" href="{{ path(section.more_route) }}">See all →</a>
+                    {% endif %}
                 </div>
 
                 {% if section.items is empty %}
@@ -171,7 +175,9 @@
                     <div class="book-modal-cover-wrap">
                         <div class="book-modal-cover" data-book-modal-target="cover"></div>
                         <button type="button" class="book-modal-action" data-book-modal-target="action" data-action="click->book-modal#requestBook" hidden></button>
-                        <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        {% if is_granted('ROLE_INTERACTIVE_SEARCH') %}
+                            <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        {% endif %}
                         <button type="button" class="book-modal-search book-modal-recommend" data-book-modal-target="recommend" data-action="click->book-modal#moreLikeThis" hidden>More like this</button>
                     </div>
                     <div class="book-modal-content">
@@ -184,7 +190,9 @@
                         <div class="book-modal-description" data-book-modal-target="description"></div>
                     </div>
                 </div>
-                {{ include('_interactive_search.html.twig') }}
+                {% if is_granted('ROLE_INTERACTIVE_SEARCH') %}
+                    {{ include('_interactive_search.html.twig') }}
+                {% endif %}
             </div>
         </div>
     </div>

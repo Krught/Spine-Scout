@@ -72,8 +72,11 @@ services:
             $repository: '%app.github_repository%'
 
     # Reuse Doctrine's PDO connection so sessions share the app DB pool instead
-    # of opening a second connection. LOCK_TRANSACTIONAL (1) prevents lost
-    # writes when the same session is touched by concurrent requests.
+    # of opening a second connection. lock_mode LOCK_NONE (0): the previous
+    # LOCK_ADVISORY (1) held a pg_advisory_lock for the whole request, so every
+    # concurrent request from one user (the browse grid fires many at once)
+    # queued behind the first. We only write the session at login/logout, so
+    # there is no concurrent-write to lose.
     session.pdo_handler.pdo:
         class: PDO
         factory: ['@doctrine.dbal.default_connection', 'getNativeConnection']
@@ -81,7 +84,7 @@ services:
     Symfony\Component\HttpFoundation\Session\Storage\Handler\PdoSessionHandler:
         arguments:
             - '@session.pdo_handler.pdo'
-            - { lock_mode: 1 }
+            - { lock_mode: 0 }
 
     App\MessageHandler\PurgeExpiredSessionsHandler:
         arguments:

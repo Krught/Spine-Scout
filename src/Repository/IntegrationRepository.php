@@ -13,15 +13,27 @@ use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\SearchSettingsProvider;
 use App\Search\Torrent\ProwlarrConfig;
 use App\Service\AppSettingsProvider;
+use Doctrine\Bundle\DoctrineBundle\Attribute\AsDoctrineListener;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\Events;
 use Doctrine\Persistence\ManagerRegistry;
 
 /**
  * @extends ServiceEntityRepository<Integration>
  */
+#[AsDoctrineListener(event: Events::onClear)]
 final class IntegrationRepository extends ServiceEntityRepository implements SearchSettingsProvider, AppSettingsProvider, TorrentClientSettings
 {
+    /**
+     * Per-request memo of the settings rows. Every settings accessor below funnels through
+     * findByKind(), and a single request/message typically asks for the same handful of kinds
+     * many times over; without this each call is its own SELECT.
+     *
+     * @var array<string, Integration|null>
+     */
+    private array $memo = [];
+
     public function __construct(
         ManagerRegistry $registry,
         private readonly MirrorListNormalizer $mirrorNormalizer,
@@ -31,12 +43,46 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
 
     public function findByKind(string $kind): ?Integration
     {
-        return $this->findOneBy(['kind' => $kind]);
+        if (array_key_exists($kind, $this->memo)) {
+            $cached = $this->memo[$kind];
+            // Second line of defence behind onClear() below: if a memoized row is no longer in
+            // the identity map (individual detach, a clear we somehow missed) the whole memo is
+            // treated as belonging to a dead unit of work and dropped -- including memoized
+            // nulls, which cannot be probed with contains() and would otherwise keep hiding a
+            // row created since.
+            if ($cached === null || $this->getEntityManager()->contains($cached)) {
+                return $cached;
+            }
+            $this->memo = [];
+        }
+
+        return $this->memo[$kind] = $this->findOneBy(['kind' => $kind]);
+    }
+
+    /**
+     * The repository is a long-lived service while the identity map is not: the messenger worker
+     * stays up for many messages and Doctrine clears the EntityManager between them. Without this
+     * the memo would keep serving settings captured when the worker booted, so an operator
+     * toggling a setting in the UI would never reach the next handled message. Clearing the EM is
+     * exactly the boundary at which the memo stops being "per request", so we drop it there.
+     */
+    public function onClear(): void
+    {
+        $this->memo = [];
     }
 
     public function getOrCreate(string $kind): Integration
     {
         return $this->findByKind($kind) ?? new Integration($kind);
+    }
+
+    /**
+     * Drops the per-request memo. Called by every write path here so a freshly persisted or
+     * mutated row is re-read instead of served from a stale (or unsaved-id) memo entry.
+     */
+    public function clearSettingsCache(): void
+    {
+        $this->memo = [];
     }
 
     public function qbittorrentIntegration(): ?Integration
@@ -54,6 +100,31 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
     public function isAutoApproveRequestsEnabled(): bool
     {
         return $this->getOrCreate(Integration::KIND_APP)->isAutoApproveRequestsEnabled();
+    }
+
+    /**
+     * Operator toggle for the automatic search/fulfillment pipeline (KIND_APP row).
+     * Defaults to true when the row/option is missing.
+     */
+    public function isAutomaticFulfillmentEnabled(): bool
+    {
+        return $this->getOrCreate(Integration::KIND_APP)->isAutomaticFulfillmentEnabled();
+    }
+
+    public function setAutomaticFulfillmentEnabled(bool $enabled): void
+    {
+        $em = $this->getEntityManager();
+        $app = $this->getOrCreate(Integration::KIND_APP);
+        $app->setAutomaticFulfillmentEnabled($enabled);
+        if ($app->getId() === null) {
+            $app->setAuthType(Integration::AUTH_NONE);
+            $app->setEnabled(true);
+            $em->persist($app);
+        } else {
+            $app->touch();
+        }
+        $em->flush();
+        $this->clearSettingsCache();
     }
 
     // -- best_match -------------------------------------------------------------
@@ -79,6 +150,9 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
         } else {
             $integration->touch();
         }
+        // The caller owns the flush; drop the memo now so nothing hands out the pre-write state
+        // (or a memoized null shadowing the row we just persisted) later in this request.
+        $this->clearSettingsCache();
         return $integration;
     }
 
@@ -108,6 +182,9 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
         } else {
             $integration->touch();
         }
+        // The caller owns the flush; drop the memo now so nothing hands out the pre-write state
+        // (or a memoized null shadowing the row we just persisted) later in this request.
+        $this->clearSettingsCache();
         return $integration;
     }
 
@@ -137,6 +214,9 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
         } else {
             $integration->touch();
         }
+        // The caller owns the flush; drop the memo now so nothing hands out the pre-write state
+        // (or a memoized null shadowing the row we just persisted) later in this request.
+        $this->clearSettingsCache();
         return $integration;
     }
 
@@ -166,6 +246,9 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
         } else {
             $integration->touch();
         }
+        // The caller owns the flush; drop the memo now so nothing hands out the pre-write state
+        // (or a memoized null shadowing the row we just persisted) later in this request.
+        $this->clearSettingsCache();
         return $integration;
     }
 }

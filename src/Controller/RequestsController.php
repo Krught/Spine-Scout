@@ -18,6 +18,7 @@ use App\Message\DispatchReleaseSearch;
 use App\Message\DispatchTorrentSearch;
 use App\Message\RewriteAudiobookSidecar;
 use App\Repository\DownloadJobRepository;
+use App\Search\SearchSettingsProvider;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -34,6 +35,9 @@ final class RequestsController extends AbstractController
 {
     /** Long TTL; the proxy URL is deterministic per remote URL so it's safe to keep around. */
     private const COVER_CACHE_TTL = 60 * 60 * 24 * 30;
+
+    /** CSRF id shared by the manual-fulfillment JSON endpoints on this page. */
+    private const PIPELINE_CSRF_ID = 'requests_pipeline';
 
     /**
      * The distinct statuses a request shows on this page, in display order, keyed
@@ -78,10 +82,23 @@ final class RequestsController extends AbstractController
         return $this->prowlarr->isConfigured() && $this->qbittorrent->isConfigured();
     }
 
+    /**
+     * Requests rendered per page. Server-side paging keeps the render cost (and the
+     * per-row cover resolution) bounded no matter how long the request history gets.
+     */
+    private const PER_PAGE = 50;
+
     #[Route('/requests', name: 'requests', methods: ['GET'])]
-    public function index(BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata): Response
+    public function index(Request $request, BookRequestRepository $requests, DownloadJobRepository $jobs, BookMetadataService $metadata, SearchSettingsProvider $settings): Response
     {
-        $rows = $requests->findAllForList();
+        $total = $requests->countForList();
+        $pages = max(1, (int) ceil($total / self::PER_PAGE));
+        // Clamp rather than 404: a stale ?page= from a bookmark or after deletions
+        // should land on a real page, not an error.
+        // Cast rather than getInt(): a non-numeric ?page= is user input, not an error —
+        // getInt() would throw on it, while (int) lands on 0 and clamps to the first page.
+        $page = min($pages, max(1, (int) $request->query->get('page', 1)));
+        $rows = $requests->findAllForList($page, self::PER_PAGE);
 
         $ids = [];
         foreach ($rows as $r) {
@@ -98,10 +115,107 @@ final class RequestsController extends AbstractController
         }
 
         return $this->render('requests/index.html.twig', [
-            'items'          => $items,
-            'filters'        => $this->buildFilters($items),
-            'format_filters' => $this->buildFormatFilters($items),
+            'items'                  => $items,
+            'filters'                => $this->buildFilters($items),
+            'format_filters'         => $this->buildFormatFilters($items),
+            'automatic_fulfillment'  => $settings->isAutomaticFulfillmentEnabled(),
+            'page'                   => $page,
+            'pages'                  => $pages,
+            'total'                  => $total,
         ]);
+    }
+
+    /**
+     * Flip the automatic fulfillment pipeline on/off. Off means the dispatch
+     * handlers no-op, so approving leaves a request APPROVED awaiting a manual
+     * interactive search from this page.
+     */
+    #[Route('/requests/pipeline-toggle', name: 'requests_pipeline_toggle', methods: ['POST'])]
+    #[IsGranted('ROLE_MANAGE_SETTINGS')]
+    public function pipelineToggle(Request $request, SearchSettingsProvider $settings): JsonResponse
+    {
+        $payload = self::jsonPayload($request);
+        if (($error = $this->guardPipelineCsrf($payload)) !== null) {
+            return $error;
+        }
+
+        $enabled = filter_var($payload['enabled'] ?? false, FILTER_VALIDATE_BOOL);
+        $settings->setAutomaticFulfillmentEnabled($enabled);
+
+        return new JsonResponse(['enabled' => $enabled]);
+    }
+
+    /**
+     * The next request awaiting manual fulfillment, oldest first — the queue the
+     * requests-page interactive-search overlay walks when automatic fulfillment is
+     * off. `after` lets the client advance past the item it just handled.
+     *
+     * "Awaiting manual fulfillment" is exactly the set
+     * {@see BookRequestRepository::findApprovedNeedingSearch()} returns: approved,
+     * with no download job that is in-flight (queued/resolving/downloading) or
+     * already complete. Never-started and errored/cancelled requests are in;
+     * delivered and in-progress ones are out. Reusing that query keeps this queue
+     * and the automatic retry sweep on one definition.
+     */
+    #[Route('/requests/manual-next', name: 'requests_manual_next', methods: ['POST'])]
+    #[IsGranted('ROLE_ADMIN')]
+    public function manualNext(Request $request, BookRequestRepository $requests): JsonResponse
+    {
+        $payload = self::jsonPayload($request);
+        if (($error = $this->guardPipelineCsrf($payload)) !== null) {
+            return $error;
+        }
+
+        $after = isset($payload['after']) && is_numeric($payload['after']) ? (int) $payload['after'] : null;
+
+        $candidates = $requests->findApprovedNeedingSearch();
+        // Page by id so "next" is stable and monotonic even when two requests share
+        // a createdAt second; id order is creation order.
+        usort($candidates, static fn (BookRequest $a, BookRequest $b): int => (int) $a->getId() <=> (int) $b->getId());
+
+        foreach ($candidates as $candidate) {
+            $id = (int) $candidate->getId();
+            if ($after !== null && $id <= $after) {
+                continue;
+            }
+
+            $book = $candidate->getBook();
+
+            return new JsonResponse([
+                'done'    => false,
+                'request' => [
+                    'id'          => $id,
+                    'bookId'      => $book->getId(),
+                    'title'       => $book->getTitle(),
+                    'author'      => $book->getAuthor(),
+                    'isbn'        => $book->getIsbn(),
+                    'bookSource'  => $book->getSource(),
+                    'externalId'  => $book->getExternalId(),
+                    'audiobook'   => $candidate->isAudiobook(),
+                    'requestedBy' => $candidate->getRequestedBy()->getUsername(),
+                ],
+            ]);
+        }
+
+        return new JsonResponse(['done' => true]);
+    }
+
+    /** @return array<string, mixed> */
+    private static function jsonPayload(Request $request): array
+    {
+        $decoded = json_decode((string) $request->getContent(), true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function guardPipelineCsrf(array $payload): ?JsonResponse
+    {
+        if (!$this->isCsrfTokenValid(self::PIPELINE_CSRF_ID, (string) ($payload['_token'] ?? ''))) {
+            return new JsonResponse(['error' => 'Invalid CSRF token.'], 403);
+        }
+
+        return null;
     }
 
     /**

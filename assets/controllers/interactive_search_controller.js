@@ -5,27 +5,36 @@ import { Controller } from '@hotwired/stimulus';
  * controller reveals it and seeds it with the current book's title/author/ISBN
  * via the `seed` action.
  *
- * Flow: click a source button at the top → the mirror toggle repopulates from
- * that source's configured mirrors and a search fires automatically against the
- * first mirror → results render with a match %. Switching the mirror re-fires the
- * search. The user picks one result and clicks Manual Download, which downloads
- * exactly that file into the library server-side.
+ * Flow: opening the panel loads the source list and preselects the operator's
+ * highest-priority usable source (with its first mirror) but runs nothing — the
+ * first search only fires when the user presses Search or hits Enter in a query
+ * field. After that, clicking another source button or switching the mirror
+ * re-fires the search. The user picks one result and clicks Manual Download,
+ * which downloads exactly that file into the library server-side.
+ *
+ * The `torrent` source is the exception: it has no mirrors (the mirror row stays
+ * hidden), its results carry a `torrent` block that swaps the table columns, and
+ * picking one posts to the grab endpoint — which only queues the release in the
+ * torrent client, so there's no file waiting at the end of the request.
  *
  * The edited title/author/ISBN live in the input targets (the DOM), never in
  * server state. runSearch() always reads the current inputs, so swapping source
  * or mirror re-queries with whatever the user typed — edits are never reset.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = [
         'panel', 'sources', 'mirrors', 'mirrorRow',
         'title', 'author', 'isbn',
         'status', 'searchUrl', 'results',
+        'spinner', 'searchButton',
     ];
 
     static values = {
         sourcesUrl: String,
         runUrl: String,
         downloadUrl: String,
+        grabUrl: String,
         token: String,
         bookId: Number,
     };
@@ -37,7 +46,14 @@ export default class extends Controller {
         this.sourceList = [];
         this.selectedRow = null;
         this.runSeq = 0;
+        this.searchBusy = false;
+        this.hasRun = false;
         this.bookSeed = { source: null, externalId: null };
+    }
+
+    disconnect() {
+        // Never leave controls stuck disabled if the modal tears down mid-search.
+        this.setSearchBusy(false);
     }
 
     /**
@@ -61,6 +77,7 @@ export default class extends Controller {
             this.selectedRow = null;
             this.activeSource = null;
             this.activeMirror = null;
+            this.hasRun = false;
             this.resultsTarget.innerHTML = '';
             this.searchUrlTarget.textContent = '';
             this.mirrorRowTarget.hidden = true;
@@ -87,29 +104,54 @@ export default class extends Controller {
                 return;
             }
         }
-        this.autoRun();
+        // Preselect only — the first search waits for the user.
+        if (this.selectDefaultSource() && !this.hasRun) this.setIdleStatus();
     }
 
     /**
-     * On open, default to searching the operator's highest-priority source that
-     * has mirrors (the /sources response is already in priority order) — unless a
-     * search is already active for this book (reopened without changing books).
+     * Preselect the operator's highest-priority usable source (the /sources
+     * response is already in priority order, and operator-disabled sources are
+     * omitted). Selection only: no search is fired. Returns false when the
+     * operator has configured nothing usable, in which case the status line
+     * already explains that.
      */
-    autoRun() {
-        if (this.activeSource) return;
-        const first = this.sourceList.find((s) => (s.mirrors || []).length > 0);
+    selectDefaultSource() {
+        if (this.activeSource) return true;
+        const first = this.sourceList.find((s) => this.sourceUsable(s));
         if (!first) {
             this.setStatus('No mirrors configured. Add mirror URLs in Settings → Direct downloads.');
-            return;
+            return false;
         }
-        this.activateSource(first.id);
+        this.activateSource(first.id, { run: false });
+        return true;
+    }
+
+    /** Nothing has been queried yet for this book — say so instead of sitting blank. */
+    setIdleStatus() {
+        this.setStatus('Ready — press Search to query the selected source.');
+    }
+
+    /** Torrent needs no mirrors — only the operator's enabled flag. */
+    isTorrentSource(source) {
+        return !!source && source.id === 'torrent';
+    }
+
+    sourceUsable(source) {
+        if (!source) return false;
+        if (this.isTorrentSource(source)) return source.enabled !== false;
+        return (source.mirrors || []).length > 0;
     }
 
     renderSources() {
         this.sourcesTarget.innerHTML = this.sourceList
             .map((s) => {
-                const disabled = (s.mirrors || []).length === 0;
-                const title = disabled ? ' title="No mirrors configured in Settings"' : '';
+                const disabled = !this.sourceUsable(s);
+                let title = '';
+                if (disabled) {
+                    title = this.isTorrentSource(s)
+                        ? ' title="No torrent indexers/client configured in Settings"'
+                        : ' title="No mirrors configured in Settings"';
+                }
                 return (
                     `<button type="button" class="ix-source" data-source="${this.escAttr(s.id)}"` +
                     `${disabled ? ' disabled' : ''}${title}` +
@@ -123,19 +165,31 @@ export default class extends Controller {
         this.activateSource(event.currentTarget.dataset.source);
     }
 
-    /** Select a source by id, point at its first mirror, and search. */
-    activateSource(id) {
+    /**
+     * Select a source by id and point at its first mirror. Searches immediately
+     * unless `run` is false — the open-panel preselect selects without querying.
+     */
+    activateSource(id, { run = true } = {}) {
         const source = this.sourceList.find((s) => s.id === id);
-        if (!source || !(source.mirrors || []).length) return;
+        if (!this.sourceUsable(source)) return;
 
         this.activeSource = id;
         this.sourcesTarget.querySelectorAll('.ix-source').forEach((b) => {
             b.classList.toggle('is-active', b.dataset.source === id);
         });
 
-        this.activeMirror = source.mirrors[0];
-        this.renderMirrors(source.mirrors);
-        this.runSearch();
+        if (this.isTorrentSource(source)) {
+            // Torrent search is indexer-driven; there is no mirror to choose.
+            this.activeMirror = null;
+            this.mirrorsTarget.innerHTML = '';
+            this.mirrorRowTarget.hidden = true;
+        } else {
+            this.activeMirror = source.mirrors[0];
+            this.renderMirrors(source.mirrors);
+        }
+        // Only re-fire once the user has started searching; before the first run
+        // switching sources is pure selection.
+        if (run && this.hasRun) this.runSearch();
     }
 
     renderMirrors(mirrors) {
@@ -159,7 +213,7 @@ export default class extends Controller {
         this.mirrorsTarget.querySelectorAll('.ix-mirror').forEach((b) => {
             b.classList.toggle('is-active', b.dataset.mirror === mirror);
         });
-        this.runSearch();
+        if (this.hasRun) this.runSearch();
     }
 
     /** Re-run when the user edits a field and presses Enter. */
@@ -180,23 +234,33 @@ export default class extends Controller {
     }
 
     async runSearch() {
-        if (!this.activeSource || !this.activeMirror) return;
+        const torrentMode = this.activeSource === 'torrent';
+        if (!this.activeSource) return;
+        if (!torrentMode && !this.activeMirror) return;
 
         const seq = ++this.runSeq;
+        this.hasRun = true;
         this.selectedRow = null;
         this.searchUrlTarget.textContent = '';
-        this.resultsTarget.innerHTML = '';
-        this.setStatus('Searching… this can take a moment per result.');
+        // Stale results are replaced by a placeholder so nothing on screen looks
+        // like it answers the query that's currently in flight.
+        this.resultsTarget.innerHTML = this.skeletonMarkup();
+        this.setSearchBusy(true);
+        this.setStatus(torrentMode
+            ? 'Searching torrent indexers…'
+            : 'Searching… this can take a moment per result.');
 
         try {
             const data = await this.post(this.runUrlValue, {
                 source: this.activeSource,
-                mirror: this.activeMirror,
+                mirror: torrentMode ? undefined : this.activeMirror,
+                bookId: this.bookIdValue > 0 ? this.bookIdValue : undefined,
                 title: this.titleTarget.value.trim(),
                 author: this.authorTarget.value.trim(),
                 isbn: this.isbnTarget.value.trim(),
             });
             if (seq !== this.runSeq) return;
+            this.resultsTarget.innerHTML = '';
             if (data.searchUrl) {
                 this.searchUrlTarget.innerHTML =
                     `Query: <a href="${this.escAttr(data.searchUrl)}" target="_blank" rel="noopener noreferrer">${this.esc(data.searchUrl)}</a>`;
@@ -204,8 +268,70 @@ export default class extends Controller {
             this.renderResults(data.results || [], data.threshold ?? 0, data.truncated);
         } catch (e) {
             if (seq !== this.runSeq) return;
+            this.resultsTarget.innerHTML = '';
             this.setStatus(`Search failed: ${e.message}`, true);
+        } finally {
+            // Only the newest run may lift the busy state; a superseded run
+            // settling must leave the controls locked for the one still going.
+            if (seq === this.runSeq) this.setSearchBusy(false);
         }
+    }
+
+    /** Placeholder rows standing in for the results table while a search runs. */
+    skeletonMarkup() {
+        const rows = new Array(4).fill('<div class="ix-skeleton-row"></div>').join('');
+        return `<div class="ix-skeleton" aria-hidden="true">${rows}</div>`;
+    }
+
+    /**
+     * Lock/unlock the whole query surface for the duration of a search so a
+     * second submit can't race the first. Only controls this method disabled are
+     * re-enabled (`data-ix-busy`), so sources the operator hasn't configured stay
+     * disabled for their own reasons.
+     */
+    setSearchBusy(on) {
+        this.searchBusy = !!on;
+        this.element.classList.toggle('ix-is-searching', this.searchBusy);
+        this.element.setAttribute('aria-busy', this.searchBusy ? 'true' : 'false');
+        if (this.hasSpinnerTarget) this.spinnerTarget.hidden = !this.searchBusy;
+        if (this.hasResultsTarget) this.resultsTarget.classList.toggle('ix-results--busy', this.searchBusy);
+
+        const controls = [];
+        if (this.hasSourcesTarget) controls.push(...this.sourcesTarget.querySelectorAll('button'));
+        if (this.hasMirrorsTarget) controls.push(...this.mirrorsTarget.querySelectorAll('button'));
+        if (this.hasTitleTarget) controls.push(this.titleTarget);
+        if (this.hasAuthorTarget) controls.push(this.authorTarget);
+        if (this.hasIsbnTarget) controls.push(this.isbnTarget);
+        if (this.hasSearchButtonTarget) controls.push(this.searchButtonTarget);
+        if (this.downloadButton) controls.push(this.downloadButton);
+
+        controls.forEach((el) => {
+            if (!el) return;
+            if (this.searchBusy) {
+                if (el.disabled) return;
+                el.disabled = true;
+                el.dataset.ixBusy = '1';
+            } else if (el.dataset.ixBusy === '1') {
+                el.disabled = false;
+                delete el.dataset.ixBusy;
+            }
+        });
+    }
+
+    /**
+     * Put an action button into its running state and hand back the restore
+     * callback — callers invoke it from a `finally` so failures unlock too.
+     */
+    setActionBusy(btn, label) {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.classList.add('is-busy');
+        btn.innerHTML = `<span class="ix-spinner ix-spinner--inline" aria-hidden="true"></span>${this.esc(label)}`;
+        return () => {
+            btn.disabled = false;
+            btn.classList.remove('is-busy');
+            btn.innerHTML = original;
+        };
     }
 
     renderResults(results, threshold, truncated) {
@@ -213,54 +339,170 @@ export default class extends Controller {
             this.setStatus('No results — try editing the title/author/ISBN, or another mirror.');
             return;
         }
+        // A torrent-shaped result carries a `torrent` block; the whole table
+        // switches columns when the active source produced them.
+        const torrentMode = results.some((r) => r && r.torrent);
+
         const downloadableCount = results.filter((r) => (r.links || []).length > 0).length;
         const note = truncated ? ` (showing the top ${results.length})` : '';
         const skipped = results.length - downloadableCount;
         const skipNote = skipped > 0
-            ? ` ${skipped} have no resolvable download link (login-gated / rate-limited on this mirror) and can't be selected.`
+            ? (torrentMode
+                ? ` ${skipped} have no usable magnet/torrent link and can't be selected.`
+                : ` ${skipped} have no resolvable download link (login-gated / rate-limited on this mirror) and can't be selected.`)
             : '';
         this.setStatus(`${results.length} result(s)${note}. Match % is relevance against your query.${skipNote}`);
 
-        const noLinkHint = 'No download link found on this result’s page — often login-gated or rate-limited on this mirror.';
+        // Stash the exact payload the grab endpoint needs, per torrent row.
+        if (torrentMode) {
+            results.forEach((r) => {
+                if (!r || !r.torrent) return;
+                r._grab = {
+                    id: r.id,
+                    title: r.title,
+                    link: (r.links || [])[0],
+                    format: r.format || undefined,
+                    sizeBytes: typeof r.sizeBytes === 'number' ? r.sizeBytes : undefined,
+                    indexer: r.torrent.indexer || undefined,
+                    seeders: typeof r.torrent.seeders === 'number' ? r.torrent.seeders : undefined,
+                };
+            });
+        }
+
+        const head = torrentMode
+            ? '<th></th><th>Match</th><th>Title</th><th>Indexer</th><th>S/L</th><th>Size</th>' +
+              '<th>Flags</th><th>Format</th><th>Year</th><th></th>'
+            : '<th></th><th>Match</th><th>Title</th><th>Author</th><th>Format</th><th>Size</th><th>Year</th><th></th>';
+
         const rows = results
-            .map((r, i) => {
-                const downloadable = (r.links || []).length > 0;
-                const pct = typeof r.matchPct === 'number' ? r.matchPct : 0;
-                const pctCls = r.qualifies ? 'ix-pct--ok' : 'ix-pct--low';
-                const info = r.infoUrl
-                    ? `<a href="${this.escAttr(r.infoUrl)}" target="_blank" rel="noopener noreferrer" data-action="click->interactive-search#stop">↗</a>`
-                    : '';
-                return (
-                    `<tr class="ix-row${downloadable ? '' : ' ix-row--nolinks'}" data-index="${i}"` +
-                    `${downloadable ? ' data-action="click->interactive-search#pick"' : ` title="${this.escAttr(noLinkHint)}"`}>` +
-                    `<td class="ix-pick">${downloadable
-                        ? '<input type="radio" name="ix-pick" tabindex="-1">'
-                        : '<span class="ix-nolink" title="' + this.escAttr(noLinkHint) + '">no link</span>'}</td>` +
-                    `<td class="ix-pct"><span class="${pctCls}">${pct}%</span></td>` +
-                    `<td>${this.esc(r.title || '—')}</td>` +
-                    `<td>${this.esc(r.author || '—')}</td>` +
-                    `<td>${this.esc(r.format || '—')}</td>` +
-                    `<td>${this.esc(r.size || '—')}</td>` +
-                    `<td>${this.esc(r.year || '—')}</td>` +
-                    `<td class="ix-info">${info}</td>` +
-                    '</tr>'
-                );
-            })
+            .map((r, i) => (torrentMode ? this.torrentRow(r, i) : this.directRow(r, i)))
             .join('');
 
+        const actionLabel = torrentMode ? 'Send to Torrent Client' : 'Manual Download';
         this.resultsTarget.innerHTML =
-            '<table class="ix-table"><thead><tr>' +
-            '<th></th><th>Match</th><th>Title</th><th>Author</th><th>Format</th><th>Size</th><th>Year</th><th></th>' +
+            '<table class="ix-table"><thead><tr>' + head +
             '</tr></thead><tbody>' + rows + '</tbody></table>' +
             '<div class="ix-actions">' +
             '<button type="button" class="btn btn-primary" data-interactive-search-target="downloadButton"' +
-            ' data-action="interactive-search#download" disabled>Manual Download</button>' +
+            ` data-action="interactive-search#download" disabled>${actionLabel}</button>` +
             '<div class="ix-download-result" data-interactive-search-target="downloadResult"></div>' +
             '</div>';
 
         this.currentResults = results;
         this.downloadButton = this.resultsTarget.querySelector('[data-interactive-search-target="downloadButton"]');
         this.downloadResult = this.resultsTarget.querySelector('[data-interactive-search-target="downloadResult"]');
+    }
+
+    /** Shared leading cells: the pick radio (or a "no link" stub) and the match %. */
+    rowLead(r, i, noLinkHint, noLinkLabel) {
+        const pickable = (r.links || []).length > 0;
+        const pct = typeof r.matchPct === 'number' ? r.matchPct : 0;
+        const pctCls = r.qualifies ? 'ix-pct--ok' : 'ix-pct--low';
+        return (
+            `<tr class="ix-row${pickable ? '' : ' ix-row--nolinks'}" data-index="${i}"` +
+            `${pickable ? ' data-action="click->interactive-search#pick"' : ` title="${this.escAttr(noLinkHint)}"`}>` +
+            `<td class="ix-pick">${pickable
+                ? '<input type="radio" name="ix-pick" tabindex="-1">'
+                : `<span class="ix-nolink" title="${this.escAttr(noLinkHint)}">${this.esc(noLinkLabel)}</span>`}</td>` +
+            `<td class="ix-pct"><span class="${pctCls}">${pct}%</span></td>`
+        );
+    }
+
+    infoCell(r) {
+        const info = r.infoUrl
+            ? `<a href="${this.escAttr(r.infoUrl)}" target="_blank" rel="noopener noreferrer" data-action="click->interactive-search#stop">↗</a>`
+            : '';
+        return `<td class="ix-info">${info}</td>`;
+    }
+
+    directRow(r, i) {
+        const noLinkHint = 'No download link found on this result’s page — often login-gated or rate-limited on this mirror.';
+        return (
+            this.rowLead(r, i, noLinkHint, 'no link') +
+            `<td>${this.esc(r.title || '—')}</td>` +
+            `<td>${this.esc(r.author || '—')}</td>` +
+            `<td>${this.esc(r.format || '—')}</td>` +
+            `<td>${this.esc(r.size || '—')}</td>` +
+            `<td>${this.esc(r.year || '—')}</td>` +
+            this.infoCell(r) +
+            '</tr>'
+        );
+    }
+
+    /**
+     * Audiobook vs ebook, as a chip that leads the Title cell. The distinction
+     * drives what the user actually gets, so it rides next to the title rather
+     * than in an eleventh column — the torrent table is already wide.
+     */
+    typeChip(type) {
+        const t = typeof type === 'string' ? type.toLowerCase() : '';
+        if (t === 'audiobook') {
+            return '<span class="ix-type ix-type--audiobook" title="Audiobook release">🎧 Audiobook</span>';
+        }
+        if (t === 'ebook') {
+            return '<span class="ix-type ix-type--ebook" title="Ebook release">📖 Ebook</span>';
+        }
+        return '<span class="ix-type ix-type--unknown" title="Release type unknown">?</span>';
+    }
+
+    /**
+     * Indexer category labels as a muted second line under the title. Only the
+     * first few are drawn; when any are cut the cell carries the full list in its
+     * tooltip so nothing is silently lost.
+     */
+    categoryLine(categories) {
+        const all = (categories || []).map((c) => String(c)).filter((c) => c !== '');
+        if (!all.length) return '';
+        const max = 3;
+        const shown = all.slice(0, max);
+        const hidden = all.length - shown.length;
+        const chips = shown.map((c) => `<span class="ix-cat">${this.esc(c)}</span>`).join('');
+        const more = hidden > 0 ? `<span class="ix-cat ix-cat--more">+${hidden}</span>` : '';
+        const titleAttr = hidden > 0 ? ` title="${this.escAttr(all.join(' · '))}"` : '';
+        return `<div class="ix-cats"${titleAttr}>${chips}${more}</div>`;
+    }
+
+    /** 'YYYY-MM-DD' → 'YYYY'; anything else → ''. */
+    yearOf(published) {
+        const m = /^(\d{4})/.exec(String(published ?? ''));
+        return m ? m[1] : '';
+    }
+
+    torrentRow(r, i) {
+        const noLinkHint = 'This release exposes no magnet or .torrent link, so it can’t be sent to the torrent client.';
+        const t = r.torrent || {};
+        const seeders = typeof t.seeders === 'number' ? String(t.seeders) : '?';
+        const leechers = typeof t.leechers === 'number' ? String(t.leechers) : '?';
+        const flags = (t.flags || [])
+            .map((f) => {
+                const mod = String(f) === 'freeleech' ? ' ix-flag--freeleech' : '';
+                return `<span class="ix-flag${mod}">${this.esc(f)}</span>`;
+            })
+            .join('');
+        // The indexer's publish date backfills the Year column when the release
+        // itself carries no year; the full date stays available as a tooltip.
+        const year = r.year || this.yearOf(t.published);
+        const yearTitle = t.published ? ` title="Published ${this.escAttr(t.published)}"` : '';
+        // A blank Format cell reads as "broken"; an explicit muted ? reads as
+        // "unknown", with the type chip still saying what kind of release it is.
+        const format = r.format
+            ? this.esc(r.format)
+            : '<span class="ix-unknown" title="Main file type not reported by the indexer">?</span>';
+        return (
+            this.rowLead(r, i, noLinkHint, 'no link') +
+            `<td class="ix-title-cell"><div class="ix-title-line">${this.typeChip(t.type)}` +
+            `<span class="ix-title-text">${this.esc(r.title || '—')}</span></div>` +
+            `${this.categoryLine(t.categories)}</td>` +
+            `<td>${this.esc(t.indexer || '—')}</td>` +
+            `<td class="ix-sl"><span class="ix-seeders">${this.esc(seeders)}</span>` +
+            ` / <span class="ix-leechers">${this.esc(leechers)}</span></td>` +
+            `<td>${this.esc(r.size || '—')}</td>` +
+            `<td class="ix-flags">${flags}</td>` +
+            `<td>${format}</td>` +
+            `<td${yearTitle}>${this.esc(year || '—')}</td>` +
+            this.infoCell(r) +
+            '</tr>'
+        );
     }
 
     pick(event) {
@@ -274,7 +516,10 @@ export default class extends Controller {
         tr.classList.add('is-selected');
         const radio = tr.querySelector('input[type="radio"]');
         if (radio) radio.checked = true;
-        if (this.downloadButton) this.downloadButton.disabled = false;
+        if (this.downloadButton && !this.searchBusy) {
+            this.downloadButton.disabled = false;
+            this.downloadButton.textContent = row.torrent ? 'Send to Torrent Client' : 'Manual Download';
+        }
     }
 
     /** Don't let an info-link click also select the row. */
@@ -284,11 +529,14 @@ export default class extends Controller {
 
     async download() {
         if (!this.selectedRow) return;
-        const btn = this.downloadButton;
-        const original = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = 'Downloading…';
-        this.downloadResult.innerHTML = '<p class="form-note">Downloading the chosen file… this can take a while.</p>';
+        if (this.selectedRow.torrent) {
+            await this.grab();
+            return;
+        }
+        const restore = this.setActionBusy(this.downloadButton, 'Downloading…');
+        this.downloadResult.innerHTML =
+            '<p class="form-note ix-working"><span class="ix-spinner ix-spinner--inline" aria-hidden="true"></span>' +
+            'Downloading the chosen file… this can take a while.</p>';
 
         try {
             const data = await this.post(this.downloadUrlValue, {
@@ -311,8 +559,61 @@ export default class extends Controller {
         } catch (e) {
             this.downloadResult.innerHTML = `<p class="flash flash-error">${this.esc(e.message)}</p>`;
         } finally {
-            btn.disabled = false;
-            btn.textContent = original;
+            restore();
+        }
+    }
+
+    /**
+     * Torrent path: hand the release to the torrent client and return. Unlike the
+     * HTTP download there's no file at the end of this request — the client keeps
+     * seeding/downloading in the background and the import happens later.
+     */
+    async grab() {
+        const row = this.selectedRow;
+        const meta = row._grab || {};
+        if (!meta.link) {
+            this.downloadResult.innerHTML = '<p class="flash flash-error">✗ This release has no magnet or .torrent link.</p>';
+            return;
+        }
+
+        const restore = this.setActionBusy(this.downloadButton, 'Sending…');
+        this.downloadResult.innerHTML =
+            '<p class="form-note ix-working"><span class="ix-spinner ix-spinner--inline" aria-hidden="true"></span>' +
+            'Sending the release to the torrent client…</p>';
+
+        try {
+            const data = await this.post(this.grabUrlValue, {
+                bookId: this.bookIdValue || undefined,
+                bookSource: this.bookSeed.source || undefined,
+                externalId: this.bookSeed.externalId || undefined,
+                id: meta.id,
+                title: meta.title,
+                link: meta.link,
+                format: meta.format,
+                sizeBytes: meta.sizeBytes,
+                indexer: meta.indexer,
+                seeders: meta.seeders,
+            });
+            this.renderGrab(data);
+            if (data.ok && data.queued) {
+                const bookId = this.bookIdValue || null;
+                this.dispatch('downloaded', { detail: { bookId }, prefix: 'interactive-search', bubbles: true });
+            }
+        } catch (e) {
+            this.downloadResult.innerHTML = `<p class="flash flash-error">${this.esc(e.message)}</p>`;
+        } finally {
+            restore();
+        }
+    }
+
+    renderGrab(data) {
+        if (data.ok && data.queued) {
+            this.downloadResult.innerHTML =
+                '<p class="flash flash-success ix-queued">✓ Queued in torrent client — the download continues in the ' +
+                'background and the book will be imported automatically.</p>';
+        } else {
+            this.downloadResult.innerHTML =
+                `<p class="flash flash-error">✗ ${this.esc(data.error || 'Could not send this release to the torrent client.')}</p>`;
         }
     }
 

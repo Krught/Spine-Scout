@@ -63,15 +63,20 @@ final class ZLibrarySource extends AbstractDirectHttpSource
         );
     }
 
-    public function resolveDetail(ReleaseCandidate $candidate, ?DirectDownloadConfig $config = null): array
+    protected function detailPlan(ReleaseCandidate $candidate, ?DirectDownloadConfig $config): array
     {
         $base = $candidate->extra['mirror'] ?? null;
         $bookUrl = $candidate->infoUrl;
         if (!is_string($base) || $base === '' || $bookUrl === null) {
-            return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No book page to resolve download link.'];
+            return ['url' => null, 'result' => ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No book page to resolve download link.']];
         }
 
-        $response = $this->request($bookUrl);
+        return ['url' => $bookUrl, 'result' => null];
+    }
+
+    protected function detailFromResponse(ReleaseCandidate $candidate, array $response, ?DirectDownloadConfig $config): array
+    {
+        $base = (string) $candidate->extra['mirror'];
         if ($response['error'] !== null) {
             return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => $response['error']];
         }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Download\Torrent;
 
 use App\Entity\DownloadJob;
+use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
 
 /**
@@ -25,4 +26,15 @@ interface TorrentFulfillmentInterface
      * @throws \RuntimeException on download-client failure
      */
     public function tryFulfill(DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool;
+
+    /**
+     * Stamp the job with an already-chosen release (e.g. picked by hand in the
+     * interactive search UI) and hand its magnet to the download client. Same
+     * stamping/side effects as the search half of tryFulfill. Returns false when no
+     * torrent download client is configured; throws when the client rejects the add.
+     * Does not flush.
+     *
+     * @throws \RuntimeException on download-client failure
+     */
+    public function grab(DownloadJob $job, ReleaseCandidate $candidate, string $subject): bool;
 }

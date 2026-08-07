@@ -5,6 +5,7 @@ import { Controller } from '@hotwired/stimulus';
  * giving a live activity view without a full page reload. Pauses while the tab is
  * hidden to avoid pointless requests.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static values = { url: String, interval: Number };
     static targets = ['content'];

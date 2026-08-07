@@ -235,6 +235,11 @@ final class ProcessDownloadJobHandlerTest extends TestCase
 
                 return true;
             }
+
+            public function grab(DownloadJob $job, ReleaseCandidate $candidate, string $subject): bool
+            {
+                return false;
+            }
         };
 
         $handler = $this->handler([], $this->root . '/library', [], 'epub', $torrent, [['id' => 'torrent', 'enabled' => true], ['id' => 'libgen', 'enabled' => true]]);
@@ -255,6 +260,11 @@ final class ProcessDownloadJobHandlerTest extends TestCase
             }
 
             public function tryFulfill(DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool
+            {
+                return false;
+            }
+
+            public function grab(DownloadJob $job, ReleaseCandidate $candidate, string $subject): bool
             {
                 return false;
             }

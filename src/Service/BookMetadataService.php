@@ -25,6 +25,29 @@ final class BookMetadataService
     private const COVER_CACHE_TTL = 60 * 60 * 24 * 30;
 
     /**
+     * How long a "this book has no cover" answer is remembered. Short relative to
+     * {@see self::COVER_CACHE_TTL} because it's a negative result we do want to retry
+     * eventually — but long enough that a coverless book costs zero upstream calls
+     * across a browsing session instead of one per page render.
+     */
+    private const COVER_MISS_TTL = 60 * 60 * 6;
+
+    /** Cache payload marking a known-coverless book. Distinct from "no cache entry". */
+    private const COVER_MISS = false;
+
+    /**
+     * Upper bound on synchronous upstream cover lookups per request cycle. The service is
+     * instantiated once per PHP request, so the counter below is naturally per-page-render:
+     * a 50-row page can spend at most this many blocking Hardcover/OpenLibrary calls, and
+     * the rows beyond it render the placeholder and fill in on subsequent loads (each of
+     * which gets a fresh budget, so the page converges).
+     */
+    private const MAX_REMOTE_COVER_FETCHES = 3;
+
+    /** Remote cover lookups already spent in this request cycle. @see self::MAX_REMOTE_COVER_FETCHES */
+    private int $remoteCoverFetches = 0;
+
+    /**
      * Cooldown before a second on-open audiobook backfill attempt. The trending poll caches
      * availability but not narrator/runtime, so the first modal open fetches them. When Hardcover
      * genuinely has no narrator/runtime for an audio edition, this stops every subsequent open
@@ -45,11 +68,18 @@ final class BookMetadataService
     }
 
     /**
-     * Returns a cover-proxy URL for the given book, fetching from upstream if needed.
+     * Returns a cover-proxy URL for the given book, fetching from upstream only as a
+     * last resort. Resolution order, cheapest first:
      *
-     * - Grimmory books are derived deterministically from the external id.
-     * - For Hardcover/OpenLibrary, the proxy URL is cached in the PSR pool keyed by
-     *   book id so repeat lookups (e.g. on /requests) don't go back to upstream.
+     * 1. Grimmory books are derived deterministically from the external id — no I/O.
+     * 2. The PSR cache, keyed by book id. A hit is either a proxy URL or the
+     *    {@see self::COVER_MISS} sentinel meaning "known coverless, don't ask again yet".
+     * 3. The persisted {@see Book::$coverUrl} column — the sync/metadata refresh already
+     *    wrote it, so a DB-known cover never costs an HTTP call. The result primes the cache.
+     * 4. A synchronous upstream lookup, capped at {@see self::MAX_REMOTE_COVER_FETCHES} per
+     *    request cycle. Rows past the cap return null (placeholder) and are left uncached so
+     *    the next page load retries them; a genuine "upstream has no cover" answer is cached
+     *    negatively for {@see self::COVER_MISS_TTL}.
      */
     public function ensureCoverProxyUrl(Book $book): ?string
     {
@@ -69,16 +99,42 @@ final class BookMetadataService
             if (is_string($value) && $value !== '') {
                 return $value;
             }
+            if ($value === self::COVER_MISS) {
+                return null;
+            }
         }
+
+        // The DB already knows this book's cover in the common case — use it before
+        // considering any upstream call, and prime the cache so the next render skips
+        // even the entity load path.
+        $storedUrl = $book->getCoverUrl();
+        if (is_string($storedUrl) && $storedUrl !== '') {
+            return $this->rememberCover($item, $this->covers->proxyUrlForRemote($storedUrl));
+        }
+
+        if ($this->remoteCoverFetches >= self::MAX_REMOTE_COVER_FETCHES) {
+            return null;
+        }
+        ++$this->remoteCoverFetches;
 
         $remoteUrl = $this->fetchRemoteCoverUrl($book);
         if ($remoteUrl === null) {
+            $item->set(self::COVER_MISS);
+            $item->expiresAfter(self::COVER_MISS_TTL);
+            $this->cache->save($item);
             return null;
         }
-        $proxyUrl = $this->covers->proxyUrlForRemote($remoteUrl);
+
+        return $this->rememberCover($item, $this->covers->proxyUrlForRemote($remoteUrl));
+    }
+
+    /** Store a resolved proxy URL in the given (already fetched) cache item and return it. */
+    private function rememberCover(\Psr\Cache\CacheItemInterface $item, string $proxyUrl): string
+    {
         $item->set($proxyUrl);
         $item->expiresAfter(self::COVER_CACHE_TTL);
         $this->cache->save($item);
+
         return $proxyUrl;
     }
 

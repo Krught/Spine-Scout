@@ -163,6 +163,45 @@
     min-height: 1.5rem;
 }
 
+/* Shelf mode (/browse?shelf=…): the heading plus a chip that names the active shelf
+   and doubles as the way back to the default browse. */
+.browse-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.browse-shelf-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev, transparent);
+    color: var(--fg-dim);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.browse-shelf-chip:hover,
+.browse-shelf-chip:focus-visible {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+
+.browse-shelf-chip__clear {
+    font-size: 0.95rem;
+    line-height: 1;
+    opacity: 0.7;
+}
+
+.browse-shelf-chip[hidden] { display: none; }
+
 .row-title-icon {
     vertical-align: -3px;
     margin-right: 0.4rem;

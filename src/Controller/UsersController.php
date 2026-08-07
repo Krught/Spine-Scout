@@ -164,6 +164,9 @@ final class UsersController extends AbstractController
         if ($request->request->getBoolean('manage_users')) {
             $roles[] = User::ROLE_MANAGE_USERS;
         }
+        if ($request->request->getBoolean('interactive_search')) {
+            $roles[] = User::ROLE_INTERACTIVE_SEARCH;
+        }
         return $roles;
     }
 

@@ -7,8 +7,10 @@ namespace App\Search\Source\DirectHttp;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\SearchSettingsProvider;
+use App\Search\Source\BatchDetailResolverInterface;
 use App\Search\Source\DirectHttpProtocol\AAStyleHttpProtocol;
 use App\Search\Source\DirectHttpProtocol\AAStyleResult;
+use App\Search\Source\Http\ConcurrentDetailResolution;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
 use App\Search\Source\ReleaseSourceInterface;
@@ -33,13 +35,15 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * _instanceof). Never throws on transport/parse failure — a dead mirror yields
  * nothing so the cascade moves on, matching the project ground rule.
  */
-final class DirectHttpSource implements ReleaseSourceInterface
+final class DirectHttpSource implements ReleaseSourceInterface, BatchDetailResolverInterface
 {
+    use ConcurrentDetailResolution;
+
     public const NAME = 'direct_http';
 
-    private const TIMEOUT = 30;
-    private const MAX_REDIRECTS = 5;
-    private const HEADERS = [
+    protected const TIMEOUT = 30;
+    protected const MAX_REDIRECTS = 5;
+    protected const HEADERS = [
         'User-Agent' => 'Mozilla/5.0 (compatible; SpineScout/1.0)',
         'Accept'     => 'text/html',
     ];
@@ -152,22 +156,37 @@ final class DirectHttpSource implements ReleaseSourceInterface
     }
 
     /**
-     * Interface entry point: resolve a candidate's detail from the mirror it was
-     * found on. Delegates to fetchRecordDetail() (the existing AA per-record
-     * lookup) and drops the probe-only url/status fields.
-     *
-     * @return array{isbns: list<string>, raw: array<string, list<string>>, links: list<string>, error: string|null}
+     * Interface entry points: resolveDetail()/resolveDetails() come from
+     * ConcurrentDetailResolution, driven by the two hooks below — the same record
+     * lookup fetchRecordDetail() performs, minus the probe-only url/status fields,
+     * and batchable so a page of candidates resolves in one concurrent round.
      */
-    public function resolveDetail(ReleaseCandidate $candidate, ?DirectDownloadConfig $config = null): array
+    protected function detailPlan(ReleaseCandidate $candidate, ?DirectDownloadConfig $config): array
     {
         $mirror = $candidate->extra['mirror'] ?? null;
         if (!is_string($mirror) || $mirror === '') {
-            return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve detail page.'];
+            return ['url' => null, 'result' => ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve detail page.']];
         }
 
-        $detail = $this->fetchRecordDetail($mirror, $candidate->sourceId, $config);
+        return ['url' => $this->protocol->buildDownloadsUrl($mirror, $candidate->sourceId), 'result' => null];
+    }
 
-        return ['isbns' => $detail['isbns'], 'raw' => $detail['raw'], 'links' => $detail['links'], 'error' => $detail['error']];
+    protected function detailFromResponse(ReleaseCandidate $candidate, array $response, ?DirectDownloadConfig $config): array
+    {
+        $mirror = (string) $candidate->extra['mirror'];
+        if ($response['error'] !== null) {
+            return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => $response['error']];
+        }
+
+        $meta = $this->protocol->parseRecordMetadata($response['html']);
+        $includeFast = ($config ?? $this->settings->getDirectDownloadConfig())->fastDownloadEnabled;
+
+        return [
+            'isbns' => $meta['isbns'],
+            'raw'   => $meta['raw'],
+            'links' => $this->protocol->parseDownloadLinks($response['html'], $mirror, $includeFast),
+            'error' => null,
+        ];
     }
 
     public function linksVia(ReleaseCandidate $item, string $mirror, ?DirectDownloadConfig $config = null): array

@@ -7,6 +7,7 @@ import { Controller } from '@hotwired/stimulus';
 // Same-origin images only — canvas pixel reads on cross-origin images without
 // proper CORS headers will throw a SecurityError. Covers live at /cache/cover/*
 // which is same-origin, so this is fine here.
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static values = {
         target: { type: String, default: 'img' }, // CSS selector for the source image

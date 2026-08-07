@@ -3,10 +3,41 @@
 {% block title %}Requests - Spine Scout{% endblock %}
 
 {% block body %}
-    <section class="requests-section" data-controller="request-search requests-filter book-modal request-actions">
+    <section class="requests-section" data-controller="request-search requests-filter book-modal request-actions"
+             {% if is_granted('ROLE_ADMIN') or is_granted('ROLE_MANAGE_SETTINGS') %}
+             data-request-search-toggle-url-value="{{ path('requests_pipeline_toggle') }}"
+             data-request-search-manual-next-url-value="{{ path('requests_manual_next') }}"
+             data-request-search-token-value="{{ csrf_token('requests_pipeline') }}"
+             {% endif %}>
         <header class="requests-header">
             <h1 class="requests-title">Requests</h1>
+
+            {% if is_granted('ROLE_MANAGE_SETTINGS') or is_granted('ROLE_ADMIN') %}
+                {% set automatic = automatic_fulfillment ?? true %}
+                <div class="requests-header-controls">
+                    {% if is_granted('ROLE_MANAGE_SETTINGS') %}
+                        <label class="field-checkbox requests-pipeline-toggle">
+                            <input type="checkbox"
+                                   data-request-search-target="pipelineToggle"
+                                   data-action="change->request-search#togglePipeline"
+                                   {{ automatic ? 'checked' : '' }}>
+                            <span>Automatic fulfillment</span>
+                        </label>
+                    {% endif %}
+                    {% if is_granted('ROLE_ADMIN') %}
+                        <button type="button"
+                                class="request-btn request-btn-search requests-queue-start"
+                                data-request-search-target="queueStart"
+                                data-action="click->request-search#startQueue"
+                                {{ automatic ? 'hidden' : '' }}>Get next item</button>
+                    {% endif %}
+                </div>
+            {% endif %}
         </header>
+
+        {% if is_granted('ROLE_ADMIN') %}
+            <div class="requests-queue-notice" data-request-search-target="queueNotice" role="status" hidden></div>
+        {% endif %}
 
         {% for label, messages in app.flashes %}
             {% for msg in messages %}
@@ -54,6 +85,29 @@
                     {{ include('requests/_row.html.twig', {item: item}) }}
                 {% endfor %}
             </ul>
+
+            {# Server-side pager. The status/format chips above filter the loaded page
+               only, so their counts are page counts — the total lives here. #}
+            {% if pages > 1 %}
+                <nav class="requests-pager" aria-label="Requests pages">
+                    {% if page > 1 %}
+                        <a class="requests-pager-link" href="{{ path('requests', {page: page - 1}) }}" rel="prev">Prev</a>
+                    {% else %}
+                        <span class="requests-pager-link is-disabled" aria-disabled="true">Prev</span>
+                    {% endif %}
+
+                    <span class="requests-pager-status">
+                        Page {{ page }} of {{ pages }}
+                        <span class="requests-pager-total">{{ total }} request{{ total == 1 ? '' : 's' }}</span>
+                    </span>
+
+                    {% if page < pages %}
+                        <a class="requests-pager-link" href="{{ path('requests', {page: page + 1}) }}" rel="next">Next</a>
+                    {% else %}
+                        <span class="requests-pager-link is-disabled" aria-disabled="true">Next</span>
+                    {% endif %}
+                </nav>
+            {% endif %}
         {% endif %}
 
         {# Book detail popup, opened by clicking a request's cover/title. No interactive-search
@@ -92,6 +146,30 @@
             <div class="book-modal request-search-overlay" data-request-search-target="overlay"
                  data-action="click->request-search#backdropClick" hidden>
                 <div class="book-modal-dialog">
+                    {# Queue chrome — only shown when the overlay was opened from the manual
+                       queue ("Get next item"), never for the per-row search entry point.
+                       Lives outside the shared panel so the panel stays reusable verbatim. #}
+                    <div class="request-search-queue" data-request-search-target="queueBar" hidden>
+                        <div class="request-search-queue-info">
+                            <span class="request-search-queue-label">Manual queue</span>
+                            <span class="request-search-queue-title" data-request-search-target="queueTitle"></span>
+                        </div>
+                        <div class="request-search-queue-actions">
+                            <button type="button"
+                                    class="request-btn request-search-queue-btn"
+                                    data-request-search-target="skipButton"
+                                    data-action="click->request-search#advance">Skip</button>
+                            <button type="button"
+                                    class="request-btn request-search-queue-btn request-search-queue-btn-next"
+                                    data-request-search-target="nextButton"
+                                    data-action="click->request-search#advance" hidden>Next item</button>
+                        </div>
+                    </div>
+                    <div class="request-search-queue-done" data-request-search-target="queueDone" hidden>
+                        <p class="request-search-queue-done-text">No requests waiting for manual search.</p>
+                        <button type="button" class="request-btn"
+                                data-action="click->request-search#close">Close</button>
+                    </div>
                     {{ include('_interactive_search.html.twig') }}
                 </div>
             </div>

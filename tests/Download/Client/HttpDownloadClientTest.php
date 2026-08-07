@@ -320,6 +320,15 @@ final class HttpDownloadClientTest extends TestCase
             {
                 return BestMatchPolicy::default();
             }
+
+            public function isAutomaticFulfillmentEnabled(): bool
+            {
+                return true;
+            }
+
+            public function setAutomaticFulfillmentEnabled(bool $enabled): void
+            {
+            }
         };
 
         return new BypassResolver($bypasser !== null ? [$bypasser] : [], $settings, new NullLogger());

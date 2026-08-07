@@ -38,6 +38,15 @@ final class DirectDownloadCascade
     private const TOP_N = 3;
 
     /**
+     * Candidates whose detail page is fetched per source before scoring. Only
+     * TOP_N of them are ever downloaded, but the detail page is where the verified
+     * ISBNs come from, so the pool has to be wider than TOP_N: 25 leaves ample room
+     * for candidates that only qualify once their ISBNs are known, while capping
+     * what a 100-row search page can cost the worker.
+     */
+    private const DETAIL_LIMIT = 25;
+
+    /**
      * @param iterable<ReleaseSourceInterface> $sources
      */
     public function __construct(
@@ -111,7 +120,7 @@ final class DirectDownloadCascade
                     continue;
                 }
 
-                $scored = $this->scorer->scoreCandidates($source, $candidates, $plan, $threshold, $config);
+                $scored = $this->scorer->scoreCandidates($source, $candidates, $plan, $threshold, $config, self::DETAIL_LIMIT);
                 $top = $this->topQualifying($scored, $policy);
                 if ($top === []) {
                     $this->log->info(sprintf('%s — %d found, none qualified', $label, \count($scored)), $subject);

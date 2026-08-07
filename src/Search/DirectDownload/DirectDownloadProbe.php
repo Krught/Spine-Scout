@@ -25,6 +25,14 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 final class DirectDownloadProbe
 {
     /**
+     * Candidates whose detail page the scored search resolves. The interactive
+     * search shows at most InteractiveSearchController::MAX_RESULTS (25) rows, so
+     * fetching more detail pages than that can only cost the user latency —
+     * a search page can return 100+ rows and each detail fetch is its own request.
+     */
+    private const DETAIL_LIMIT = 25;
+
+    /**
      * @param iterable<ReleaseSourceInterface> $sources
      */
     public function __construct(
@@ -207,7 +215,7 @@ final class DirectDownloadProbe
         $threshold = $this->integrations->getBestMatchPolicy()->minMatchScore;
         $candidates = $source->searchVia($mirror, $plan, $config);
 
-        return $this->scorer->scoreCandidates($source, $candidates, $plan, $threshold, $config);
+        return $this->scorer->scoreCandidates($source, $candidates, $plan, $threshold, $config, self::DETAIL_LIMIT);
     }
 
     /** The qualifying-match threshold (0–100) the saved best-match policy enforces. */

@@ -114,6 +114,8 @@ final class ProwlarrClient
                 continue;
             }
 
+            $categoryIds = self::deriveCategoryIds($row['categories'] ?? null);
+
             $out[] = new ReleaseCandidate(
                 source: Integration::KIND_PROWLARR,
                 sourceId: (string) ($row['guid'] ?? $link),
@@ -132,6 +134,14 @@ final class ProwlarrClient
                 isbns: [],
                 publisher: null,
                 year: self::deriveYear($title),
+                extra: [
+                    'leechers'    => isset($row['leechers']) && is_numeric($row['leechers']) ? (int) $row['leechers'] : null,
+                    'flags'       => self::deriveFlags($row['indexerFlags'] ?? null),
+                    'categoryIds' => $categoryIds,
+                    'categories'  => self::deriveCategoryNames($row['categories'] ?? null),
+                    'type'        => self::deriveContentType($categoryIds, $contentType),
+                    'publishDate' => self::derivePublishDate($row['publishDate'] ?? null),
+                ],
             );
         }
 
@@ -200,6 +210,180 @@ final class ProwlarrClient
         }
 
         return null;
+    }
+
+    /**
+     * Normalize an indexer's flag list. Prowlarr sends `indexerFlags` either as a
+     * list of strings (["freeleech"]) or a list of objects ([{"name":"freeleech"}]);
+     * both are accepted. Flags are lowercased and trimmed, empties dropped and
+     * duplicates removed, with the original order preserved.
+     *
+     * @return list<string>
+     */
+    private static function deriveFlags(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $flags = [];
+        foreach ($raw as $entry) {
+            if (is_array($entry)) {
+                $entry = $entry['name'] ?? null;
+            }
+            if (!is_string($entry)) {
+                continue;
+            }
+            $flag = strtolower(trim($entry));
+            if ($flag === '' || in_array($flag, $flags, true)) {
+                continue;
+            }
+            $flags[] = $flag;
+        }
+
+        return $flags;
+    }
+
+    /**
+     * Flatten a row's `categories` to a deduped list of Torznab ids, order preserved.
+     * Prowlarr sends either bare ids ([3030]) or objects ([{"id":3030,"name":"..."}]),
+     * the latter sometimes carrying a nested `subCategories` list; all shapes are
+     * accepted and anything unrecognizable is skipped.
+     *
+     * @return list<int>
+     */
+    private static function deriveCategoryIds(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $ids = [];
+        foreach (self::flattenCategories($raw) as $entry) {
+            $id = is_array($entry) ? ($entry['id'] ?? null) : $entry;
+            if (!is_numeric($id)) {
+                continue;
+            }
+            $id = (int) $id;
+            if (!in_array($id, $ids, true)) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * The human labels behind the same `categories` list — trimmed, deduped, order
+     * preserved. Bare-id rows carry no names, so they yield [].
+     *
+     * @return list<string>
+     */
+    private static function deriveCategoryNames(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $names = [];
+        foreach (self::flattenCategories($raw) as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            $name = $entry['name'] ?? null;
+            if (!is_string($name)) {
+                continue;
+            }
+            $name = trim($name);
+            if ($name === '' || in_array($name, $names, true)) {
+                continue;
+            }
+            $names[] = $name;
+        }
+
+        return $names;
+    }
+
+    /**
+     * Depth-first walk of a categories list, yielding each entry (id or object) and
+     * then its `subCategories`, so nested trees flatten in document order.
+     *
+     * @param array<int|string, mixed> $raw
+     *
+     * @return list<mixed>
+     */
+    private static function flattenCategories(array $raw): array
+    {
+        $flat = [];
+        foreach ($raw as $entry) {
+            $flat[] = $entry;
+            if (is_array($entry) && is_array($entry['subCategories'] ?? null)) {
+                foreach (self::flattenCategories($entry['subCategories']) as $child) {
+                    $flat[] = $child;
+                }
+            }
+        }
+
+        return $flat;
+    }
+
+    /**
+     * Classify a release from its Torznab categories: the 3000s are Audio, the 7000s
+     * are Books. When a row claims both (some indexers cross-post), the plan's own
+     * content type breaks the tie if it names one of the two; otherwise whichever
+     * range appears first in the list wins. No book/audio category at all → null.
+     *
+     * @param list<int> $categoryIds
+     */
+    private static function deriveContentType(array $categoryIds, string $contentType): ?string
+    {
+        $hasAudio = false;
+        $hasEbook = false;
+        $first = null;
+        foreach ($categoryIds as $id) {
+            $kind = match (true) {
+                $id >= 3000 && $id <= 3999 => ReleaseCandidate::CONTENT_AUDIOBOOK,
+                $id >= 7000 && $id <= 7999 => ReleaseCandidate::CONTENT_EBOOK,
+                default                    => null,
+            };
+            if ($kind === null) {
+                continue;
+            }
+            $first ??= $kind;
+            $hasAudio = $hasAudio || $kind === ReleaseCandidate::CONTENT_AUDIOBOOK;
+            $hasEbook = $hasEbook || $kind === ReleaseCandidate::CONTENT_EBOOK;
+        }
+
+        if ($hasAudio && $hasEbook) {
+            return in_array($contentType, [ReleaseCandidate::CONTENT_AUDIOBOOK, ReleaseCandidate::CONTENT_EBOOK], true)
+                ? $contentType
+                : $first;
+        }
+
+        return $first;
+    }
+
+    /**
+     * Normalize a row's publish timestamp to a plain `YYYY-MM-DD` day. Anything that
+     * is not a parseable date string (or a numeric epoch) degrades to null rather
+     * than throwing — indexers are inconsistent about this field.
+     */
+    private static function derivePublishDate(mixed $raw): ?string
+    {
+        if (is_int($raw) || is_float($raw)) {
+            $raw = '@' . (int) $raw;
+        }
+        // Require a digit: relative words ("now", "tomorrow") parse happily but are
+        // never a real publish timestamp, so they count as garbage here.
+        if (!is_string($raw) || preg_match('/\d/', $raw) !== 1) {
+            return null;
+        }
+
+        try {
+            return (new \DateTimeImmutable(trim($raw)))->format('Y-m-d');
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     /**

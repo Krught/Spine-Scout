@@ -88,6 +88,15 @@ final class BypassResolverTest extends TestCase
             {
                 return BestMatchPolicy::default();
             }
+
+            public function isAutomaticFulfillmentEnabled(): bool
+            {
+                return true;
+            }
+
+            public function setAutomaticFulfillmentEnabled(bool $enabled): void
+            {
+            }
         };
     }
 }

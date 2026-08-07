@@ -67,16 +67,35 @@ final class TorrentFulfillment implements TorrentFulfillmentInterface
         if ($ranked === []) {
             return false;
         }
-        $pick = $ranked[0];
-        $magnet = (string) $pick->downloadUrl;
+        return $this->grab($job, $ranked[0], $subject);
+    }
+
+    /**
+     * Stamp $job with an already-chosen release and hand its magnet to the torrent
+     * download client. This is the "grab" half of tryFulfill, split out so the
+     * interactive search UI can send a user-picked candidate down the same path.
+     *
+     * Returns false when no torrent download client is configured; throws when the
+     * client rejects the add. Does NOT flush — the caller owns the transaction.
+     *
+     * @throws \RuntimeException on download-client failure
+     */
+    public function grab(DownloadJob $job, ReleaseCandidate $candidate, string $subject): bool
+    {
+        $client = $this->client();
+        if ($client === null) {
+            return false;
+        }
+
+        $magnet = (string) $candidate->downloadUrl;
 
         // Stamp the winning release. Clamp the indexer guid to the source_id column
         // width (the full magnet lives in download_url / candidate_links, both TEXT).
         $job->setSource('torrent')
-            ->setSourceId(mb_substr($pick->sourceId, 0, 255))
+            ->setSourceId(mb_substr($candidate->sourceId, 0, 255))
             ->setProtocol(ReleaseCandidate::PROTOCOL_TORRENT)
-            ->setFormat($pick->format !== null ? mb_substr($pick->format, 0, 16) : null)
-            ->setSizeBytes($pick->sizeBytes)
+            ->setFormat($candidate->format !== null ? mb_substr($candidate->format, 0, 16) : null)
+            ->setSizeBytes($candidate->sizeBytes)
             ->setCandidateLinks([$magnet])
             ->setDownloadUrl($magnet);
 
@@ -89,7 +108,7 @@ final class TorrentFulfillment implements TorrentFulfillmentInterface
         $job->getBookRequest()?->setDeliveryStatus(DownloadJob::STATUS_DOWNLOADING);
 
         $this->log->info(
-            sprintf('Added to download client: %s (%d seeders)', $pick->indexer ?? 'torrent', $pick->seeders ?? 0),
+            sprintf('Added to download client: %s (%d seeders)', $candidate->indexer ?? 'torrent', $candidate->seeders ?? 0),
             $subject,
         );
 

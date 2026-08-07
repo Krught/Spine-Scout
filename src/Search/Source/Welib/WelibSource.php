@@ -70,15 +70,19 @@ final class WelibSource extends AbstractDirectHttpSource
         );
     }
 
-    public function resolveDetail(ReleaseCandidate $candidate, ?DirectDownloadConfig $config = null): array
+    protected function detailPlan(ReleaseCandidate $candidate, ?DirectDownloadConfig $config): array
     {
         $base = $candidate->extra['mirror'] ?? null;
         if (!is_string($base) || $base === '') {
-            return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve detail page.'];
+            return ['url' => null, 'result' => ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve detail page.']];
         }
 
-        $url = $this->protocol->buildDownloadsUrl($base, $candidate->sourceId);
-        $response = $this->fetchRecordPage($url);
+        return ['url' => $this->protocol->buildDownloadsUrl($base, $candidate->sourceId), 'result' => null];
+    }
+
+    protected function detailFromResponse(ReleaseCandidate $candidate, array $response, ?DirectDownloadConfig $config): array
+    {
+        $base = (string) $candidate->extra['mirror'];
         if ($response['error'] !== null) {
             return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => $response['error']];
         }
@@ -103,6 +107,23 @@ final class WelibSource extends AbstractDirectHttpSource
         $includeFast = ($config ?? $this->settings->getDirectDownloadConfig())->fastDownloadEnabled;
 
         return $this->protocol->parseDownloadLinks($response['html'], $mirror, $includeFast);
+    }
+
+    /**
+     * A bypassed record page is fetched one navigation at a time through
+     * FlareSolverr (a real browser session), so firing a page of them concurrently
+     * would queue behind each other anyway — and risks tripping the bypass's own
+     * limits. Fall back to the serial loop whenever the bypass is on; plain GETs
+     * still batch.
+     */
+    protected function supportsConcurrentDetail(): bool
+    {
+        return !$this->bypass->isEnabled();
+    }
+
+    protected function fetchDetailPage(string $url): array
+    {
+        return $this->fetchRecordPage($url);
     }
 
     /**

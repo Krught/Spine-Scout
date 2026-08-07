@@ -10,6 +10,7 @@ import { Controller } from '@hotwired/stimulus';
  * Serializes the current order into the hidden target as JSON on every change so
  * a vanilla form POST picks it up.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = ['list', 'addInput', 'hidden'];
     static values = {

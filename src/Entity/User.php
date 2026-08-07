@@ -19,9 +19,10 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public const ROLE_USER  = 'ROLE_USER';
     public const ROLE_ADMIN = 'ROLE_ADMIN';
 
-    /** Capability roles. ROLE_ADMIN implies both via role_hierarchy (see security.yaml). */
-    public const ROLE_MANAGE_SETTINGS = 'ROLE_MANAGE_SETTINGS';
-    public const ROLE_MANAGE_USERS    = 'ROLE_MANAGE_USERS';
+    /** Capability roles. ROLE_ADMIN implies them all via role_hierarchy (see security.yaml). */
+    public const ROLE_MANAGE_SETTINGS    = 'ROLE_MANAGE_SETTINGS';
+    public const ROLE_MANAGE_USERS       = 'ROLE_MANAGE_USERS';
+    public const ROLE_INTERACTIVE_SEARCH = 'ROLE_INTERACTIVE_SEARCH';
 
     public const USERNAME_MIN = 3;
     public const USERNAME_MAX = 60;
@@ -118,6 +119,11 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function canManageUsers(): bool
     {
         return $this->isAdmin() || in_array(self::ROLE_MANAGE_USERS, $this->roles, true);
+    }
+
+    public function canUseInteractiveSearch(): bool
+    {
+        return $this->isAdmin() || in_array(self::ROLE_INTERACTIVE_SEARCH, $this->roles, true);
     }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }

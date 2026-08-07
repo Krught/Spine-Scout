@@ -6,6 +6,7 @@ import { Controller } from '@hotwired/stimulus';
  * { ok, message }. Renders the outcome inline. Because it tests saved settings, save
  * the form first — the button hint says so. The button is disabled while in flight.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = ['button', 'result'];
     static values = { url: String, token: String };

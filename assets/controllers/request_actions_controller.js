@@ -9,6 +9,7 @@ import { Controller } from '@hotwired/stimulus';
  * buttons and CSRF tokens — or `removed: true`, which drops the row. Filter
  * chip counts are then recomputed by the sibling requests-filter controller.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     async submit(event) {
         event.preventDefault();

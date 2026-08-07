@@ -22,20 +22,45 @@ final class BookRequestRepository extends ServiceEntityRepository
     }
 
     /**
+     * One page of the /requests list, newest first, with the requester and book
+     * eager-loaded so rendering a row costs no extra queries.
+     *
+     * Ordered by createdAt then id so the sort is total: two requests created in the
+     * same second would otherwise be free to swap places between pages and could be
+     * shown twice (or skipped) as the reader pages through.
+     *
+     * @param int $page    1-based; callers are expected to clamp against {@see countForList()}
+     * @param int $perPage rows per page
+     *
      * @return list<BookRequest>
      */
-    public function findAllForList(): array
+    public function findAllForList(int $page = 1, int $perPage = 50): array
     {
+        $page = max(1, $page);
+        $perPage = max(1, $perPage);
+
         /** @var list<BookRequest> $rows */
         $rows = $this->createQueryBuilder('r')
             ->addSelect('u', 'b')
             ->leftJoin('r.requestedBy', 'u')
             ->leftJoin('r.book', 'b')
             ->orderBy('r.createdAt', 'DESC')
+            ->addOrderBy('r.id', 'DESC')
+            ->setFirstResult(($page - 1) * $perPage)
+            ->setMaxResults($perPage)
             ->getQuery()
             ->getResult();
 
         return $rows;
+    }
+
+    /** Total requests, for paging {@see findAllForList()}. */
+    public function countForList(): int
+    {
+        return (int) $this->createQueryBuilder('r')
+            ->select('COUNT(r.id)')
+            ->getQuery()
+            ->getSingleScalarResult();
     }
 
     /**

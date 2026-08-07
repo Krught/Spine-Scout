@@ -9,6 +9,7 @@ const CARD_GRADIENTS = [
     'linear-gradient(135deg,#5a2a3d,#8a4a60)',
 ];
 
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = ['modal', 'cover', 'name', 'meta', 'status', 'facts', 'bio', 'works'];
 

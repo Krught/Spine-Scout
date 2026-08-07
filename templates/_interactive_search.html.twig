@@ -9,6 +9,7 @@
          data-interactive-search-sources-url-value="{{ path('interactive_search_sources') }}"
          data-interactive-search-run-url-value="{{ path('interactive_search_run') }}"
          data-interactive-search-download-url-value="{{ path('interactive_search_download') }}"
+         data-interactive-search-grab-url-value="{{ path('interactive_search_grab') }}"
          data-interactive-search-token-value="{{ csrf_token('interactive_search') }}"
          data-action="book-modal:opensearch@window->interactive-search#seed book-modal:close@window->interactive-search#close keydown.esc->interactive-search#close"
          hidden>
@@ -44,11 +45,16 @@
 
     <div class="ix-query-actions">
         <button type="button" class="btn btn-primary ix-search-btn"
+                data-interactive-search-target="searchButton"
                 data-action="interactive-search#rerun"
                 title="Re-run the search with the current title / author / ISBN">Search</button>
     </div>
 
-    <p class="ix-status" data-interactive-search-target="status">Pick a source above to search.</p>
+    {# The spinner sits next to (never replaces) the status text while a search runs. #}
+    <div class="ix-status-row">
+        <span class="ix-spinner" data-interactive-search-target="spinner" aria-hidden="true" hidden></span>
+        <p class="ix-status" data-interactive-search-target="status" aria-live="polite">Ready — press Search to query the selected source.</p>
+    </div>
     <p class="ix-search-url" data-interactive-search-target="searchUrl"></p>
 
     <div class="ix-results" data-interactive-search-target="results"></div>

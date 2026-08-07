@@ -3,12 +3,105 @@
 
 .requests-header {
     margin-bottom: 1.25rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1.25rem;
 }
 .requests-title {
     font-size: 1.6rem;
     font-weight: 700;
     color: var(--fg);
     margin: 0 0 0.25rem;
+}
+
+/* Operator controls in the page header: the automatic-fulfillment switch and,
+   while it is off, the manual-queue entry point. */
+.requests-header-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+}
+.requests-pipeline-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+    color: var(--fg-dim);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+}
+.requests-pipeline-toggle:hover { color: var(--fg); }
+.requests-pipeline-toggle > span { line-height: 1.2; }
+/* Same square accent checkbox the settings panel uses, which scopes its rules to
+   .settings-panel — restate them here rather than widening that selector. */
+.requests-pipeline-toggle input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1.1rem;
+    height: 1.1rem;
+    flex-shrink: 0;
+    margin: 0;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    display: inline-grid;
+    place-content: center;
+    vertical-align: middle;
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.requests-pipeline-toggle input[type="checkbox"]::before {
+    content: '';
+    width: 0.62rem;
+    height: 0.62rem;
+    clip-path: polygon(14% 44%, 0% 60%, 40% 100%, 100% 22%, 84% 8%, 36% 64%);
+    background: var(--accent-fg, #fff);
+    transform: scale(0);
+    transform-origin: center;
+    transition: transform 120ms ease;
+}
+.requests-pipeline-toggle input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+.requests-pipeline-toggle input[type="checkbox"]:checked::before {
+    transform: scale(1);
+}
+.requests-pipeline-toggle input[type="checkbox"]:hover { border-color: var(--fg-muted); }
+.requests-pipeline-toggle input[type="checkbox"]:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.requests-pipeline-toggle input[type="checkbox"]:disabled {
+    opacity: 0.55;
+    cursor: progress;
+}
+
+.requests-queue-start[hidden] { display: none; }
+.requests-queue-start {
+    white-space: nowrap;
+}
+
+/* "Nothing left to search" state, shown when the queue is empty at the moment
+   "Get next item" is pressed (the mid-queue case lives in the overlay). */
+.requests-queue-notice[hidden] { display: none; }
+.requests-queue-notice {
+    margin-bottom: 1rem;
+    padding: 0.7rem 1rem;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    background: var(--bg-elev);
+    color: var(--fg-dim);
+    font-size: 0.9rem;
 }
 .requests-subtitle {
     color: var(--fg-dim);
@@ -68,6 +161,11 @@
 }
 .requests-filter.is-active .requests-filter-count {
     background: rgba(255, 255, 255, 0.25);
+}
+/* Chip with no rows under the *other* dimension's current selection (e.g. "Rejected"
+   while Audiobooks is picked). Still clickable — just visibly a dead end. */
+.requests-filter.is-empty:not(.is-active) {
+    opacity: 0.45;
 }
 .requests-filter-empty {
     margin-bottom: 0.75rem;
@@ -338,6 +436,77 @@
     .request-actions { align-items: flex-start; }
 }
 
+/* --- manual-queue chrome inside the search overlay --- */
+/* Sits in the overlay shell around the shared .ix-panel, so it can carry queue
+   context without the panel knowing anything about queues. */
+.request-search-queue[hidden] { display: none; }
+.request-search-queue {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+    padding: 0.85rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 16px 16px 0 0;
+}
+.request-search-queue-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+.request-search-queue-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted, var(--fg-dim));
+}
+.request-search-queue-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.request-search-queue-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+.request-search-queue-btn[hidden] { display: none; }
+.request-search-queue-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+.request-search-queue-btn-next {
+    border-color: rgba(34, 139, 87, 0.6);
+    color: #6ee7a8;
+}
+.request-search-queue-btn-next:hover {
+    background: rgba(34, 139, 87, 0.15);
+    border-color: rgba(34, 139, 87, 0.9);
+}
+
+.request-search-queue-done[hidden] { display: none; }
+.request-search-queue-done {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+}
+.request-search-queue-done-text {
+    margin: 0;
+    color: var(--fg-dim);
+    font-size: 0.95rem;
+}
+
 /* --- background row actions --- */
 .request-btn.is-busy {
     opacity: 0.55;
@@ -383,4 +552,50 @@
     background: rgba(239, 68, 68, 0.15);
     border-color: rgba(239, 68, 68, 0.35);
     color: #fca5a5;
+}
+
+/* Server-side pager under the list. Pill links matching the filter chips above;
+   the disabled end-stop keeps its slot so the row doesn't shift between pages. */
+.requests-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin: 1.25rem 0 0.5rem;
+}
+.requests-pager-link {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg-dim);
+    padding: 0.4rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+a.requests-pager-link:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: var(--accent, #4a7bd0);
+    color: var(--fg);
+}
+.requests-pager-link.is-disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+.requests-pager-status {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--fg-dim);
+}
+.requests-pager-total {
+    font-size: 0.75rem;
+    font-weight: 500;
+    opacity: 0.75;
 }

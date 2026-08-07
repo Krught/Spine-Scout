@@ -69,6 +69,89 @@ final class ZLibrarySourceTest extends TestCase
         self::assertNotNull($detail['error']);
     }
 
+    /**
+     * The batch path must ISSUE every detail request before it consumes any of
+     * them — that is what makes the fetches concurrent instead of one-at-a-time.
+     */
+    public function testResolveDetailsIssuesAllRequestsBeforeReadingAnyBody(): void
+    {
+        $log = [];
+        $html = $this->fixture('zlib_book_page.html');
+        $client = new MockHttpClient(static function (string $method, string $url) use (&$log, $html): MockResponse {
+            $log[] = 'request:' . $url;
+
+            return new MockResponse((static function () use ($url, $html, &$log): \Generator {
+                $log[] = 'read:' . $url;
+                yield $html;
+            })());
+        });
+
+        $details = $this->source($this->config(true, ['https://z.test']), $client)->resolveDetails([
+            $this->detailCandidate('1001/a'),
+            $this->detailCandidate('1002/b'),
+            $this->detailCandidate('1003/c'),
+        ]);
+
+        self::assertCount(3, $details);
+        self::assertSame(
+            ['request:https://z.test/book/1001/a.html', 'request:https://z.test/book/1002/b.html', 'request:https://z.test/book/1003/c.html'],
+            \array_slice($log, 0, 3),
+        );
+        foreach ($details as $detail) {
+            self::assertNull($detail['error']);
+            self::assertContains('9780441478125', $detail['isbns']);
+        }
+    }
+
+    /** Keys line up with the input, and one bad response degrades only itself. */
+    public function testResolveDetailsIsKeyedByCandidateAndDegradesPerCandidate(): void
+    {
+        $html = $this->fixture('zlib_book_page.html');
+        $client = new MockHttpClient(static fn (string $method, string $url): MockResponse => str_contains($url, '1002')
+            ? new MockResponse('', ['error' => 'connection reset'])
+            : new MockResponse($html));
+
+        $details = $this->source($this->config(true, ['https://z.test']), $client)->resolveDetails([
+            $this->detailCandidate('1001/a'),
+            $this->detailCandidate('1002/b'),
+            new ReleaseCandidate(source: self::ID, sourceId: 'no-page', title: 'X', extra: ['mirror' => 'https://z.test']),
+        ]);
+
+        self::assertSame([0, 1, 2], array_keys($details));
+        self::assertNull($details[0]['error']);
+        self::assertNotSame([], $details[0]['links']);
+
+        self::assertNotNull($details[1]['error']);
+        self::assertSame([], $details[1]['links']);
+        self::assertSame([], $details[1]['isbns']);
+
+        // No book page at all — the same pre-flight error resolveDetail() gives.
+        self::assertSame('No book page to resolve download link.', $details[2]['error']);
+    }
+
+    /** Single-candidate batches behave exactly like resolveDetail(). */
+    public function testResolveDetailsWithOneCandidateMatchesResolveDetail(): void
+    {
+        $client = new MockHttpClient(fn (string $m, string $url): MockResponse => new MockResponse($this->fixture('zlib_book_page.html')));
+        $source = $this->source($this->config(true, ['https://z.test']), $client);
+
+        $details = $source->resolveDetails([$this->detailCandidate('1001/a')]);
+
+        self::assertSame([0], array_keys($details));
+        self::assertContains('9780441478125', $details[0]['isbns']);
+    }
+
+    private function detailCandidate(string $id): ReleaseCandidate
+    {
+        return new ReleaseCandidate(
+            source: self::ID,
+            sourceId: $id,
+            title: 'X',
+            infoUrl: 'https://z.test/book/' . $id . '.html',
+            extra: ['mirror' => 'https://z.test'],
+        );
+    }
+
     /** @param list<string> $mirrors */
     private function config(bool $enabled, array $mirrors): DirectDownloadConfig
     {

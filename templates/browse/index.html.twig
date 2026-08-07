@@ -6,10 +6,22 @@
     <div data-controller="book-modal browse"
          data-browse-items-url-value="{{ path('browse_items') }}"
          data-browse-search-url-value="{{ path('browse_search') }}"
-         data-browse-similar-url-value="{{ path('browse_similar') }}">
+         data-browse-similar-url-value="{{ path('browse_similar') }}"
+         data-browse-shelf-value="{{ shelf.slug ?? '' }}"
+         data-browse-shelf-label-value="{{ shelf.label ?? '' }}">
         <section class="browse-section">
             <div class="browse-header">
-                <h2 class="row-title" data-browse-target="rowTitle">Trending</h2>
+                <div class="browse-heading">
+                    <h2 class="row-title" data-browse-target="rowTitle">{{ shelf.label ?? 'Trending' }}</h2>
+                    {# Shelf mode marker + the way back to the default browse. Hidden by the
+                       controller as soon as a search takes over the grid. #}
+                    <a class="browse-shelf-chip" href="{{ path('browse') }}" data-browse-target="shelfChip"
+                       title="Back to all books" aria-label="Leave the {{ shelf.label ?? '' }} shelf and browse everything"
+                       {% if shelf is null %}hidden{% endif %}>
+                        <span>{{ shelf.label ?? '' }}</span>
+                        <span class="browse-shelf-chip__clear" aria-hidden="true">×</span>
+                    </a>
+                </div>
                 <div class="browse-controls">
                     <div class="browse-format" role="group" aria-label="Show books or audiobooks"
                          data-browse-target="format" data-format="book">
@@ -69,7 +81,9 @@
                     <div class="book-modal-cover-wrap">
                         <div class="book-modal-cover" data-book-modal-target="cover"></div>
                         <button type="button" class="book-modal-action" data-book-modal-target="action" data-action="click->book-modal#requestBook" hidden></button>
-                        <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        {% if is_granted('ROLE_INTERACTIVE_SEARCH') %}
+                            <button type="button" class="book-modal-search" data-book-modal-target="search" data-action="click->book-modal#openSearch" hidden>Interactive Search</button>
+                        {% endif %}
                         <button type="button" class="book-modal-search book-modal-recommend" data-book-modal-target="recommend" data-action="click->book-modal#moreLikeThis" hidden>More like this</button>
                     </div>
                     <div class="book-modal-content">
@@ -82,7 +96,9 @@
                         <div class="book-modal-description" data-book-modal-target="description"></div>
                     </div>
                 </div>
-                {{ include('_interactive_search.html.twig') }}
+                {% if is_granted('ROLE_INTERACTIVE_SEARCH') %}
+                    {{ include('_interactive_search.html.twig') }}
+                {% endif %}
             </div>
         </div>
     </div>

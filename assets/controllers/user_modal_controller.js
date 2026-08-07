@@ -1,15 +1,25 @@
 import { Controller } from '@hotwired/stimulus';
 
 /**
+ * Stimulus runs action params through JSON.parse, so the "1"/"0" flags the
+ * template emits arrive as the numbers 1/0 rather than strings. Normalise
+ * whatever shape we get back into a plain boolean.
+ */
+function flag(value) {
+    return value === true || value === 1 || value === '1';
+}
+
+/**
  * Drives the shared create/edit user modal on the /users page. Edit and create
  * reuse one form; this controller swaps the form action, CSRF token, field
  * values, and the master-lock state based on the clicked button's params.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = [
         'modal', 'form', 'token', 'title', 'submit',
         'username', 'password', 'passwordConfirm', 'passwordHelp',
-        'manageSettings', 'manageUsers', 'autoApprove', 'masterNote',
+        'manageSettings', 'manageUsers', 'interactiveSearch', 'autoApprove', 'masterNote',
     ];
 
     openCreate(event) {
@@ -25,7 +35,7 @@ export default class extends Controller {
         this.passwordConfirmTarget.required = true;
         this.passwordHelpTarget.textContent = 'At least 8 characters.';
 
-        this.setCapabilities(false, false, false);
+        this.setCapabilities(false, false, false, false);
         this.setMasterLocked(false);
         this.open();
     }
@@ -43,8 +53,13 @@ export default class extends Controller {
         this.passwordConfirmTarget.required = false;
         this.passwordHelpTarget.textContent = 'Leave blank to keep the current password.';
 
-        this.setCapabilities(p.manageSettings === '1', p.manageUsers === '1', p.autoApprove === '1');
-        this.setMasterLocked(p.master === '1');
+        this.setCapabilities(
+            flag(p.manageSettings),
+            flag(p.manageUsers),
+            flag(p.interactiveSearch),
+            flag(p.autoApprove),
+        );
+        this.setMasterLocked(flag(p.master));
         this.open();
     }
 
@@ -53,9 +68,10 @@ export default class extends Controller {
         this.passwordConfirmTarget.value = '';
     }
 
-    setCapabilities(settings, users, autoApprove) {
+    setCapabilities(settings, users, interactiveSearch, autoApprove) {
         this.manageSettingsTarget.checked = settings;
         this.manageUsersTarget.checked = users;
+        this.interactiveSearchTarget.checked = interactiveSearch;
         this.autoApproveTarget.checked = autoApprove;
     }
 
@@ -64,9 +80,11 @@ export default class extends Controller {
         if (locked) {
             this.manageSettingsTarget.checked = true;
             this.manageUsersTarget.checked = true;
+            this.interactiveSearchTarget.checked = true;
         }
         this.manageSettingsTarget.disabled = locked;
         this.manageUsersTarget.disabled = locked;
+        this.interactiveSearchTarget.disabled = locked;
         this.masterNoteTarget.hidden = !locked;
     }
 

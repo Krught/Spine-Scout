@@ -17,6 +17,7 @@ use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
 use App\Repository\IntegrationRepository;
 use App\Service\CoverCache;
+use App\Service\ShelfCatalog;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Response;
@@ -55,6 +56,7 @@ final class HomeController extends AbstractController
     public function __construct(
         private readonly CoverCache $covers,
         private readonly MessageBusInterface $bus,
+        private readonly ShelfCatalog $shelves,
     ) {
     }
 
@@ -70,28 +72,25 @@ final class HomeController extends AbstractController
             ? $requests->statusMapsForUser($user)
             : ['isbns' => [], 'titleAuthor' => []];
 
-        $recentlyAddedBooks = $books->findRecentlyAdded(15);
-        $recentlyAdded = array_map(
-            fn (Book $b) => $this->bookToCard($b, $requestStatusMaps),
-            $recentlyAddedBooks,
-        );
-
         $libraryIsbns = $books->downloadedIsbns();
         $libraryKeys = $books->downloadedTitleAuthorKeys();
+
+        $recentlyAddedBooks = $books->findRecentlyAdded(15);
+        $recentlyAdded = $this->shelves->toCards($recentlyAddedBooks, $libraryIsbns, $libraryKeys, $requestStatusMaps);
 
         $hardcover = $integrations->findByKind(Integration::KIND_HARDCOVER);
         $openLibrary = $integrations->findByKind(Integration::KIND_OPENLIBRARY);
 
         [$trendingBooks, $trendingSubtitle, $trendingEmpty] = $this->loadTrending($books, $hardcover, $openLibrary);
-        $trendingItems = $this->booksToCards($trendingBooks, $hardcover ?? $openLibrary, $libraryIsbns, $libraryKeys, $requestStatusMaps);
+        $trendingItems = $this->booksToCards($trendingBooks, $libraryIsbns, $libraryKeys, $requestStatusMaps);
 
         $newReleasesBooks = $this->shelfFromHardcover($books, $hardcover, BookSectionEntry::SECTION_NEW_RELEASES);
         $upcomingBooks    = $this->shelfFromHardcover($books, $hardcover, BookSectionEntry::SECTION_UPCOMING);
         $staffPicksBooks  = $this->shelfFromHardcover($books, $hardcover, BookSectionEntry::SECTION_STAFF_PICKS);
 
-        $newReleases = $this->booksToCards($newReleasesBooks, $hardcover, $libraryIsbns, $libraryKeys, $requestStatusMaps);
-        $upcoming    = $this->booksToCards($upcomingBooks, $hardcover, $libraryIsbns, $libraryKeys, $requestStatusMaps);
-        $staffPicks  = $this->booksToCards($staffPicksBooks, $hardcover, $libraryIsbns, $libraryKeys, $requestStatusMaps);
+        $newReleases = $this->booksToCards($newReleasesBooks, $libraryIsbns, $libraryKeys, $requestStatusMaps);
+        $upcoming    = $this->booksToCards($upcomingBooks, $libraryIsbns, $libraryKeys, $requestStatusMaps);
+        $staffPicks  = $this->booksToCards($staffPicksBooks, $libraryIsbns, $libraryKeys, $requestStatusMaps);
 
         $authorsList = $this->popularAuthorsFromHardcover($authors, $hardcover);
 
@@ -115,16 +114,20 @@ final class HomeController extends AbstractController
         ));
 
         return $this->render('home/index.html.twig', [
+            // `more_shelf` drives the row's "See all" link: it targets /browse?shelf=<slug>,
+            // which renders the same dataset as a paginated grid (see ShelfCatalog). Rows
+            // without a browsable dataset (genres, authors) simply omit it and render no
+            // "See all"; Recent Requests points at the requests page instead (`more_route`).
             'sections' => [
-                ['title' => 'Recently Added', 'items' => $recentlyAdded],
+                ['title' => 'Recently Added', 'items' => $recentlyAdded, 'more_shelf' => ShelfCatalog::SHELF_RECENT],
                 ['title' => 'Trending', 'items' => $trendingItems,
-                 'empty_message' => $trendingEmpty],
-                ['title' => 'New Releases', 'items' => $newReleases, 'empty_message' => $hardcoverEmpty],
-                ['title' => 'Upcoming', 'items' => $upcoming, 'empty_message' => $hardcoverEmpty],
+                 'empty_message' => $trendingEmpty, 'more_shelf' => ShelfCatalog::SHELF_TRENDING],
+                ['title' => 'New Releases', 'items' => $newReleases, 'empty_message' => $hardcoverEmpty, 'more_shelf' => ShelfCatalog::SHELF_NEW_RELEASES],
+                ['title' => 'Upcoming', 'items' => $upcoming, 'empty_message' => $hardcoverEmpty, 'more_shelf' => ShelfCatalog::SHELF_UPCOMING],
                 ['title' => 'Browse by Genre', 'items' => $genres, 'kind' => 'genre'],
-                ['title' => 'Staff Picks', 'items' => $staffPicks, 'empty_message' => $hardcoverEmpty],
+                ['title' => 'Staff Picks', 'items' => $staffPicks, 'empty_message' => $hardcoverEmpty, 'more_shelf' => ShelfCatalog::SHELF_STAFF_PICKS],
                 ['title' => 'Popular Authors', 'items' => $authorsList, 'kind' => 'author', 'empty_message' => $hardcoverEmpty],
-                ['title' => 'Recent Requests', 'items' => $recentRequests, 'kind' => 'request', 'empty_message' => 'Book requests will appear here once someone requests a book.'],
+                ['title' => 'Recent Requests', 'items' => $recentRequests, 'kind' => 'request', 'more_route' => 'requests', 'empty_message' => 'Book requests will appear here once someone requests a book.'],
             ],
         ]);
     }
@@ -172,64 +175,11 @@ final class HomeController extends AbstractController
      * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $requestStatusMaps
      * @return list<array<string, mixed>>
      */
-    private function booksToCards(array $books, ?Integration $integration, array $libraryIsbns, array $libraryKeys, array $requestStatusMaps): array
+    private function booksToCards(array $books, array $libraryIsbns, array $libraryKeys, array $requestStatusMaps): array
     {
-        $out = [];
-        foreach ($books as $book) {
-            $title = $book->getTitle();
-            $author = $book->getAuthor();
-            // Walk every edition's ISBN so a Hardcover trending entry whose first ISBN happens
-            // to be the German paperback still flags as "downloaded" when the user owns the US
-            // hardcover. Mirrors BrowseController::normalizeCards.
-            $allIsbns = $book->getIsbns();
-            if ($allIsbns === [] && $book->getIsbn() !== null) {
-                $allIsbns = [$book->getIsbn()];
-            }
-
-            $downloaded = $book->isDownloaded();
-            if (!$downloaded) {
-                foreach ($allIsbns as $candidate) {
-                    if (isset($libraryIsbns[$candidate])) {
-                        $downloaded = true;
-                        break;
-                    }
-                }
-            }
-            $taKey = BookRepository::normalizeTitleAuthor($title, $author);
-            if (!$downloaded && $taKey !== null && isset($libraryKeys[$taKey])) {
-                $downloaded = true;
-            }
-
-            $requestStatus = null;
-            foreach ($allIsbns as $candidate) {
-                if (isset($requestStatusMaps['isbns'][$candidate])) {
-                    $requestStatus = $requestStatusMaps['isbns'][$candidate];
-                    break;
-                }
-            }
-            if ($requestStatus === null && $taKey !== null && isset($requestStatusMaps['titleAuthor'][$taKey])) {
-                $requestStatus = $requestStatusMaps['titleAuthor'][$taKey];
-            }
-            if ($requestStatus === 'available') {
-                $downloaded = true;
-                $requestStatus = null;
-            }
-
-            $externalUrl = $book->getExternalUrl();
-            $coverProxy = $this->coverProxyFor($book);
-            $out[] = [
-                'title' => $title,
-                'author' => $author,
-                'downloaded' => $downloaded,
-                'request_status' => $requestStatus,
-                'cover_url' => $coverProxy,
-                'external_url' => $externalUrl,
-                'meta_source' => $book->getSource() === Book::SOURCE_GRIMMORY ? null : $book->getSource(),
-                'meta_external_id' => $book->getSource() === Book::SOURCE_GRIMMORY ? null : $book->getExternalId(),
-                'meta_id' => $book->getId(),
-            ];
-        }
-        return $out;
+        // Card shaping is shared with the browse grid so /browse?shelf=<slug> renders the
+        // same tiles as the home carousel it came from.
+        return $this->shelves->toCards($books, $libraryIsbns, $libraryKeys, $requestStatusMaps);
     }
 
     /**
@@ -253,41 +203,6 @@ final class HomeController extends AbstractController
             ];
         }
         return $out;
-    }
-
-    /**
-     * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $requestStatusMaps
-     * @return array{title: string, author: ?string, downloaded: bool, request_status: ?string, cover_url: string, meta_id: ?int}
-     */
-    private function bookToCard(Book $book, array $requestStatusMaps): array
-    {
-        $title = $book->getTitle();
-        if ($book->getSeries() !== null && $book->getSeriesIndex() !== null) {
-            $title = sprintf('%s (%s #%s)', $title, $book->getSeries(), $book->getSeriesIndex());
-        }
-        $downloaded = $book->isDownloaded();
-        $requestStatus = null;
-        $isbn = $book->getIsbn();
-        if (is_string($isbn) && isset($requestStatusMaps['isbns'][$isbn])) {
-            $requestStatus = $requestStatusMaps['isbns'][$isbn];
-        } else {
-            $taKey = BookRepository::normalizeTitleAuthor($book->getTitle(), $book->getAuthor());
-            if ($taKey !== null && isset($requestStatusMaps['titleAuthor'][$taKey])) {
-                $requestStatus = $requestStatusMaps['titleAuthor'][$taKey];
-            }
-        }
-        if ($requestStatus === 'available') {
-            $downloaded = true;
-            $requestStatus = null;
-        }
-        return [
-            'title' => $title,
-            'author' => $book->getAuthor(),
-            'downloaded' => $downloaded,
-            'request_status' => $requestStatus,
-            'cover_url' => $this->covers->proxyUrlForKomga($book->getExternalId()),
-            'meta_id' => $book->getId(),
-        ];
     }
 
     /**
@@ -325,11 +240,7 @@ final class HomeController extends AbstractController
 
     private function coverProxyFor(Book $book): ?string
     {
-        if ($book->getSource() === Book::SOURCE_GRIMMORY) {
-            return $this->covers->proxyUrlForKomga($book->getExternalId());
-        }
-        $remote = $book->getCoverUrl();
-        return $remote !== null && $remote !== '' ? $this->covers->proxyUrlForRemote($remote) : null;
+        return $this->shelves->coverProxyFor($book);
     }
 
     /**

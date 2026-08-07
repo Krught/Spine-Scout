@@ -266,6 +266,25 @@ class Integration
         return $this;
     }
 
+    /**
+     * App-wide toggle (KIND_APP row): run the automatic search/fulfillment pipeline
+     * when a request is approved (and on the periodic retry sweep). Defaults to true
+     * so existing installs keep fulfilling automatically; turning it off leaves
+     * approved requests untouched for manual handling via interactive search.
+     */
+    public function isAutomaticFulfillmentEnabled(): bool
+    {
+        return (bool) ($this->options['automatic_fulfillment'] ?? true);
+    }
+
+    public function setAutomaticFulfillmentEnabled(bool $on): self
+    {
+        $options = $this->options;
+        $options['automatic_fulfillment'] = $on;
+        $this->options = $options;
+        return $this;
+    }
+
     public function getLastSyncAt(): ?\DateTimeImmutable { return $this->lastSyncAt; }
     public function setLastSyncAt(?\DateTimeImmutable $when): self { $this->lastSyncAt = $when; return $this; }
 

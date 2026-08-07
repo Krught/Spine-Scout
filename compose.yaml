@@ -24,6 +24,11 @@ services:
     ports:
       - "${SPINESCOUT_HTTP_PORT:-9092}:80"
     restart: unless-stopped
+    volumes:
+      # Read-only view of the cover cache so nginx can serve covers itself via the
+      # internal /_covers/ location (see docker/nginx/default.conf). Same source as
+      # the app/worker mounts; nginx never writes to it.
+      - ${SPINESCOUT_COVER_CACHE_DIR:-./book-covers}:/var/www/html/book-covers:ro
     depends_on:
       - app
 

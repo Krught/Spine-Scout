@@ -18,6 +18,7 @@ use App\Repository\BookRequestRepository;
 use App\Repository\IntegrationRepository;
 use App\Service\BookRecommendationService;
 use App\Service\CoverCache;
+use App\Service\ShelfCatalog;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Cache\CacheItemPoolInterface;
 use Psr\Log\LoggerInterface;
@@ -57,14 +58,24 @@ final class BrowseController extends AbstractController
     ) {
     }
 
+    /**
+     * `?shelf=<slug>` renders one of the home page's shelves as a full grid (see
+     * {@see ShelfCatalog}). An unknown slug is ignored and the page falls back to the
+     * default trending browse rather than erroring.
+     */
     #[Route('/browse', name: 'browse')]
-    public function index(): Response
+    public function index(Request $request, ShelfCatalog $shelves): Response
     {
-        return $this->render('browse/index.html.twig');
+        $shelf = ShelfCatalog::resolve($request->query->get('shelf'));
+
+        return $this->render('browse/index.html.twig', [
+            // The trending shelf *is* the default browse mode — no chip, no shelf param.
+            'shelf' => $shelf !== null && $shelf['type'] !== ShelfCatalog::TYPE_TRENDING ? $shelf : null,
+        ]);
     }
 
     #[Route('/browse/items', name: 'browse_items', methods: ['GET'])]
-    public function items(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests): JsonResponse
+    public function items(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests, ShelfCatalog $shelves): JsonResponse
     {
         $offset = max(0, $request->query->getInt('offset', 0));
         $limit  = min(self::MAX_LIMIT, max(1, $request->query->getInt('limit', 100)));
@@ -77,6 +88,24 @@ final class BrowseController extends AbstractController
         $libraryIsbns = $books->downloadedIsbns($audiobookOnly ? true : null);
         $libraryKeys  = $books->downloadedTitleAuthorKeys($audiobookOnly ? true : null);
         $statusMaps = $this->statusMaps($requests, $audiobookOnly ? true : null);
+
+        // Shelf mode: the dataset behind one of the home page's rows, paged straight out of
+        // the DB (no upstream calls — those shelves are populated by the metadata sync).
+        // Unknown slugs, and the trending shelf (which *is* the default mode), fall through.
+        $shelf = ShelfCatalog::resolve($request->query->get('shelf'));
+        if ($shelf !== null && $shelf['type'] !== ShelfCatalog::TYPE_TRENDING) {
+            $page = $shelves->page($shelf['slug'], $offset, $limit, $sort, $dir);
+            $cards = $shelves->toCards($page['books'], $libraryIsbns, $libraryKeys, $statusMaps);
+            if ($audiobookOnly) {
+                $cards = array_values(array_filter($cards, static fn (array $c) => (bool) ($c['audiobook'] ?? false)));
+            }
+
+            return new JsonResponse([
+                'items' => $cards,
+                'next_offset' => $offset + count($page['books']),
+                'has_more' => $page['has_more'],
+            ]);
+        }
 
         // For trending sort: only fetch as much upstream as we need to satisfy this slice.
         // For non-trending sorts (title/author): fetch *everything* up to the cap so the

@@ -62,18 +62,23 @@ final class LibGenSource extends AbstractDirectHttpSource
         );
     }
 
-    public function resolveDetail(ReleaseCandidate $candidate, ?DirectDownloadConfig $config = null): array
+    protected function detailPlan(ReleaseCandidate $candidate, ?DirectDownloadConfig $config): array
     {
         $base = $candidate->extra['mirror'] ?? null;
         if (!is_string($base) || $base === '') {
-            return ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve download link.'];
+            return ['url' => null, 'result' => ['isbns' => [], 'raw' => [], 'links' => [], 'error' => 'No mirror to resolve download link.']];
         }
 
+        // Fetch the book detail page for ISBNs (the search card carries none) to
+        // enrich scoring; the download link itself needs no request.
+        return ['url' => $this->protocol->buildDownloadsUrl($base, $candidate->sourceId), 'result' => null];
+    }
+
+    protected function detailFromResponse(ReleaseCandidate $candidate, array $response, ?DirectDownloadConfig $config): array
+    {
         // The direct download endpoint redirects straight to the file, so it is
-        // the link the client streams. Fetch the book detail page for ISBNs (the
-        // search card carries none) to enrich scoring.
-        $links = $this->linksVia($candidate, $base, $config);
-        $response = $this->request($this->protocol->buildDownloadsUrl($base, $candidate->sourceId));
+        // the link the client streams — constructible without any I/O.
+        $links = $this->linksVia($candidate, (string) $candidate->extra['mirror'], $config);
         if ($response['error'] !== null) {
             // Detail lookup failed, but the download link is still constructible.
             return ['isbns' => [], 'raw' => [], 'links' => $links, 'error' => null];

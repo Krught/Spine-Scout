@@ -100,6 +100,67 @@ final class WelibSourceTest extends TestCase
         self::assertSame([], $httpCalls, 'record page must be fetched via the bypasser, not a plain GET');
     }
 
+    /**
+     * With no bypass the batch path applies: every record page is requested before
+     * any is read, so the fetches overlap instead of running back to back.
+     */
+    public function testResolveDetailsBatchesPlainGets(): void
+    {
+        $log = [];
+        $html = $this->fixture('aa_record_detail.html');
+        $client = new MockHttpClient(static function (string $m, string $url) use (&$log, $html): MockResponse {
+            $log[] = 'request:' . $url;
+
+            return new MockResponse((static function () use ($url, $html, &$log): \Generator {
+                $log[] = 'read:' . $url;
+                yield $html;
+            })());
+        });
+        $source = $this->source($this->config(true, ['https://w.test']), $client);
+
+        $details = $source->resolveDetails([
+            new ReleaseCandidate(source: self::ID, sourceId: 'aaaa1111bbbb2222cccc3333dddd4444', title: 'X', extra: ['mirror' => 'https://w.test']),
+            new ReleaseCandidate(source: self::ID, sourceId: 'bbbb1111bbbb2222cccc3333dddd4444', title: 'Y', extra: ['mirror' => 'https://w.test']),
+        ]);
+
+        self::assertSame([0, 1], array_keys($details));
+        self::assertStringStartsWith('request:', $log[0]);
+        self::assertStringStartsWith('request:', $log[1]);
+        self::assertContains('9780441478125', $details[0]['isbns']);
+        self::assertContains('9780441478125', $details[1]['isbns']);
+    }
+
+    /**
+     * With a bypass enabled the batch falls back to serial resolution — the
+     * bypasser drives one browser navigation at a time — and each page still comes
+     * from the bypasser, never a plain GET.
+     */
+    public function testResolveDetailsFallsBackToSerialBypassFetches(): void
+    {
+        $httpCalls = [];
+        $client = new MockHttpClient(function (string $m, string $url) use (&$httpCalls): MockResponse {
+            $httpCalls[] = $url;
+
+            return new MockResponse('challenge — must not be used');
+        });
+        $bypasser = $this->bypasser(DirectDownloadConfig::BYPASS_EXTERNAL, $this->fixture('aa_record_detail.html'));
+        $source = $this->source(
+            $this->config(true, ['https://w.test']),
+            $client,
+            $this->resolver($bypasser, DirectDownloadConfig::BYPASS_EXTERNAL),
+        );
+
+        $details = $source->resolveDetails([
+            new ReleaseCandidate(source: self::ID, sourceId: 'aaaa1111bbbb2222cccc3333dddd4444', title: 'X', extra: ['mirror' => 'https://w.test']),
+            new ReleaseCandidate(source: self::ID, sourceId: 'bbbb1111bbbb2222cccc3333dddd4444', title: 'Y', extra: ['mirror' => 'https://w.test']),
+        ]);
+
+        self::assertSame([0, 1], array_keys($details));
+        self::assertContains('9780441478125', $details[0]['isbns']);
+        self::assertContains('9780441478125', $details[1]['isbns']);
+        self::assertSame([], $httpCalls, 'record pages must go through the bypasser, not a plain GET');
+    }
+
     /** @param list<string> $mirrors */
     private function config(bool $enabled, array $mirrors): DirectDownloadConfig
     {

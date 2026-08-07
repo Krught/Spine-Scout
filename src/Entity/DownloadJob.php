@@ -20,6 +20,8 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\Table(name: 'download_jobs')]
 #[ORM\Index(name: 'download_jobs_status_idx', columns: ['status'])]
 #[ORM\Index(name: 'download_jobs_request_idx', columns: ['book_request_id'])]
+#[ORM\Index(name: 'download_jobs_protocol_status_idx', columns: ['protocol', 'status'])]
+#[ORM\Index(name: 'download_jobs_request_created_idx', columns: ['book_request_id', 'created_at'])]
 #[ORM\HasLifecycleCallbacks]
 class DownloadJob
 {

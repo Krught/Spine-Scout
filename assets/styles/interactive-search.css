@@ -130,6 +130,106 @@
     margin-top: -0.35rem;
 }
 
+/* --- busy / loading state --------------------------------------------------
+ * A search is a plain synchronous POST that can take 10+ seconds (a detail-page
+ * fetch per direct-download result, or a Prowlarr round-trip), so the panel has
+ * to say out loud that it's working: spinner beside the status line, skeleton
+ * rows where the results table will land, and every query control locked. */
+.ix-status-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.ix-spinner {
+    display: inline-block;
+    flex: none;
+    width: 0.95rem;
+    height: 0.95rem;
+    border-radius: 50%;
+    border: 2px solid var(--border, #2c2f3a);
+    border-top-color: var(--accent, #5b8cff);
+    animation: ix-spin 0.7s linear infinite;
+}
+.ix-spinner[hidden] { display: none; }
+
+/* Inside a button / status paragraph, riding the text baseline. */
+.ix-spinner--inline {
+    display: inline-block;
+    width: 0.8rem;
+    height: 0.8rem;
+    margin-right: 0.45rem;
+    vertical-align: -0.1em;
+    border-top-color: currentColor;
+}
+
+@keyframes ix-spin {
+    to { transform: rotate(360deg); }
+}
+
+.ix-working { display: flex; align-items: center; }
+
+/* Action button mid-download / mid-grab. */
+.btn.is-busy { cursor: progress; opacity: 0.75; }
+
+/* Query controls locked while a run is in flight. */
+.ix-is-searching .ix-query input:disabled,
+.ix-is-searching .ix-mirror:disabled,
+.ix-is-searching .ix-search-btn:disabled {
+    opacity: 0.55;
+    cursor: progress;
+}
+.ix-is-searching .ix-source:disabled { cursor: progress; }
+.ix-is-searching .ix-source.is-active:disabled { opacity: 0.75; }
+
+/* Skeleton rows: stale results are cleared, so this holds the space and keeps
+ * the panel from collapsing while the request is out. */
+.ix-results--busy { opacity: 0.75; }
+.ix-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+}
+.ix-skeleton-row {
+    height: 0.85rem;
+    border-radius: 4px;
+    background: linear-gradient(
+        90deg,
+        var(--surface-2, #1c1f28) 0%,
+        var(--border, #2c2f3a) 50%,
+        var(--surface-2, #1c1f28) 100%
+    );
+    background-size: 200% 100%;
+    animation: ix-shimmer 1.4s ease-in-out infinite;
+}
+.ix-skeleton-row:nth-child(2) { width: 92%; }
+.ix-skeleton-row:nth-child(3) { width: 84%; }
+.ix-skeleton-row:nth-child(4) { width: 70%; }
+
+@keyframes ix-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
+@keyframes ix-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+/* Reduced motion: no spin, no shimmer — a soft pulse carries the same signal. */
+@media (prefers-reduced-motion: reduce) {
+    .ix-spinner {
+        border-color: var(--accent, #5b8cff);
+        animation: ix-pulse 1.6s ease-in-out infinite;
+    }
+    .ix-spinner--inline { border-color: currentColor; }
+    .ix-skeleton-row {
+        background: var(--surface-2, #1c1f28);
+        animation: ix-pulse 1.6s ease-in-out infinite;
+    }
+}
+
 .ix-status { margin: 0; font-size: 0.85rem; opacity: 0.85; }
 .ix-status--error { color: var(--danger, #ff6b6b); opacity: 1; }
 .ix-search-url {
@@ -180,6 +280,95 @@
 .ix-pct--low { color: var(--muted, #9aa0ad); }
 .ix-info a { color: var(--accent, #5b8cff); text-decoration: none; }
 
+/* --- torrent results: seed/leech health and indexer flags --- */
+.ix-sl { font-variant-numeric: tabular-nums; color: var(--muted, #9aa0ad); }
+.ix-seeders { color: var(--success, #4ade80); font-weight: 600; }
+.ix-leechers { color: var(--muted, #9aa0ad); }
+
+/* Cells are nowrap by default; flags are short so they stay on one line, and an
+ * empty flag list simply renders an empty cell. */
+.ix-flags > .ix-flag + .ix-flag { margin-left: 0.25rem; }
+.ix-flag {
+    display: inline-block;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-weight: 700;
+    line-height: 1.4;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    border: 1px solid var(--border, #2c2f3a);
+    background: var(--surface-2, #1c1f28);
+    color: var(--muted, #9aa0ad);
+}
+.ix-flag--freeleech {
+    background: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.35);
+    color: var(--success, #4ade80);
+}
+
+/* --- torrent results: what kind of release this actually is ---
+ * The type chip leads the title instead of claiming its own column (the torrent
+ * table already runs ten wide), and the indexer's categories sit under the title
+ * as a muted second line so they never widen the row. */
+.ix-title-cell { max-width: 34rem; }
+.ix-title-line {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.ix-title-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ix-type {
+    flex: none;
+    display: inline-block;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-weight: 700;
+    line-height: 1.4;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    border: 1px solid var(--border, #2c2f3a);
+    background: var(--surface-2, #1c1f28);
+    color: var(--muted, #9aa0ad);
+}
+.ix-type--audiobook {
+    background: rgba(168, 85, 247, 0.12);
+    border-color: rgba(168, 85, 247, 0.35);
+    color: #c4a2f7;
+}
+.ix-type--ebook {
+    background: rgba(91, 140, 255, 0.12);
+    border-color: rgba(91, 140, 255, 0.35);
+    color: var(--accent, #5b8cff);
+}
+.ix-type--unknown { cursor: help; }
+
+.ix-cats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.2rem;
+}
+.ix-cat {
+    font-size: 0.6rem;
+    line-height: 1.4;
+    padding: 0.05rem 0.3rem;
+    border-radius: 4px;
+    border: 1px solid var(--border, #2c2f3a);
+    color: var(--muted, #9aa0ad);
+    opacity: 0.85;
+}
+.ix-cat--more { cursor: help; font-weight: 700; }
+
+/* Missing-but-known-to-be-missing values: an explicit muted marker beats a
+ * blank cell, which reads as a rendering bug. */
+.ix-unknown { color: var(--muted, #9aa0ad); cursor: help; }
+
 .ix-actions {
     display: flex;
     flex-direction: column;
@@ -194,6 +383,10 @@
     opacity: 0.85;
 }
 .ix-step--warn { color: var(--warn, #f0b400); }
+
+/* Torrent hand-off: nothing has landed on disk yet, so this reads as an
+ * in-progress confirmation rather than the completed-download banner. */
+.ix-queued { line-height: 1.45; }
 
 @media (max-width: 640px) {
     .ix-query { grid-template-columns: 1fr; }

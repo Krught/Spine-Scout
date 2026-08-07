@@ -7,6 +7,7 @@ import { Controller } from '@hotwired/stimulus';
  * the activity-poll controller swapping the polled content every few seconds —
  * the panes inside are re-rendered but the root class persists.
  */
+/* stimulusFetch: 'lazy' */
 export default class extends Controller {
     static targets = ['tab'];
     static values = { active: { type: String, default: 'jobs' } };

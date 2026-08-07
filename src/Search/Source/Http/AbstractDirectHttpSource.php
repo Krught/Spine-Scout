@@ -6,6 +6,7 @@ namespace App\Search\Source\Http;
 
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\SearchSettingsProvider;
+use App\Search\Source\BatchDetailResolverInterface;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
 use App\Search\Source\ReleaseSourceInterface;
@@ -30,8 +31,15 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * (DirectHttpSource — the original Anna's Archive source — predates this base and
  * is intentionally left standalone to avoid destabilising the proven path.)
  */
-abstract class AbstractDirectHttpSource implements ReleaseSourceInterface
+abstract class AbstractDirectHttpSource implements ReleaseSourceInterface, BatchDetailResolverInterface
 {
+    /**
+     * resolveDetail()/resolveDetails() come from here: subclasses supply the
+     * per-source detailPlan()/detailFromResponse() hooks and get the concurrent
+     * batch path for free.
+     */
+    use ConcurrentDetailResolution;
+
     protected const TIMEOUT = 30;
     protected const MAX_REDIRECTS = 5;
     protected const HEADERS = [
@@ -162,13 +170,7 @@ abstract class AbstractDirectHttpSource implements ReleaseSourceInterface
     protected function request(string $url): array
     {
         try {
-            $response = $this->httpClient->request('GET', $url, [
-                'timeout'       => static::TIMEOUT,
-                'max_redirects' => static::MAX_REDIRECTS,
-                'headers'       => static::HEADERS,
-            ]);
-
-            return ['html' => $response->getContent(false), 'status' => $response->getStatusCode(), 'error' => null];
+            return $this->responseResult($this->httpClient->request('GET', $url, $this->httpRequestOptions()));
         } catch (\Throwable $e) {
             return ['html' => '', 'status' => 0, 'error' => $e->getMessage()];
         }
