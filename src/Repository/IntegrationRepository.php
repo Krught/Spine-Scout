@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Repository;
 
 use App\Entity\Integration;
+use App\Integration\MyAnonamouse\MyAnonamouseConfig;
+use App\Integration\MyAnonamouse\MyAnonamouseSettingsProvider;
 use App\Mirror\MirrorListNormalizer;
 use App\Download\Client\TorrentClientSettings;
 use App\Download\Torrent\TorrentClientConfig;
@@ -23,7 +25,7 @@ use Doctrine\Persistence\ManagerRegistry;
  * @extends ServiceEntityRepository<Integration>
  */
 #[AsDoctrineListener(event: Events::onClear)]
-final class IntegrationRepository extends ServiceEntityRepository implements SearchSettingsProvider, AppSettingsProvider, TorrentClientSettings
+final class IntegrationRepository extends ServiceEntityRepository implements SearchSettingsProvider, AppSettingsProvider, TorrentClientSettings, MyAnonamouseSettingsProvider
 {
     /**
      * Per-request memo of the settings rows. Every settings accessor below funnels through
@@ -253,5 +255,125 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
         // (or a memoized null shadowing the row we just persisted) later in this request.
         $this->clearSettingsCache();
         return $integration;
+    }
+
+    // -- myanonamouse (freeleech catalog) ---------------------------------------
+
+    public function getMyAnonamouseConfig(): MyAnonamouseConfig
+    {
+        $row = $this->findByKind(Integration::KIND_MYANONAMOUSE);
+        if ($row === null) {
+            return MyAnonamouseConfig::default();
+        }
+        $raw = $row->getOptions()['config'] ?? null;
+        // The row's enabled column rides along as the master switch, and its baseUrl
+        // column is authoritative over the copy in the blob (blank falls back to the
+        // MAM origin) — neither is edited through the value object alone.
+        $config = MyAnonamouseConfig::fromArray(is_array($raw) ? $raw : null, $row->isEnabled());
+        $baseUrl = rtrim(trim((string) $row->getBaseUrl()), '/');
+        if ($baseUrl === '' || $baseUrl === $config->baseUrl) {
+            return $config;
+        }
+
+        return new MyAnonamouseConfig(
+            $config->enabled,
+            $baseUrl,
+            $config->showOnHomepage,
+            $config->showBrowseShelf,
+            $config->bookFormatEnabled,
+            $config->audiobookFormatEnabled,
+            $config->minSeeders,
+            $config->fetchVipFreeleech,
+            $config->vipFetchLimit,
+            $config->dynamicSeedboxUpdate,
+            $config->proxyUrl,
+        );
+    }
+
+    public function saveMyAnonamouseConfig(
+        MyAnonamouseConfig $config,
+        bool $enabled,
+        EntityManagerInterface $em,
+    ): Integration {
+        $integration = $this->getOrCreate(Integration::KIND_MYANONAMOUSE);
+        $integration->setAuthType(Integration::AUTH_API_KEY);
+        $integration->setEnabled($enabled);
+        $integration->setBaseUrl($config->baseUrl);
+        // Merge rather than replace: the account snapshot (options['account']) is written
+        // by the refresh handler and must survive an operator saving the settings tab.
+        $options = $integration->getOptions();
+        $options['config'] = $config->toArray();
+        $integration->setOptions($options);
+        if ($integration->getId() === null) {
+            $em->persist($integration);
+        } else {
+            $integration->touch();
+        }
+        // The caller owns the flush; drop the memo now so nothing hands out the pre-write state
+        // (or a memoized null shadowing the row we just persisted) later in this request.
+        $this->clearSettingsCache();
+        return $integration;
+    }
+
+    public function getMamSessionCookie(): ?string
+    {
+        $row = $this->findByKind(Integration::KIND_MYANONAMOUSE);
+        if ($row === null) {
+            return null;
+        }
+        $value = trim((string) ($row->getCredentials()['mam_id'] ?? ''));
+
+        return $value !== '' ? $value : null;
+    }
+
+    public function persistRotatedMamSessionCookie(string $newValue): void
+    {
+        $value = trim($newValue);
+        if ($value === '') {
+            return;
+        }
+        $em = $this->getEntityManager();
+        $integration = $this->getOrCreate(Integration::KIND_MYANONAMOUSE);
+        $credentials = $integration->getCredentials();
+        $credentials['mam_id'] = $value;
+        $integration->setCredentials($credentials);
+        if ($integration->getId() === null) {
+            $integration->setAuthType(Integration::AUTH_API_KEY);
+            $em->persist($integration);
+        } else {
+            $integration->touch();
+        }
+        $em->flush();
+        $this->clearSettingsCache();
+    }
+
+    /** @return array<string, mixed> */
+    public function getMamAccountState(): array
+    {
+        $row = $this->findByKind(Integration::KIND_MYANONAMOUSE);
+        if ($row === null) {
+            return [];
+        }
+        $state = $row->getOptions()['account'] ?? null;
+
+        return is_array($state) ? $state : [];
+    }
+
+    /** @param array<string, mixed> $state */
+    public function saveMamAccountState(array $state): void
+    {
+        $em = $this->getEntityManager();
+        $integration = $this->getOrCreate(Integration::KIND_MYANONAMOUSE);
+        $options = $integration->getOptions();
+        $options['account'] = $state;
+        $integration->setOptions($options);
+        if ($integration->getId() === null) {
+            $integration->setAuthType(Integration::AUTH_API_KEY);
+            $em->persist($integration);
+        } else {
+            $integration->touch();
+        }
+        $em->flush();
+        $this->clearSettingsCache();
     }
 }

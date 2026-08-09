@@ -50,7 +50,8 @@
                                     {% if u.canManageUsers %}<span class="users-badge">Users</span>{% endif %}
                                     {% if u.canUseInteractiveSearch %}<span class="users-badge">Interactive search</span>{% endif %}
                                     {% if u.canReimport %}<span class="users-badge">Reimport</span>{% endif %}
-                                    {% if not u.canManageSettings and not u.canManageUsers and not u.canUseInteractiveSearch and not u.canReimport %}
+                                    {% if u.canViewFreeleech %}<span class="users-badge">MAM freeleech</span>{% endif %}
+                                    {% if not u.canManageSettings and not u.canManageUsers and not u.canUseInteractiveSearch and not u.canReimport and not u.canViewFreeleech %}
                                         <span class="users-muted">Standard</span>
                                     {% endif %}
                                 {% endif %}
@@ -72,6 +73,7 @@
                                         data-user-modal-manage-users-param="{{ u.canManageUsers ? '1' : '0' }}"
                                         data-user-modal-interactive-search-param="{{ u.canUseInteractiveSearch ? '1' : '0' }}"
                                         data-user-modal-reimport-param="{{ u.canReimport ? '1' : '0' }}"
+                                        data-user-modal-view-freeleech-param="{{ u.canViewFreeleech ? '1' : '0' }}"
                                         data-user-modal-auto-approve-param="{{ u.autoApproveRequests ? '1' : '0' }}"
                                         data-user-modal-master-param="{{ u.master ? '1' : '0' }}"
                                         data-user-modal-update-url-param="{{ path('users_update', { id: u.id }) }}"
@@ -141,6 +143,10 @@
                             <label class="field-checkbox">
                                 <input type="checkbox" name="reimport" value="1" data-user-modal-target="reimport">
                                 <span>Reimport downloads (re-import or re-fetch fulfilled requests)</span>
+                            </label>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="view_freeleech" value="1" data-user-modal-target="viewFreeleech">
+                                <span>View MAM freeleech (see MyAnonamouse freeleech items)</span>
                             </label>
                         </fieldset>
 

@@ -69,4 +69,21 @@
             <button type="submit" class="btn btn-primary">Save settings</button>
         </div>
     </form>
+
+    {# ─── Cover cache ────────────────────────────────────────────── #}
+    <section class="metadata-source">
+        <header class="metadata-source-header">
+            <h3 class="panel-subtitle">Cover cache</h3>
+            <p class="panel-sub">
+                Cached cover images are kept on disk and normally refresh themselves. If covers
+                are showing the wrong artwork (for example after a library reset or reindex),
+                clear the cache — every cover re-downloads from its source as pages are viewed.
+            </p>
+        </header>
+        <form method="post" action="{{ path('settings_general_clear_cover_cache') }}" class="inline-form"
+              onsubmit="return confirm('Delete all cached cover images? They will re-download as pages are viewed.');">
+            <input type="hidden" name="_token" value="{{ csrf_token('settings_clear_cover_cache') }}">
+            <button type="submit" class="btn btn-secondary">Clear cover cache</button>
+        </form>
+    </section>
 {% endblock %}

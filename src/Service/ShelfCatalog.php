@@ -6,8 +6,14 @@ namespace App\Service;
 
 use App\Entity\Book;
 use App\Entity\BookSectionEntry;
+use App\Entity\FreeleechItem;
+use App\Entity\User;
 use App\Repository\BookRepository;
+use App\Repository\FreeleechItemRepository;
+use App\Repository\IntegrationRepository;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
  * Single source of truth for the "shelves" the home page renders as carousels and the
@@ -20,21 +26,32 @@ use Doctrine\ORM\EntityManagerInterface;
  *  - TYPE_TRENDING  — the upstream trending feed. Browse already serves this as its default
  *                     mode from a cached pool, so this shelf carries no DB query; it just maps
  *                     onto BrowseController's existing trending path (no new upstream calls).
+ *  - TYPE_FREELEECH — the MyAnonamouse freeleech set ({@see FreeleechItem}). Conditional: it
+ *                     only exists when the integration is on, the browse shelf is enabled, and
+ *                     the viewer holds ROLE_VIEW_FREELEECH, so it is resolved through the
+ *                     instance {@see resolveVisible()} rather than the static catalog.
  *
  * Card shaping lives here too, so home carousels and browse grid tiles are built from
  * exactly the same rules.
  */
 final class ShelfCatalog
 {
-    public const TYPE_LIBRARY  = 'library';
-    public const TYPE_SECTION  = 'section';
-    public const TYPE_TRENDING = 'trending';
+    public const TYPE_LIBRARY   = 'library';
+    public const TYPE_SECTION   = 'section';
+    public const TYPE_TRENDING  = 'trending';
+    public const TYPE_FREELEECH = 'freeleech';
 
     public const SHELF_RECENT       = 'recent';
     public const SHELF_TRENDING     = 'trending';
     public const SHELF_NEW_RELEASES = 'new-releases';
     public const SHELF_UPCOMING     = 'upcoming';
     public const SHELF_STAFF_PICKS  = 'staff-picks';
+    public const SHELF_FREELEECH    = 'freeleech';
+
+    public const FREELEECH_LABEL = 'Freeleech';
+
+    /** @var array{ids: array<int, bool>, isbns: array<string, bool>, keys: array<string, bool>} */
+    private const NO_FREELEECH = ['ids' => [], 'isbns' => [], 'keys' => []];
 
     /**
      * @var array<string, array{label: string, type: string, source: ?string, section: ?string}>
@@ -63,6 +80,10 @@ final class ShelfCatalog
     public function __construct(
         private readonly CoverCache $covers,
         private readonly EntityManagerInterface $em,
+        private readonly FreeleechItemRepository $freeleechItems,
+        private readonly IntegrationRepository $integrations,
+        private readonly Security $security,
+        private readonly UrlGeneratorInterface $urls,
     ) {
     }
 
@@ -86,7 +107,61 @@ final class ShelfCatalog
 
     public static function labelFor(string $slug): ?string
     {
+        if ($slug === self::SHELF_FREELEECH) {
+            return self::FREELEECH_LABEL;
+        }
         return self::SHELVES[$slug]['label'] ?? null;
+    }
+
+    /**
+     * Slug resolution for the *current viewer*. Identical to {@see resolve()} except that the
+     * conditional freeleech shelf is folded in: it exists only while the integration is on,
+     * `showBrowseShelf` is set, and the viewer holds ROLE_VIEW_FREELEECH. Otherwise the slug
+     * is simply unknown and callers fall back to the default browse experience.
+     *
+     * @return array{slug: string, label: string, type: string, source: ?string, section: ?string}|null
+     */
+    public function resolveVisible(?string $slug): ?array
+    {
+        if ($slug !== null && strtolower(trim($slug)) === self::SHELF_FREELEECH) {
+            if (!$this->freeleechShelfVisible()) {
+                return null;
+            }
+            return [
+                'slug' => self::SHELF_FREELEECH, 'label' => self::FREELEECH_LABEL,
+                'type' => self::TYPE_FREELEECH, 'source' => null, 'section' => null,
+            ];
+        }
+
+        return self::resolve($slug);
+    }
+
+    public function freeleechShelfVisible(): bool
+    {
+        $config = $this->integrations->getMyAnonamouseConfig();
+
+        return $config->enabled
+            && $config->showBrowseShelf
+            && $this->security->isGranted(User::ROLE_VIEW_FREELEECH);
+    }
+
+    public function freeleechRowVisible(): bool
+    {
+        $config = $this->integrations->getMyAnonamouseConfig();
+
+        return $config->enabled
+            && $config->showOnHomepage
+            && $this->security->isGranted(User::ROLE_VIEW_FREELEECH);
+    }
+
+    /**
+     * Whether VIP-only picks count as freeleech anywhere in the UI. There is no user-facing
+     * toggle: the operator's fetchVipFreeleech setting decides both what gets pulled and what
+     * gets shown, so with it off the rows are neither fetched nor kept.
+     */
+    public function freeleechIncludeVip(): bool
+    {
+        return $this->integrations->getMyAnonamouseConfig()->fetchVipFreeleech;
     }
 
     /**
@@ -149,19 +224,168 @@ final class ShelfCatalog
     }
 
     /**
+     * The freeleech badge index for one viewer: every book that is freeleech right now, keyed
+     * the three ways card stamping already resolves a book (internal id, any edition ISBN,
+     * normalized title+author). The value is the VIP-only flag, so a card can pair the coin
+     * with the "VIP" marker. Empty — and free of queries — for viewers without the role or
+     * while the integration is off.
+     *
+     * @return array{ids: array<int, bool>, isbns: array<string, bool>, keys: array<string, bool>}
+     */
+    public function freeleechBadges(bool $includeVip): array
+    {
+        if (!$this->security->isGranted(User::ROLE_VIEW_FREELEECH)) {
+            return self::NO_FREELEECH;
+        }
+        if (!$this->integrations->getMyAnonamouseConfig()->enabled) {
+            return self::NO_FREELEECH;
+        }
+
+        $ids = $this->freeleechItems->freeleechBookIds($includeVip);
+        if ($ids === []) {
+            return self::NO_FREELEECH;
+        }
+
+        // With VIP items included, the regular set tells us which of them are VIP-*only*.
+        $vipOnly = [];
+        if ($includeVip) {
+            $regular = array_fill_keys($this->freeleechItems->freeleechBookIds(false), true);
+            foreach ($ids as $id) {
+                if (!isset($regular[$id])) {
+                    $vipOnly[$id] = true;
+                }
+            }
+        }
+
+        $out = self::NO_FREELEECH;
+        /** @var list<Book> $books */
+        $books = $this->em->getRepository(Book::class)->findBy(['id' => $ids]);
+        foreach ($books as $book) {
+            $id = (int) $book->getId();
+            $vip = isset($vipOnly[$id]);
+            $out['ids'][$id] = $vip;
+
+            $isbns = $book->getIsbns();
+            if ($isbns === [] && $book->getIsbn() !== null) {
+                $isbns = [$book->getIsbn()];
+            }
+            foreach ($isbns as $isbn) {
+                $key = (string) $isbn;
+                // A regular freeleech copy outranks a VIP-only one on a shared key.
+                if (!isset($out['isbns'][$key]) || $out['isbns'][$key]) {
+                    $out['isbns'][$key] = $vip;
+                }
+            }
+
+            $taKey = BookRepository::normalizeTitleAuthor($book->getTitle(), $book->getAuthor());
+            if ($taKey !== null && (!isset($out['keys'][$taKey]) || $out['keys'][$taKey])) {
+                $out['keys'][$taKey] = $vip;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Resolve one card against a {@see freeleechBadges()} index, by the same three keys the
+     * owned/requested stamping uses.
+     *
+     * @param array{ids: array<int, bool>, isbns: array<string, bool>, keys: array<string, bool>} $badges
+     * @param list<string|int> $isbns
+     * @return array{0: bool, 1: bool} [is freeleech, is VIP-only]
+     */
+    public static function freeleechFlags(array $badges, ?int $bookId, array $isbns, ?string $taKey): array
+    {
+        if ($bookId !== null && isset($badges['ids'][$bookId])) {
+            return [true, $badges['ids'][$bookId]];
+        }
+        foreach ($isbns as $isbn) {
+            $key = (string) $isbn;
+            if (isset($badges['isbns'][$key])) {
+                return [true, $badges['isbns'][$key]];
+            }
+        }
+        if ($taKey !== null && isset($badges['keys'][$taKey])) {
+            return [true, $badges['keys'][$taKey]];
+        }
+
+        return [false, false];
+    }
+
+    /**
+     * Shape a page of freeleech items into cards. Resolved items run through the ordinary
+     * {@see toCard()} shaping — they are plain catalog books that happen to be free — while
+     * unresolved ones fall back to the MAM strings and the locally cached MAM thumbnail.
+     *
+     * @param list<FreeleechItem> $items
+     * @param array<string, true> $libraryIsbns
+     * @param array<string, true> $libraryKeys
+     * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $statusMaps
+     * @return list<array<string, mixed>>
+     */
+    public function freeleechCards(array $items, array $libraryIsbns, array $libraryKeys, array $statusMaps): array
+    {
+        $out = [];
+        foreach ($items as $item) {
+            $book = $item->getBook();
+            if ($item->isResolved() && $book !== null) {
+                $card = $this->toCard($book, $libraryIsbns, $libraryKeys, $statusMaps);
+            } else {
+                $card = $this->freeleechFallbackCard($item, $libraryKeys);
+            }
+            $card['freeleech'] = true;
+            $card['freeleech_vip'] = $item->isFlVip() && !$item->isFree();
+            $out[] = $card;
+        }
+
+        return $out;
+    }
+
+    /**
+     * A card for an item Hardcover could not resolve: same keys as every other card, but no
+     * modal identifiers at all, so the templates render it as a plain, unclickable tile.
+     *
+     * @param array<string, true> $libraryKeys
+     * @return array<string, mixed>
+     */
+    private function freeleechFallbackCard(FreeleechItem $item, array $libraryKeys): array
+    {
+        $author = implode(', ', $item->getAuthors());
+        $narrator = implode(', ', $item->getNarrators());
+        $taKey = BookRepository::normalizeTitleAuthor($item->getTitle(), $author !== '' ? $author : null);
+
+        return [
+            'title' => $item->getTitle(),
+            'author' => $author !== '' ? $author : null,
+            'narrator' => $narrator !== '' ? $narrator : null,
+            'downloaded' => $taKey !== null && isset($libraryKeys[$taKey]),
+            'request_status' => null,
+            'cover_url' => $item->getThumbnailUrl() !== null
+                ? $this->urls->generate('freeleech_cover', ['id' => $item->getId()])
+                : null,
+            'external_url' => null,
+            'meta_source' => null,
+            'meta_external_id' => null,
+            'meta_id' => null,
+            'audiobook' => $item->isAudiobook(),
+        ];
+    }
+
+    /**
      * Shape books into the card payload both the home carousels and the browse grid render.
      *
      * @param list<Book> $books
      * @param array<string, true> $libraryIsbns
      * @param array<string, true> $libraryKeys
      * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $statusMaps
+     * @param array{ids: array<int, bool>, isbns: array<string, bool>, keys: array<string, bool>} $freeleechBadges
      * @return list<array<string, mixed>>
      */
-    public function toCards(array $books, array $libraryIsbns, array $libraryKeys, array $statusMaps): array
+    public function toCards(array $books, array $libraryIsbns, array $libraryKeys, array $statusMaps, array $freeleechBadges = self::NO_FREELEECH): array
     {
         $out = [];
         foreach ($books as $book) {
-            $out[] = $this->toCard($book, $libraryIsbns, $libraryKeys, $statusMaps);
+            $out[] = $this->toCard($book, $libraryIsbns, $libraryKeys, $statusMaps, $freeleechBadges);
         }
         return $out;
     }
@@ -170,9 +394,10 @@ final class ShelfCatalog
      * @param array<string, true> $libraryIsbns
      * @param array<string, true> $libraryKeys
      * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $statusMaps
+     * @param array{ids: array<int, bool>, isbns: array<string, bool>, keys: array<string, bool>} $freeleechBadges
      * @return array<string, mixed>
      */
-    public function toCard(Book $book, array $libraryIsbns, array $libraryKeys, array $statusMaps): array
+    public function toCard(Book $book, array $libraryIsbns, array $libraryKeys, array $statusMaps, array $freeleechBadges = self::NO_FREELEECH): array
     {
         $rawTitle = $book->getTitle();
         $author = $book->getAuthor();
@@ -217,6 +442,8 @@ final class ShelfCatalog
 
         $isGrimmory = $book->getSource() === Book::SOURCE_GRIMMORY;
 
+        [$freeleech, $freeleechVip] = self::freeleechFlags($freeleechBadges, $book->getId(), $allIsbns, $taKey);
+
         return [
             'title' => $title,
             'author' => $author,
@@ -228,6 +455,8 @@ final class ShelfCatalog
             'meta_external_id' => $isGrimmory ? null : $book->getExternalId(),
             'meta_id' => $book->getId(),
             'audiobook' => $book->isAudiobookAvailable(),
+            'freeleech' => $freeleech,
+            'freeleech_vip' => $freeleechVip,
         ];
     }
 

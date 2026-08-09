@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Service;
 
 use App\Entity\Book;
+use App\Entity\FreeleechItem;
 use App\Entity\Integration;
 use App\Integration\Hardcover\HardcoverClient;
 use App\Integration\Hardcover\HardcoverException;
@@ -28,6 +29,14 @@ final class CoverCache implements BookCoverProvider
     private const KIND_REMOTE = 'remote';
     private const KIND_KOMGA  = 'komga';
     private const WEBP_QUALITY = 82;
+
+    /**
+     * Origin recorded in the sidecar for MyAnonamouse freeleech thumbnails. They resolve
+     * through the plain remote-URL path, so `kind` stays `remote`; the origin only marks
+     * where the bytes came from and selects the outgoing User-Agent.
+     */
+    private const ORIGIN_MAM = 'mam';
+    private const MAM_USER_AGENT = 'SpineScout/1.0 (+https://spinescout.local)';
 
     /**
      * Negative-cache window: after a failed upstream fetch the failure instant is recorded
@@ -77,6 +86,31 @@ final class CoverCache implements BookCoverProvider
     }
 
     /**
+     * Resolve an unmatched freeleech item's MAM thumbnail to a ready-to-serve cached file.
+     * The bytes are pulled from MAM at most once — thereafter the entry serves off disk, and
+     * a failed pull is negative-cached like any other cover — so users' browsers never touch
+     * myanonamouse.net. The cache key folds in the MAM origin plus the torrent id and URL, so
+     * it can never collide with a book cover cached from the same URL.
+     *
+     * @return array{hash: string, path: string, contentType: string}|null
+     */
+    public function fetchMamThumbnail(FreeleechItem $item): ?array
+    {
+        $url = $item->getThumbnailUrl();
+        if (!is_string($url) || $url === '') {
+            return null;
+        }
+        $hash = $this->hashFor(self::ORIGIN_MAM, $item->getMamTorrentId() . ':' . $url);
+        $this->writeMetaIfMissing($hash, [
+            'kind'   => self::KIND_REMOTE,
+            'url'    => $url,
+            'origin' => self::ORIGIN_MAM,
+        ]);
+        $resolved = $this->resolve($hash);
+        return $resolved === null ? null : ['hash' => $hash, ...$resolved];
+    }
+
+    /**
      * Pre-warm a remote cover so the first user request hits the cache. Safe to call
      * for already-warm entries (no-op). Returns true if the .webp is on disk after
      * the call, false on fetch/encode failure — callers should treat failure as
@@ -117,6 +151,30 @@ final class CoverCache implements BookCoverProvider
             $this->warmKomga($id) ? $warmed++ : $failed++;
         }
         return ['queued' => $queued, 'warmed' => $warmed, 'skipped' => $skipped, 'failed' => $failed];
+    }
+
+    /**
+     * Wipe the whole cache: every cached image, sidecar and stray tmp file in every
+     * shard. The directory is documented as throwaway — entries re-resolve on demand
+     * and get stamped with the book's *current* identity — so this is the operator's
+     * escape hatch when cached covers are wrong in a way the fp check cannot detect
+     * (e.g. pre-stamp entries adopted for the wrong book after a library reset).
+     *
+     * @return int number of cached cover images removed
+     */
+    public function clearAll(): int
+    {
+        $removed = 0;
+        foreach (glob($this->cacheDir . '/*/*') ?: [] as $file) {
+            if (!is_file($file)) {
+                continue;
+            }
+            if (@unlink($file) && str_ends_with($file, '.webp')) {
+                $removed++;
+            }
+        }
+        $this->logger->info('Cover cache cleared', ['removed' => $removed]);
+        return $removed;
     }
 
     /**
@@ -415,7 +473,7 @@ final class CoverCache implements BookCoverProvider
         @file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_SLASHES) ?: '');
     }
 
-    /** @return array{kind: string, url?: string, id?: string, fp?: string, failedAt?: int}|null */
+    /** @return array{kind: string, url?: string, id?: string, origin?: string, fp?: string, failedAt?: int}|null */
     private function readMeta(string $hash): ?array
     {
         $metaPath = $this->metaPath($hash);
@@ -512,7 +570,7 @@ final class CoverCache implements BookCoverProvider
         return false;
     }
 
-    /** @param array{kind: string, url?: string, id?: string} $meta */
+    /** @param array{kind: string, url?: string, id?: string, origin?: string} $meta */
     private function fetchLive(array $meta, string $destination): bool
     {
         try {
@@ -523,6 +581,11 @@ final class CoverCache implements BookCoverProvider
             $options = ['timeout' => 30];
             if ($auth !== null) {
                 $options['auth_basic'] = $auth;
+            }
+            if (($meta['origin'] ?? null) === self::ORIGIN_MAM) {
+                // Thumbnails are served publicly, so the session cookie is deliberately
+                // withheld — a plain identified GET is all MAM needs from us.
+                $options['headers'] = ['User-Agent' => self::MAM_USER_AGENT];
             }
             $response = $this->httpClient->request('GET', $url, $options);
             if ($response->getStatusCode() !== 200) {

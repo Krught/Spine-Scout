@@ -1,0 +1,180 @@
+{% extends 'settings/_layout.html.twig' %}
+
+{% block settings_body %}
+    <div class="panel-header">
+        <h2 class="panel-title">MyAnonamouse</h2>
+        <p class="panel-sub">
+            Pull MyAnonamouse's current freeleech catalog on an interval, match it against your
+            library, and surface it on the homepage and in browse. Read-only: nothing is grabbed
+            from the tracker, and who can see freeleech items is granted per user under
+            <a href="{{ path('users') }}">Users</a>.
+        </p>
+    </div>
+
+    {% if integration.id is not null %}
+        <div class="status-pill {{ integration.enabled ? 'status-pill-on' : 'status-pill-off' }}">
+            <span class="dot"></span>
+            {{ integration.enabled ? 'Enabled' : 'Disabled' }}
+            {% if integration.lastSyncAt %}
+                · Last refresh {{ integration.lastSyncAt|date('Y-m-d H:i') }}
+            {% else %}
+                · No refresh yet
+            {% endif %}
+            {% if account.username is defined and account.username %}
+                · {{ account.username }}{% if account.class is defined and account.class %} ({{ account.class }}){% endif %}
+                {%- if account.ratio is defined and account.ratio is not null %}, ratio {{ account.ratio }}{% endif %}
+            {% endif %}
+            {% if integration.lastError %}
+                · <span class="status-error">Last error: {{ integration.lastError }}</span>
+            {% endif %}
+        </div>
+    {% endif %}
+
+    <form method="post" action="{{ path('settings_myanonamouse') }}" class="settings-form" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token('settings_myanonamouse') }}">
+
+        <fieldset class="settings-fieldset">
+            <legend>Connection</legend>
+            <label class="field-checkbox">
+                <input type="checkbox" name="enabled" value="1" {{ config.enabled ? 'checked' : '' }}>
+                <span>Enable the MyAnonamouse freeleech integration</span>
+            </label>
+            <p class="form-note">
+                While off, nothing is pulled from MyAnonamouse and no freeleech surfaces are shown.
+            </p>
+            <div class="field">
+                <label for="baseUrl">MyAnonamouse URL</label>
+                <input type="text" id="baseUrl" name="baseUrl" value="{{ config.baseUrl }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="{{ mam_default_base_url }}">
+                <p class="form-note">Leave blank for <code>{{ mam_default_base_url }}</code>.</p>
+            </div>
+            <div class="field">
+                <label for="mam_id">Session cookie (mam_id)</label>
+                <input type="password" id="mam_id" name="mam_id" value=""
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="{{ integration.credentials.mam_id is defined ? 'Leave blank to keep the saved value' : 'mam_id cookie value' }}">
+                <p class="form-note">
+                    <strong>Create a dedicated session for Spine Scout</strong> under MyAnonamouse →
+                    Preferences → Security, locked to this server's IP or ASN. Do not reuse a session
+                    already used by another app or your browser: MyAnonamouse rotates the cookie, so
+                    two clients sharing one session invalidate each other and both stop working.
+                    Paste only the cookie's value here. Leave blank to keep the saved value.
+                </p>
+            </div>
+            <div class="field">
+                <label for="proxyUrl">Proxy URL (optional)</label>
+                <input type="text" id="proxyUrl" name="proxyUrl" value="{{ config.proxyUrl }}"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       placeholder="socks5://host:1080">
+                <p class="form-note">
+                    An <code>http</code> or <code>socks5</code> proxy applied to MyAnonamouse traffic
+                    only. Leave blank to connect directly — remember the session is IP-locked, so the
+                    proxy's exit address must match the session's.
+                </p>
+            </div>
+            <label class="field-checkbox">
+                <input type="checkbox" name="dynamicSeedboxUpdate" value="1" {{ config.dynamicSeedboxUpdate ? 'checked' : '' }}>
+                <span>Keep the session alive on a dynamic IP</span>
+            </label>
+            <p class="form-note">
+                Re-registers this server's current public IP with the session on refresh, so a
+                changing residential IP doesn't silently kill the cookie. Requires the session to
+                have been created with MyAnonamouse's <em>allow dynamic IP</em> flag set.
+            </p>
+            <div class="field" data-controller="connection-test"
+                 data-connection-test-url-value="{{ path('settings_myanonamouse_test') }}"
+                 data-connection-test-token-value="{{ csrf_token('settings_myanonamouse_test') }}">
+                <button type="button" class="btn" data-connection-test-target="button" data-action="connection-test#run">Test connection</button>
+                <p class="form-note" data-connection-test-target="result" hidden></p>
+                <p class="form-note">Tests the saved settings — save first if you just changed them.</p>
+            </div>
+            <div class="field" data-controller="mam-refresh"
+                 data-mam-refresh-url-value="{{ path('settings_myanonamouse_refresh') }}"
+                 data-mam-refresh-token-value="{{ csrf_token('settings_myanonamouse_refresh') }}">
+                <button type="button" class="btn" data-mam-refresh-target="button" data-action="mam-refresh#run"
+                        {{ config.enabled ? '' : 'disabled' }}>Refresh now</button>
+                <p class="form-note" data-mam-refresh-target="result" hidden></p>
+                <p class="form-note">
+                    {% if config.enabled %}
+                        Runs one sweep immediately and restarts the interval clock, so the next
+                        scheduled refresh is a full interval away. Only the first
+                        {{ mam_refresh_resolution_budget }} unmatched items are looked up against
+                        Hardcover here — the rest are picked up by the scheduled sweep.
+                    {% else %}
+                        Enable the integration and save before refreshing.
+                    {% endif %}
+                </p>
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>What to pull</legend>
+            <label class="field-checkbox">
+                <input type="checkbox" name="bookFormatEnabled" value="1" {{ config.bookFormatEnabled ? 'checked' : '' }}>
+                <span>E-books</span>
+            </label>
+            <label class="field-checkbox">
+                <input type="checkbox" name="audiobookFormatEnabled" value="1" {{ config.audiobookFormatEnabled ? 'checked' : '' }}>
+                <span>Audiobooks</span>
+            </label>
+            <div class="field">
+                <label for="minSeeders">Minimum seeders</label>
+                <input type="number" id="minSeeders" name="minSeeders" min="0" step="1" value="{{ config.minSeeders }}">
+                <p class="form-note">Freeleech items below this seed count are dropped. 0 keeps everything.</p>
+            </div>
+            <div class="field">
+                <label for="refreshIntervalHours">Refresh interval (hours)</label>
+                <input type="number" id="refreshIntervalHours" name="refreshIntervalHours" min="1" step="1"
+                       value="{{ refresh_interval_hours }}">
+                <p class="form-note">
+                    How often the freeleech catalog is re-pulled. Six hours is plenty — the picks
+                    rotate every two weeks, and this is a private tracker with strict etiquette.
+                </p>
+            </div>
+            <label class="field-checkbox">
+                <input type="checkbox" name="fetchVipFreeleech" value="1" {{ config.fetchVipFreeleech ? 'checked' : '' }}>
+                <span>Also pull VIP freeleech</span>
+            </label>
+            <p class="form-note">
+                VIP freeleech items are free only for VIP tracker accounts
+                {%- if account.isVip is defined %} — your account {{ account.isVip ? 'is' : 'is not' }} VIP{% endif %}.
+                The pool is hundreds of thousands of torrents, so it is off by default and only
+                ever pulled newest-first up to the cap below. With it off, VIP-only items are
+                dropped from the shelf on the next sweep.
+            </p>
+            <div class="field">
+                <label for="vipFetchLimit">VIP items to pull (newest N)</label>
+                <input type="number" id="vipFetchLimit" name="vipFetchLimit"
+                       min="{{ mam_vip_fetch_limit_min }}" max="{{ mam_vip_fetch_limit_max }}" step="50"
+                       value="{{ config.vipFetchLimit }}">
+                <p class="form-note">
+                    Per format, newest first. Only used when "Also pull VIP freeleech" is on.
+                    Between {{ mam_vip_fetch_limit_min }} and {{ mam_vip_fetch_limit_max }}; anything
+                    outside that is clamped.
+                </p>
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Where it shows</legend>
+            <label class="field-checkbox">
+                <input type="checkbox" name="showOnHomepage" value="1" {{ config.showOnHomepage ? 'checked' : '' }}>
+                <span>Show a Freeleech row on the homepage</span>
+            </label>
+            <label class="field-checkbox">
+                <input type="checkbox" name="showBrowseShelf" value="1" {{ config.showBrowseShelf ? 'checked' : '' }}>
+                <span>Expose the Freeleech browse shelf</span>
+            </label>
+            <p class="form-note">
+                With both off the integration runs badge-only: freeleech data is still pulled and
+                matched, and matching books carry the coin badge wherever their cards appear, but no
+                dedicated row or shelf is shown.
+            </p>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save settings</button>
+        </div>
+    </form>
+{% endblock %}

@@ -293,9 +293,9 @@ final class GrimmoryClient
     }
 
     /**
-     * The owned file's format token, lowercased (e.g. `epub`, `pdf`, `m4b`, `mp3`). Komga's
+     * The owned file's format token, lowercased (e.g. `epub`, `pdf`, `m4b`, `audiobook`). Komga's
      * book `url` is the on-disk file path, so its extension is the most reliable cross-format
-     * signal; fall back to the media MIME subtype when no extension is present. This is what
+     * signal. Without one, the media profile decides, then the media MIME subtype. This is what
      * lets the app distinguish an owned audiobook from an ebook (see {@see \App\Support\AudioFormat}).
      *
      * @param array<string, mixed> $row
@@ -309,8 +309,16 @@ final class GrimmoryClient
             return substr($ext, 0, 32);
         }
 
-        // Fall back to Komga's media MIME (e.g. "application/epub+zip" -> "epub", "audio/mpeg" -> "mpeg").
+        // BookLore's Komga-compat API returns an API path as `url` (no extension) and a wildcard
+        // MIME ("audio/*") for audiobooks, so the profile is the only reliable signal there:
+        // AUDIOBOOK -> "audiobook" (an AudioFormat token), EPUB -> "epub", PDF -> "pdf".
         $media = is_array($row['media'] ?? null) ? $row['media'] : [];
+        $profile = is_string($media['mediaProfile'] ?? null) ? strtolower(trim($media['mediaProfile'])) : '';
+        if ($profile !== '' && preg_match('/^[a-z0-9]+$/', $profile) === 1) {
+            return substr($profile, 0, 32);
+        }
+
+        // Fall back to Komga's media MIME (e.g. "application/epub+zip" -> "epub", "audio/mpeg" -> "mpeg").
         $mime = is_string($media['mediaType'] ?? null) ? strtolower($media['mediaType']) : '';
         if ($mime !== '' && preg_match('~/(?:x-)?([a-z0-9.+-]+)~', $mime, $m)) {
             $sub = preg_replace('~\+.*$~', '', $m[1]); // strip "+zip"/"+xml" suffix

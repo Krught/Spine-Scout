@@ -24,9 +24,11 @@ use App\Repository\BookSectionEntryRepository;
 use App\Repository\IntegrationRepository;
 use App\Download\Torrent\TorrentClientConfig;
 use App\Search\BestMatch\BestMatchPolicy;
+use App\Integration\MyAnonamouse\MyAnonamouseConfig;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\Torrent\ProwlarrConfig;
+use App\Service\CoverCache;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\InputBag;
@@ -40,6 +42,9 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
 #[IsGranted('ROLE_MANAGE_SETTINGS')]
 final class SettingsController extends AbstractController
 {
+    /** Hardcover lookups are paced at one per second; the rest wait for the scheduled sweep. */
+    private const MAM_REFRESH_RESOLUTION_BUDGET = 25;
+
     #[Route('', name: 'index')]
     public function index(): Response
     {
@@ -112,6 +117,29 @@ final class SettingsController extends AbstractController
             // (dimmed, tick disabled) but keep their stored tick; torrent stays live.
             'locked_ids' => $config->directDownloadsEnabled ? [] : DirectDownloadSource::mirrorIds(),
         ]);
+    }
+
+    /**
+     * Wipe the cover image cache. Covers re-download on demand as pages render, and each
+     * re-fetch is stamped with the book's current identity — so this recovers from wrong
+     * covers left behind by a library reindex that the automatic staleness check can't see.
+     */
+    #[Route('/general/clear-cover-cache', name: 'general_clear_cover_cache', methods: ['POST'])]
+    public function clearCoverCache(Request $request, CoverCache $covers): Response
+    {
+        if (!$this->isCsrfTokenValid('settings_clear_cover_cache', (string) $request->request->get('_token'))) {
+            $this->addFlash('error', 'Invalid CSRF token.');
+            return $this->redirectToRoute('settings_general');
+        }
+
+        $removed = $covers->clearAll();
+        $this->addFlash('success', sprintf(
+            'Cover cache cleared — %d cached image%s removed. Covers will re-download as pages are viewed.',
+            $removed,
+            $removed === 1 ? '' : 's',
+        ));
+
+        return $this->redirectToRoute('settings_general');
     }
 
     #[Route('/grimmory', name: 'grimmory')]
@@ -799,6 +827,124 @@ final class SettingsController extends AbstractController
         [$ok, $message] = $qbittorrent->testConnection();
 
         return $this->json(['ok' => $ok, 'message' => $message]);
+    }
+
+    #[Route('/myanonamouse', name: 'myanonamouse')]
+    public function myanonamouse(
+        Request $request,
+        IntegrationRepository $integrations,
+        EntityManagerInterface $em,
+    ): Response {
+        if ($request->isMethod('POST')) {
+            if (!$this->isCsrfTokenValid('settings_myanonamouse', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+                return $this->redirectToRoute('settings_myanonamouse');
+            }
+
+            $req = $request->request;
+
+            $baseUrl = rtrim(trim((string) $req->get('baseUrl', '')), '/');
+            // A blank box means "leave it at the default"; anything else is clamped by the VO.
+            $vipFetchLimit = trim((string) $req->get('vipFetchLimit', ''));
+            $config = new MyAnonamouseConfig(
+                $req->getBoolean('enabled'),
+                $baseUrl !== '' ? $baseUrl : MyAnonamouseConfig::DEFAULT_BASE_URL,
+                $req->getBoolean('showOnHomepage'),
+                $req->getBoolean('showBrowseShelf'),
+                $req->getBoolean('bookFormatEnabled'),
+                $req->getBoolean('audiobookFormatEnabled'),
+                max(0, (int) $req->get('minSeeders', 0)),
+                $req->getBoolean('fetchVipFreeleech'),
+                $vipFetchLimit === '' ? MyAnonamouseConfig::DEFAULT_VIP_FETCH_LIMIT : (int) $vipFetchLimit,
+                $req->getBoolean('dynamicSeedboxUpdate'),
+                self::blankToNull((string) $req->get('proxyUrl', '')),
+            );
+
+            $integration = $integrations->saveMyAnonamouseConfig($config, $config->enabled, $em);
+            $this->applyApiToken($integration, trim((string) $req->get('mam_id', '')), 'mam_id');
+            $integration->setSyncIntervalMinutes(self::hoursToMinutes((string) $req->get('refreshIntervalHours', ''), 360));
+            $em->flush();
+
+            $this->addFlash('success', 'MyAnonamouse settings saved.');
+            return $this->redirectToRoute('settings_myanonamouse');
+        }
+
+        $integration = $integrations->getOrCreate(Integration::KIND_MYANONAMOUSE);
+        $intervalMinutes = $integration->getId() === null || $integration->getSyncIntervalMinutes() < 60
+            ? 360
+            : $integration->getSyncIntervalMinutes();
+
+        return $this->render('settings/myanonamouse.html.twig', [
+            'active_tab'   => 'myanonamouse',
+            'integration'  => $integration,
+            'config'       => $integrations->getMyAnonamouseConfig(),
+            'account'      => $integrations->getMamAccountState(),
+            'refresh_interval_hours' => max(1, (int) round($intervalMinutes / 60)),
+            'mam_default_base_url' => MyAnonamouseConfig::DEFAULT_BASE_URL,
+            'mam_vip_fetch_limit_min' => MyAnonamouseConfig::MIN_VIP_FETCH_LIMIT,
+            'mam_vip_fetch_limit_max' => MyAnonamouseConfig::MAX_VIP_FETCH_LIMIT,
+            'mam_refresh_resolution_budget' => self::MAM_REFRESH_RESOLUTION_BUDGET,
+        ]);
+    }
+
+    #[Route('/myanonamouse/test', name: 'myanonamouse_test', methods: ['POST'])]
+    public function testMyAnonamouse(
+        Request $request,
+        \App\Integration\MyAnonamouse\MyAnonamouseClient $client,
+    ): Response {
+        if (!$this->isCsrfTokenValid('settings_myanonamouse_test', (string) $request->request->get('_token'))) {
+            return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
+        }
+
+        return $this->json($client->testConnection());
+    }
+
+    /** A sweep is paged fetches plus paced Hardcover lookups, so it outlives the default limit. */
+    #[Route('/myanonamouse/refresh', name: 'myanonamouse_refresh', methods: ['POST'])]
+    public function refreshMyAnonamouse(
+        Request $request,
+        \App\Integration\MyAnonamouse\MamFreeleechRefresher $refresher,
+    ): Response {
+        if (!$this->isCsrfTokenValid('settings_myanonamouse_refresh', (string) $request->request->get('_token'))) {
+            return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
+        }
+
+        set_time_limit(120);
+        $summary = $refresher->refresh(force: true, maxResolutions: self::MAM_REFRESH_RESOLUTION_BUDGET);
+
+        if ($summary['skipped']) {
+            return $this->json([
+                'ok'      => false,
+                'message' => 'MyAnonamouse is disabled or has no session cookie saved — nothing was refreshed.',
+                'summary' => $summary,
+            ]);
+        }
+
+        $message = sprintf(
+            'Fetched %d item(s) — %d new, %d resolved, %d unmatched, %d pending.',
+            $summary['fetched'],
+            $summary['new'],
+            $summary['resolved'],
+            $summary['unmatched'],
+            $summary['pendingLeft'],
+        );
+
+        return $this->json([
+            'ok'      => $summary['error'] === null,
+            'message' => $summary['error'] === null ? $message : $message . ' ' . $summary['error'],
+            'summary' => $summary,
+        ]);
+    }
+
+    /** Whole hours from a form field to minutes; blank/invalid falls back to $defaultMinutes. */
+    private static function hoursToMinutes(string $raw, int $defaultMinutes): int
+    {
+        $v = trim($raw);
+        if ($v === '' || !is_numeric($v) || (float) $v <= 0) {
+            return $defaultMinutes;
+        }
+
+        return max(1, (int) round((float) $v * 60));
     }
 
     private static function blankToNull(string $value): ?string

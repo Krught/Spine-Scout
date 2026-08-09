@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controller;
 
+use App\Repository\FreeleechItemRepository;
 use App\Service\CoverCache;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
@@ -20,16 +21,52 @@ final class CoverController extends AbstractController
     {
         $resolved = $covers->resolve($hash);
         if ($resolved === null) {
-            // Misses come in storms while an upstream is down (e.g. Komga 409ing every
-            // thumbnail): a short public max-age lets the browser absorb repeat requests
-            // for the same missing cover without hiding a recovered one for long. Keep
-            // this short — long-lived negative caching would pin placeholders client-side.
-            $response = new Response('', Response::HTTP_NOT_FOUND);
-            $response->setPublic();
-            $response->setMaxAge(300);
-            return $response;
+            return $this->miss();
         }
 
+        return $this->serve($hash, $resolved, $request);
+    }
+
+    /**
+     * Cover for a freeleech item Hardcover could not resolve: MAM's own thumbnail, fetched
+     * once and thereafter served off our disk cache, so no browser ever hotlinks the tracker.
+     */
+    #[Route('/cache/freeleech-cover/{id}', name: 'freeleech_cover', requirements: ['id' => '\d+'], methods: ['GET'])]
+    public function freeleechCover(
+        int $id,
+        Request $request,
+        CoverCache $covers,
+        FreeleechItemRepository $items,
+    ): Response {
+        $item = $items->find($id);
+        if ($item === null || $item->getThumbnailUrl() === null) {
+            return $this->miss();
+        }
+        $resolved = $covers->fetchMamThumbnail($item);
+        if ($resolved === null) {
+            return $this->miss();
+        }
+
+        return $this->serve($resolved['hash'], $resolved, $request);
+    }
+
+    /**
+     * Misses come in storms while an upstream is down (e.g. Komga 409ing every
+     * thumbnail): a short public max-age lets the browser absorb repeat requests
+     * for the same missing cover without hiding a recovered one for long. Keep
+     * this short — long-lived negative caching would pin placeholders client-side.
+     */
+    private function miss(): Response
+    {
+        $response = new Response('', Response::HTTP_NOT_FOUND);
+        $response->setPublic();
+        $response->setMaxAge(300);
+        return $response;
+    }
+
+    /** @param array{path: string, contentType: string} $resolved */
+    private function serve(string $hash, array $resolved, Request $request): Response
+    {
         $response = new Response();
         $response->headers->set('Content-Type', $resolved['contentType']);
         $response->setPublic();

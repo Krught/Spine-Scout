@@ -170,6 +170,9 @@ final class UsersController extends AbstractController
         if ($request->request->getBoolean('reimport')) {
             $roles[] = User::ROLE_REIMPORT;
         }
+        if ($request->request->getBoolean('view_freeleech')) {
+            $roles[] = User::ROLE_VIEW_FREELEECH;
+        }
         return $roles;
     }
 

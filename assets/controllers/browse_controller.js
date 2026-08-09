@@ -11,6 +11,7 @@ const COVER_GRADIENTS = [
 
 // Remembers the Books/Audiobook toggle across refresh/navigation (1 year).
 const FORMAT_COOKIE = 'spinescout_browse_format';
+const FREELEECH_SHELF = 'freeleech';
 
 function writeCookie(name, value) {
     document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=31536000; samesite=lax`;
@@ -26,7 +27,7 @@ function readCookie(name) {
 
 /* stimulusFetch: 'lazy' */
 export default class extends Controller {
-    static targets = ['grid', 'sentinel', 'status', 'sort', 'dir', 'dirText', 'rowTitle', 'format', 'shelfChip'];
+    static targets = ['grid', 'sentinel', 'status', 'sort', 'dir', 'dirText', 'rowTitle', 'format', 'shelfChip', 'owned'];
     static values = { itemsUrl: String, searchUrl: String, similarUrl: String, shelf: String, shelfLabel: String };
 
     connect() {
@@ -54,7 +55,7 @@ export default class extends Controller {
             this.clearShelf();
             this.applySimilarMode();
         } else if (this.searchQuery) {
-            this.clearShelf();
+            if (this.shelf !== FREELEECH_SHELF) this.clearShelf();
             this.applySearchMode();
         }
 
@@ -158,6 +159,22 @@ export default class extends Controller {
         if (refresh) this.refresh();
     }
 
+    currentOwned() {
+        return this.hasOwnedTarget ? (this.ownedTarget.dataset.owned || 'all') : 'all';
+    }
+
+    selectOwned(event) {
+        const next = event.currentTarget.dataset.owned || 'all';
+        if (next === this.currentOwned()) return;
+        this.ownedTarget.dataset.owned = next;
+        for (const opt of this.ownedTarget.querySelectorAll('.browse-owned__option')) {
+            const active = opt.dataset.owned === next;
+            opt.classList.toggle('is-active', active);
+            opt.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+        this.refresh();
+    }
+
     openFilters() {
         // Filters UI not implemented yet.
     }
@@ -185,9 +202,10 @@ export default class extends Controller {
         const rawType = event.detail && typeof event.detail.type === 'string' ? event.detail.type : 'title';
         const type = ['title', 'author', 'genre', 'series', 'publisher'].includes(rawType) ? rawType : 'title';
         this.searchType = type;
-        // A search always leaves "More like this" and shelf mode.
+        // A search always leaves "More like this", and shelf mode too — except on the
+        // freeleech shelf, which searches its own rows rather than upstream.
         this.similarSeed = null;
-        this.clearShelf();
+        if (this.shelf !== FREELEECH_SHELF) this.clearShelf();
         if (query === '') {
             this.searchQuery = null;
             this.applyTrendingMode();
@@ -196,7 +214,7 @@ export default class extends Controller {
             url.searchParams.delete('type');
             url.searchParams.delete('like');
             url.searchParams.delete('likeTitle');
-            url.searchParams.delete('shelf');
+            if (!this.shelf) url.searchParams.delete('shelf');
             window.history.replaceState(null, '', url.toString());
         } else {
             this.searchQuery = query;
@@ -205,7 +223,7 @@ export default class extends Controller {
             url.searchParams.set('q', query);
             url.searchParams.delete('like');
             url.searchParams.delete('likeTitle');
-            url.searchParams.delete('shelf');
+            if (!this.shelf) url.searchParams.delete('shelf');
             if (type === 'title') {
                 url.searchParams.delete('type');
             } else {
@@ -369,7 +387,10 @@ export default class extends Controller {
         // Applies to trending, search, and similar — backend treats a missing param as "book".
         if (this.currentFormat() === 'audiobook') params.set('format', 'audiobook');
         const isSimilar = !!this.similarSeed;
-        const isSearch = !isSimilar && !!this.searchQuery;
+        // The freeleech shelf owns its own search (against the persisted rows), so a query
+        // there stays on the items endpoint instead of switching to the upstream search.
+        const isFreeleechShelf = !isSimilar && this.shelf === FREELEECH_SHELF;
+        const isSearch = !isSimilar && !isFreeleechShelf && !!this.searchQuery;
         if (isSimilar) {
             params.set('seed', this.similarSeed);
         } else if (isSearch) {
@@ -378,6 +399,11 @@ export default class extends Controller {
         } else if (this.shelf) {
             // Shelf mode rides the items endpoint so infinite scroll stays inside the dataset.
             params.set('shelf', this.shelf);
+            if (this.shelf === FREELEECH_SHELF) {
+                params.set('owned', this.currentOwned());
+                // The freeleech shelf searches its own persisted rows, not upstream.
+                if (this.searchQuery) params.set('q', this.searchQuery);
+            }
         }
         const baseUrl = isSimilar ? this.similarUrlValue : (isSearch ? this.searchUrlValue : this.itemsUrlValue);
         const url = `${baseUrl}?${params.toString()}`;
@@ -522,6 +548,20 @@ export default class extends Controller {
                 badge.innerHTML = icons[item.request_status];
                 cover.appendChild(badge);
             }
+        } else if (item.freeleech) {
+            // Coin goes top-left, and only when nothing claimed the top-right status slot.
+            const coin = document.createElement('span');
+            coin.className = 'card-freeleech';
+            coin.title = 'Freeleech on MyAnonamouse';
+            coin.setAttribute('aria-label', 'Freeleech on MyAnonamouse');
+            coin.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M12 7v10M9.5 9.5h5M9.5 14.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+            if (item.freeleech_vip) {
+                const vip = document.createElement('span');
+                vip.className = 'card-freeleech-vip';
+                vip.textContent = 'VIP';
+                coin.appendChild(vip);
+            }
+            cover.appendChild(coin);
         }
 
         const overlay = document.createElement('div');
@@ -536,6 +576,12 @@ export default class extends Controller {
             meta.className = 'card-meta';
             meta.textContent = item.author;
             overlay.appendChild(meta);
+        }
+        if (item.narrator) {
+            const narrator = document.createElement('div');
+            narrator.className = 'card-meta';
+            narrator.textContent = `Narrated by ${item.narrator}`;
+            overlay.appendChild(narrator);
         }
         cover.appendChild(overlay);
         article.appendChild(cover);

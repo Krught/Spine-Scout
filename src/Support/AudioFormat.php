@@ -13,9 +13,15 @@ namespace App\Support;
  */
 final class AudioFormat
 {
-    /** Lowercased audio extensions / MIME subtypes. Covers Audible (aax/aaxc) and common containers. */
+    /**
+     * Lowercased audio extensions / MIME subtypes. Covers Audible (aax/aaxc) and common containers.
+     * 'audiobook' is the lowercased Komga/BookLore mediaProfile — BookLore's Komga-compat API
+     * exposes no file extension and only a wildcard "audio/*" MIME for audiobooks, so the
+     * profile token is what the library sync stores as the owned format there.
+     */
     public const EXTENSIONS = [
         'mp3', 'mpeg', 'm4a', 'm4b', 'mp4', 'aac', 'ogg', 'oga', 'opus', 'flac', 'wav', 'wave', 'aax', 'aaxc',
+        'audiobook',
     ];
 
     public static function isAudio(?string $format): bool

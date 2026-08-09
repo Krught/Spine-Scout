@@ -88,6 +88,16 @@ final class GrimmoryLibrarySync
                             $book->setIsbn($summary->isbn);
                             $updated++;
                         }
+                        // Re-check format every sync too, so rows synced before format
+                        // capture (or before the mediaProfile fallback) backfill without
+                        // waiting for lastModified to tick. Only overwrite with a real
+                        // value: a null derivation on a known-format row is more likely a
+                        // degraded API response than a format change, and losing the
+                        // format would reclassify owned audiobooks as ebooks.
+                        if ($summary->format !== null && $book->getFormat() !== $summary->format) {
+                            $book->setFormat($summary->format);
+                            $updated++;
+                        }
                     }
                 }
             }

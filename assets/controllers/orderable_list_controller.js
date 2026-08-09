@@ -26,6 +26,9 @@ export default class extends Controller {
         // means no rows are locked, leaving other users of this controller
         // (e.g. formatPriority) unaffected.
         lockedIds: { type: Array, default: [] },
+        // Wording next to the per-row checkbox (rows mode). Defaults to the settings
+        // vocabulary; the home customize panel says "visible" instead.
+        toggleLabel: { type: String, default: 'enabled' },
     };
 
     connect() {
@@ -184,7 +187,7 @@ export default class extends Controller {
             toggle.dataset.index = String(idx);
             toggle.dataset.action = 'change->orderable-list#toggleEnabled';
             toggleLabel.appendChild(toggle);
-            toggleLabel.append(' enabled');
+            toggleLabel.append(' ' + this.toggleLabelValue);
             li.appendChild(toggleLabel);
         }
 

@@ -94,6 +94,9 @@ final class HardcoverClient
     private const SIMILAR_MEMBER_PAGE   = 2000;
     private const SIMILAR_MEMBERS_CAP   = 6000;
 
+    /** How many aliased searches {@see searchBooksBatch()} callers should put in one document. */
+    public const SEARCH_BATCH_SIZE = 10;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly CacheItemPoolInterface $cache,
@@ -642,6 +645,114 @@ final class HardcoverClient
                 audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
             );
         }
+        return $out;
+    }
+
+    /**
+     * Field-aliased multi-search: every query rides one `search` alias in a single GraphQL
+     * document, so a batch costs two round trips (aliased search + one BOOKS_BY_IDS_QUERY over
+     * the union of hits) instead of two per query. Same query text, variables and row mapping
+     * as {@see searchBooks()} with type "title"; results keep the caller's keys and each
+     * query's own hit order.
+     *
+     * @param array<array-key, string> $queries
+     *
+     * @return array<array-key, list<TrendingBook>>
+     *
+     * @throws HardcoverException
+     */
+    public function searchBooksBatch(Integration $integration, array $queries, int $limit = 50): array
+    {
+        $perPage = max(1, min(100, $limit));
+
+        $out = [];
+        $aliases = [];
+        $fields = [];
+        $variables = ['per' => $perPage];
+        $index = 0;
+        foreach ($queries as $key => $query) {
+            $out[$key] = [];
+            $query = trim($query);
+            if ($query === '') {
+                continue;
+            }
+            $alias = 'q' . $index++;
+            $aliases[$alias] = $key;
+            $variables[$alias] = $query;
+            $fields[] = sprintf(
+                '  %s: search(query: $%s, query_type: "Book", per_page: $per, page: 1) { ids }',
+                $alias,
+                $alias,
+            );
+        }
+        if ($fields === []) {
+            return $out;
+        }
+
+        $params = ['$per: Int!'];
+        foreach (array_keys($aliases) as $alias) {
+            $params[] = '$' . $alias . ': String!';
+        }
+        $searchQuery = sprintf(
+            "query SpineScoutSearchBatch(%s) {\n%s\n}",
+            implode(', ', $params),
+            implode("\n", $fields),
+        );
+        $data = $this->graphql($integration, $searchQuery, $variables);
+
+        $idsByAlias = [];
+        $union = [];
+        foreach ($aliases as $alias => $key) {
+            $hits = $data[$alias] ?? null;
+            // Hardcover answers a hitless (or otherwise odd) alias with no `ids` key at all.
+            // That is one query finding nothing, not a broken batch: the alias gets an empty
+            // list and its item takes the ordinary unmatched path.
+            if (!is_array($hits) || !isset($hits['ids']) || !is_array($hits['ids'])) {
+                $this->logger->debug('Hardcover batched search alias returned no ids', ['alias' => $alias]);
+                $idsByAlias[$alias] = [];
+                continue;
+            }
+            $ids = array_values(array_filter(array_map('intval', $hits['ids'])));
+            $idsByAlias[$alias] = $ids;
+            foreach ($ids as $id) {
+                $union[$id] = true;
+            }
+        }
+        if ($union === []) {
+            return $out;
+        }
+
+        $booksData = $this->graphql($integration, self::BOOKS_BY_IDS_QUERY, ['ids' => array_map('intval', array_keys($union))]);
+        $rows = $booksData['books'] ?? null;
+        if (!is_array($rows)) {
+            throw new HardcoverException('Unexpected books payload: missing `books`.');
+        }
+        $byId = [];
+        foreach ($rows as $row) {
+            if (is_array($row) && isset($row['id'])) {
+                $byId[(int) $row['id']] = $row;
+            }
+        }
+        $prefs = $integration->getHardcoverEditionPreferences();
+        foreach ($aliases as $alias => $key) {
+            $books = [];
+            foreach ($idsByAlias[$alias] as $id) {
+                $row = $byId[$id] ?? null;
+                if ($row === null || empty($row['title'])) {
+                    continue;
+                }
+                $books[] = new TrendingBook(
+                    title: (string) $row['title'],
+                    author: $this->extractAuthor($row['cached_contributors'] ?? null),
+                    coverUrl: $this->extractCoverUrl($row['cached_image'] ?? null),
+                    externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
+                    isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
+                    audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
+                );
+            }
+            $out[$key] = $books;
+        }
+
         return $out;
     }
 

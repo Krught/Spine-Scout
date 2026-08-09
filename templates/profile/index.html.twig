@@ -37,7 +37,8 @@
                         {% if u.canManageUsers %}<span class="profile-cap">Manage users</span>{% endif %}
                         {% if u.canUseInteractiveSearch %}<span class="profile-cap">Interactive search</span>{% endif %}
                         {% if u.canReimport %}<span class="profile-cap">Reimport</span>{% endif %}
-                        {% if not (u.isAdmin or u.canManageSettings or u.canManageUsers or u.canUseInteractiveSearch or u.canReimport) %}
+                        {% if u.canViewFreeleech %}<span class="profile-cap">MAM freeleech</span>{% endif %}
+                        {% if not (u.isAdmin or u.canManageSettings or u.canManageUsers or u.canUseInteractiveSearch or u.canReimport or u.canViewFreeleech) %}
                             <span class="profile-cap profile-cap-none">Standard user</span>
                         {% endif %}
                     </div>

@@ -15,6 +15,7 @@ use App\Message\TouchBooksSeen;
 use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
+use App\Repository\FreeleechItemRepository;
 use App\Repository\IntegrationRepository;
 use App\Service\BookRecommendationService;
 use App\Service\CoverCache;
@@ -45,6 +46,8 @@ final class BrowseController extends AbstractController
     /** Hard ceiling on how deep we paginate search upstream. */
     private const SEARCH_MAX_ITEMS = 1000;
     private const SEARCH_TYPES = ['title', 'author', 'genre', 'series', 'publisher'];
+    /** Freeleech-only owned chip: All / In library / Missing. */
+    private const OWNED_FILTERS = ['all', 'library', 'missing'];
 
     public function __construct(
         private readonly CoverCache $covers,
@@ -55,8 +58,23 @@ final class BrowseController extends AbstractController
         private readonly BookRepository $bookRepo,
         private readonly EntityManagerInterface $em,
         private readonly MessageBusInterface $bus,
+        private readonly ShelfCatalog $shelves,
     ) {
     }
+
+    /**
+     * Freeleech badge index for this request, resolved once. There is no VIP toggle anywhere:
+     * the operator's fetchVipFreeleech setting alone decides whether VIP-only picks count.
+     *
+     * @return array{ids: array<int, bool>, isbns: array<string, bool>, keys: array<string, bool>}
+     */
+    private function freeleechBadges(): array
+    {
+        return $this->freeleechBadgeIndex ??= $this->shelves->freeleechBadges($this->shelves->freeleechIncludeVip());
+    }
+
+    /** @var array{ids: array<int, bool>, isbns: array<string, bool>, keys: array<string, bool>}|null */
+    private ?array $freeleechBadgeIndex = null;
 
     /**
      * `?shelf=<slug>` renders one of the home page's shelves as a full grid (see
@@ -66,22 +84,33 @@ final class BrowseController extends AbstractController
     #[Route('/browse', name: 'browse')]
     public function index(Request $request, ShelfCatalog $shelves): Response
     {
-        $shelf = ShelfCatalog::resolve($request->query->get('shelf'));
+        // The freeleech slug only resolves for viewers who may see it and while the
+        // integration exposes the shelf; otherwise it is an unknown slug like any other.
+        $shelf = $shelves->resolveVisible($request->query->get('shelf'));
+        $isFreeleech = $shelf !== null && $shelf['type'] === ShelfCatalog::TYPE_FREELEECH;
 
         return $this->render('browse/index.html.twig', [
             // The trending shelf *is* the default browse mode — no chip, no shelf param.
             'shelf' => $shelf !== null && $shelf['type'] !== ShelfCatalog::TYPE_TRENDING ? $shelf : null,
+            'freeleech_shelf' => $isFreeleech,
         ]);
     }
 
     #[Route('/browse/items', name: 'browse_items', methods: ['GET'])]
-    public function items(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests, ShelfCatalog $shelves): JsonResponse
+    public function items(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests, ShelfCatalog $shelves, FreeleechItemRepository $freeleech): JsonResponse
     {
         $offset = max(0, $request->query->getInt('offset', 0));
         $limit  = min(self::MAX_LIMIT, max(1, $request->query->getInt('limit', 100)));
         $sort   = (string) $request->query->get('sort', 'trending');
         $dir    = strtoupper((string) $request->query->get('dir', 'asc')) === 'DESC' ? 'DESC' : 'ASC';
         $audiobookOnly = $request->query->get('format') === 'audiobook';
+
+        // Freeleech is capability-gated: an XHR from a user without the role gets an explicit
+        // 403 JSON rather than a silently empty grid (the JsonAwareAuthenticationEntryPoint idiom).
+        $requestedSlug = strtolower(trim((string) $request->query->get('shelf', '')));
+        if ($requestedSlug === ShelfCatalog::SHELF_FREELEECH && !$this->isGranted(User::ROLE_VIEW_FREELEECH)) {
+            return new JsonResponse(['error' => 'forbidden'], Response::HTTP_FORBIDDEN);
+        }
 
         // Owned/"downloaded" matching follows the toggle: in audiobook mode only owned audio
         // copies count; in book mode any owned format counts (current behavior).
@@ -92,10 +121,16 @@ final class BrowseController extends AbstractController
         // Shelf mode: the dataset behind one of the home page's rows, paged straight out of
         // the DB (no upstream calls — those shelves are populated by the metadata sync).
         // Unknown slugs, and the trending shelf (which *is* the default mode), fall through.
-        $shelf = ShelfCatalog::resolve($request->query->get('shelf'));
+        $shelf = $shelves->resolveVisible($request->query->get('shelf'));
+        if ($shelf !== null && $shelf['type'] === ShelfCatalog::TYPE_FREELEECH) {
+            return $this->freeleechItems($request, $shelves, $freeleech, $offset, $limit, $sort, $dir, $audiobookOnly, $libraryIsbns, $libraryKeys, $statusMaps);
+        }
+
+        $freeleechBadges = $this->freeleechBadges();
+
         if ($shelf !== null && $shelf['type'] !== ShelfCatalog::TYPE_TRENDING) {
             $page = $shelves->page($shelf['slug'], $offset, $limit, $sort, $dir);
-            $cards = $shelves->toCards($page['books'], $libraryIsbns, $libraryKeys, $statusMaps);
+            $cards = $shelves->toCards($page['books'], $libraryIsbns, $libraryKeys, $statusMaps, $freeleechBadges);
             if ($audiobookOnly) {
                 $cards = array_values(array_filter($cards, static fn (array $c) => (bool) ($c['audiobook'] ?? false)));
             }
@@ -528,6 +563,10 @@ final class BrowseController extends AbstractController
             $externalUrl = is_string($b['externalUrl'] ?? null) ? $b['externalUrl'] : null;
             [$metaSource, $metaExternalId] = $this->trendingMetadataKey($source, $externalUrl);
 
+            // Pool entries carry no internal book id, so the badge resolves on the same
+            // ISBN / title+author keys the owned stamping above already used.
+            [$freeleech, $freeleechVip] = ShelfCatalog::freeleechFlags($this->freeleechBadges(), null, $isbns, $taKey);
+
             $out[] = [
                 'title' => $title,
                 'author' => $author,
@@ -540,9 +579,69 @@ final class BrowseController extends AbstractController
                 'meta_source' => $metaSource,
                 'meta_external_id' => $metaExternalId,
                 'audiobook' => $audiobook,
+                'freeleech' => $freeleech,
+                'freeleech_vip' => $freeleechVip,
             ];
         }
         return $out;
+    }
+
+    /**
+     * The `freeleech` shelf: paged straight out of `freeleech_items` (never the trending pool),
+     * with the shelf's own Books/Audiobooks mapping, owned chip, and `q=` search. Whether
+     * VIP-only rows are in the set is the operator's setting, never a request parameter.
+     *
+     * The owned chip filters *after* card stamping — owned-ness is derived from the standard
+     * downloadedIsbns/downloadedTitleAuthorKeys maps, not from a column, so it cannot be a
+     * predicate in the query. Paging therefore advances by rows read (like the audiobook filter
+     * on the other shelves), and `has_more` comes from the unfiltered count.
+     *
+     * @param array<string, true> $libraryIsbns
+     * @param array<string, true> $libraryKeys
+     * @param array{isbns: array<string, string>, titleAuthor: array<string, string>} $statusMaps
+     */
+    private function freeleechItems(
+        Request $request,
+        ShelfCatalog $shelves,
+        FreeleechItemRepository $freeleech,
+        int $offset,
+        int $limit,
+        string $sort,
+        string $dir,
+        bool $audiobookOnly,
+        array $libraryIsbns,
+        array $libraryKeys,
+        array $statusMaps,
+    ): JsonResponse {
+        $q = trim((string) $request->query->get('q', ''));
+        $q = $q === '' ? null : $q;
+        $includeVip = $shelves->freeleechIncludeVip();
+        $owned = (string) $request->query->get('owned', 'all');
+        if (!in_array($owned, self::OWNED_FILTERS, true)) {
+            $owned = 'all';
+        }
+        // The browse sort select speaks trending/title/released/author; the shelf's natural
+        // order (most recently seen free) stands in for everything that isn't title/author.
+        $shelfSort = in_array($sort, ['title', 'author'], true) ? $sort : 'added';
+
+        $rows = $freeleech->pageForBrowse($audiobookOnly, $q, $includeVip, $shelfSort, $dir, $offset, $limit);
+        $cards = $shelves->freeleechCards($rows, $libraryIsbns, $libraryKeys, $statusMaps);
+
+        if ($owned !== 'all') {
+            $wantOwned = $owned === 'library';
+            $cards = array_values(array_filter(
+                $cards,
+                static fn (array $c) => (bool) ($c['downloaded'] ?? false) === $wantOwned,
+            ));
+        }
+
+        $total = $freeleech->countForBrowse($audiobookOnly, $q, $includeVip);
+
+        return new JsonResponse([
+            'items' => $cards,
+            'next_offset' => $offset + count($rows),
+            'has_more' => ($offset + count($rows)) < $total,
+        ]);
     }
 
     /**

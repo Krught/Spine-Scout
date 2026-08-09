@@ -4,8 +4,58 @@
 
 {% block body %}
     <div data-controller="book-modal author-modal">
+        {% if app.user %}
+            {% set customize_rows = [] %}
+            {% set customize_labels = {} %}
+            {% for s in customize_sections %}
+                {% set customize_rows = customize_rows|merge([{id: s.key, enabled: s.visible}]) %}
+                {% set customize_labels = customize_labels|merge({(s.key): s.label}) %}
+            {% endfor %}
+            <div class="home-customize"
+                 data-controller="home-sections"
+                 data-home-sections-url-value="{{ path('home_sections') }}"
+                 data-home-sections-token-value="{{ csrf_token(customize_csrf_id) }}">
+                <div class="home-customize-bar">
+                    <button type="button" class="home-customize-btn" title="Customize sections" aria-label="Customize sections"
+                            data-action="click->home-sections#open">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h0a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+                        </svg>
+                        <span class="home-customize-btn-text">Customize</span>
+                    </button>
+                </div>
+
+                <div class="book-modal home-customize-modal" data-home-sections-target="panel"
+                     data-action="click->home-sections#backdropClick keydown.esc@window->home-sections#close" hidden>
+                    <div class="book-modal-dialog home-customize-dialog" role="dialog" aria-modal="true" aria-labelledby="home-customize-title">
+                        <button type="button" class="book-modal-close" aria-label="Close" data-action="click->home-sections#close">×</button>
+                        <div class="home-customize-body">
+                            <h2 class="home-customize-title" id="home-customize-title">Customize Discover</h2>
+                            <p class="home-customize-hint">Drag a row or use the arrows to reorder. Clear the checkbox to hide a section from your homepage.</p>
+                            <div data-controller="orderable-list"
+                                 data-orderable-list-initial-value="{{ customize_rows|json_encode }}"
+                                 data-orderable-list-labels-value="{{ customize_labels|json_encode }}"
+                                 data-orderable-list-fixed-options-value="true"
+                                 data-orderable-list-toggle-label-value="visible"
+                                 data-orderable-list-mode-value="rows">
+                                <ul data-orderable-list-target="list" class="orderable-list" aria-label="Homepage sections"></ul>
+                                <input type="hidden" data-orderable-list-target="hidden" data-home-sections-target="payload">
+                            </div>
+                            <p class="home-customize-error" data-home-sections-target="error" hidden></p>
+                            <div class="home-customize-actions">
+                                <button type="button" class="btn btn-primary" data-action="click->home-sections#save">Save</button>
+                                <button type="button" class="btn" data-action="click->home-sections#reset">Reset to default</button>
+                                <button type="button" class="btn btn-ghost" data-action="click->home-sections#close">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+
         {% for section in sections %}
-            <section class="row">
+            <section class="row" data-section-key="{{ section.key }}">
                 <div class="row-header">
                     <div>
                         <h2 class="row-title">{{ section.title }}</h2>
@@ -124,10 +174,21 @@
                                         </span>
                                     {% elseif item.badge is defined and item.badge is not empty %}
                                         <span class="card-badge card-badge-{{ item.badge|lower }}">{{ item.badge }}</span>
+                                    {% elseif item.freeleech ?? false %}
+                                        {# Freeleech coin, top-left. Deliberately part of the status chain:
+                                           a card that already shows a top-right status icon keeps it alone. #}
+                                        <span class="card-freeleech" title="Freeleech on MyAnonamouse" aria-label="Freeleech on MyAnonamouse">
+                                            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" focusable="false">
+                                                <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.5"/>
+                                                <path d="M12 7v10M9.5 9.5h5M9.5 14.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                            </svg>
+                                            {% if item.freeleech_vip ?? false %}<span class="card-freeleech-vip">VIP</span>{% endif %}
+                                        </span>
                                     {% endif %}
                                     <div class="card-overlay">
                                         <div class="card-title" title="{{ item.title }}">{{ item.title }}</div>
                                         {% if item.author %}<div class="card-meta">{{ item.author }}</div>{% endif %}
+                                        {% if item.narrator is defined and item.narrator %}<div class="card-meta">Narrated by {{ item.narrator }}</div>{% endif %}
                                         {% if item.requester is defined %}
                                             <div class="card-requester">Requested by <strong>{{ item.requester }}</strong></div>
                                         {% endif %}

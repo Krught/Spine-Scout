@@ -23,6 +23,8 @@ class Integration
     public const KIND_PROWLARR        = 'prowlarr';
     /** qBittorrent download client — audiobook torrent fulfillment (baseUrl + basic auth). */
     public const KIND_QBITTORRENT     = 'qbittorrent';
+    /** MyAnonamouse private tracker — freeleech catalog (baseUrl + mam_id session cookie). */
+    public const KIND_MYANONAMOUSE    = 'myanonamouse';
     /** Singleton row holding app-wide ("General" tab) preferences in its options blob. */
     public const KIND_APP             = 'app';
 

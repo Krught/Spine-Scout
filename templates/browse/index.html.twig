@@ -31,6 +31,20 @@
                         <button type="button" class="browse-format__option" data-format="audiobook"
                                 data-action="click->browse#selectFormat" aria-pressed="false">Audiobooks</button>
                     </div>
+                    {% if freeleech_shelf ?? false %}
+                        {# Freeleech-only control. It lives inside the shelf, so it is not
+                           rendered — and never sent — on any other browse mode. Whether VIP-only
+                           picks are in the set is an operator setting, not a control here. #}
+                        <div class="browse-owned" role="group" aria-label="Filter by library status"
+                             data-browse-target="owned" data-owned="all">
+                            <button type="button" class="browse-owned__option is-active" data-owned="all"
+                                    data-action="click->browse#selectOwned" aria-pressed="true">All</button>
+                            <button type="button" class="browse-owned__option" data-owned="library"
+                                    data-action="click->browse#selectOwned" aria-pressed="false">In library</button>
+                            <button type="button" class="browse-owned__option" data-owned="missing"
+                                    data-action="click->browse#selectOwned" aria-pressed="false">Missing</button>
+                        </div>
+                    {% endif %}
                     <label class="browse-control">
                         <span class="browse-control-label">Sort by</span>
                         <select class="browse-select" data-browse-target="sort" data-action="change->browse#refresh">

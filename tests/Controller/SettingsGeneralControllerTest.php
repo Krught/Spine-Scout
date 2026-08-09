@@ -6,12 +6,17 @@ namespace App\Tests\Controller;
 
 use App\Entity\Integration;
 use App\Entity\User;
+use App\Integration\Hardcover\HardcoverClient;
 use App\Mirror\MirrorListNormalizer;
+use App\Repository\BookRepository;
 use App\Repository\IntegrationRepository;
 use App\Search\DirectDownload\DirectDownloadConfig;
+use App\Service\CoverCache;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class SettingsGeneralControllerTest extends WebTestCase
 {
@@ -222,6 +227,65 @@ final class SettingsGeneralControllerTest extends WebTestCase
         $this->client->request('POST', '/settings/general', [
             '_token' => 'nope',
         ]);
+        self::assertResponseRedirects('/settings/general');
+        $this->client->followRedirect();
+        self::assertSelectorTextContains('.flash-error', 'Invalid CSRF token');
+    }
+
+    public function testClearCoverCacheButtonRenders(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/settings/general');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorExists('form[action$="/settings/general/clear-cover-cache"]');
+    }
+
+    public function testClearCoverCacheWipesCacheDirAndFlashesCount(): void
+    {
+        // The real CoverCache points at the bind-mounted book-covers dir; swap in one
+        // rooted in a throwaway temp dir so the test never touches genuine cached covers.
+        $cacheDir = sys_get_temp_dir() . '/spinescout_covers_' . bin2hex(random_bytes(6));
+        @mkdir($cacheDir . '/ab', 0775, true);
+        file_put_contents($cacheDir . '/ab/abcd.webp', 'IMG');
+        file_put_contents($cacheDir . '/ab/abcd.meta', '{"kind":"remote","url":"http://img.test/c.jpg"}');
+
+        $this->client->disableReboot();
+        $container = self::getContainer();
+        $container->set(CoverCache::class, new CoverCache(
+            $cacheDir,
+            $container->get(HttpClientInterface::class),
+            $this->integrations,
+            $container->get(UrlGeneratorInterface::class),
+            $container->get(BookRepository::class),
+            $container->get(HardcoverClient::class),
+        ));
+
+        $this->client->loginUser($this->loadAdmin());
+        $crawler = $this->client->request('GET', '/settings/general');
+        $token = $crawler
+            ->filter('form[action$="/settings/general/clear-cover-cache"] input[name="_token"]')
+            ->attr('value');
+        self::assertNotNull($token);
+
+        $this->client->request('POST', '/settings/general/clear-cover-cache', ['_token' => $token]);
+
+        self::assertResponseRedirects('/settings/general');
+        self::assertFileDoesNotExist($cacheDir . '/ab/abcd.webp');
+        self::assertFileDoesNotExist($cacheDir . '/ab/abcd.meta');
+
+        $this->client->followRedirect();
+        self::assertSelectorTextContains('.flash-success', '1 cached image removed');
+
+        @rmdir($cacheDir . '/ab');
+        @rmdir($cacheDir);
+    }
+
+    public function testClearCoverCacheRejectsInvalidCsrfToken(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('POST', '/settings/general/clear-cover-cache', ['_token' => 'nope']);
+
         self::assertResponseRedirects('/settings/general');
         $this->client->followRedirect();
         self::assertSelectorTextContains('.flash-error', 'Invalid CSRF token');

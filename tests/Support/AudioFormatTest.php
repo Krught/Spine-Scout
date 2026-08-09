@@ -24,6 +24,8 @@ final class AudioFormatTest extends TestCase
         yield 'mpeg mime sub'       => ['mpeg', true];
         yield 'aax (audible)'       => ['aax', true];
         yield 'uppercase normalized'=> ['MP3', true];
+        yield 'audiobook profile token (BookLore mediaProfile)' => ['audiobook', true];
+        yield 'AUDIOBOOK normalized' => ['AUDIOBOOK', true];
         yield 'epub is not audio'   => ['epub', false];
         yield 'pdf is not audio'    => ['pdf', false];
         yield 'cbz is not audio'    => ['cbz', false];

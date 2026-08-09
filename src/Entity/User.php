@@ -24,6 +24,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public const ROLE_MANAGE_USERS       = 'ROLE_MANAGE_USERS';
     public const ROLE_INTERACTIVE_SEARCH = 'ROLE_INTERACTIVE_SEARCH';
     public const ROLE_REIMPORT           = 'ROLE_REIMPORT';
+    public const ROLE_VIEW_FREELEECH     = 'ROLE_VIEW_FREELEECH';
 
     public const USERNAME_MIN = 3;
     public const USERNAME_MAX = 60;
@@ -53,6 +54,15 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     /** When true, this user's book requests auto-approve regardless of the global toggle. */
     #[ORM\Column]
     private bool $autoApproveRequests = false;
+
+    /**
+     * Per-user Discover customization: `order` is the section keys in the user's
+     * preferred order, `hidden` the keys they switched off. Null means defaults.
+     *
+     * @var array{order?: list<string>, hidden?: list<string>}|null
+     */
+    #[ORM\Column(type: Types::JSON, nullable: true, options: ['jsonb' => true])]
+    private ?array $homeSections = null;
 
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
@@ -130,6 +140,57 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function canReimport(): bool
     {
         return $this->isAdmin() || in_array(self::ROLE_REIMPORT, $this->roles, true);
+    }
+
+    public function canViewFreeleech(): bool
+    {
+        return $this->isAdmin() || in_array(self::ROLE_VIEW_FREELEECH, $this->roles, true);
+    }
+
+    /** @return list<string> */
+    public function getHomeSectionsOrder(): array
+    {
+        return self::stringList($this->homeSections['order'] ?? null);
+    }
+
+    /** @return list<string> */
+    public function getHiddenHomeSections(): array
+    {
+        return self::stringList($this->homeSections['hidden'] ?? null);
+    }
+
+    /** @param array{order?: list<string>, hidden?: list<string>}|null $prefs */
+    public function setHomeSections(?array $prefs): self
+    {
+        if ($prefs === null) {
+            $this->homeSections = null;
+
+            return $this;
+        }
+
+        $this->homeSections = [
+            'order'  => self::stringList($prefs['order'] ?? null),
+            'hidden' => self::stringList($prefs['hidden'] ?? null),
+        ];
+
+        return $this;
+    }
+
+    /** @return list<string> */
+    private static function stringList(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($raw as $value) {
+            if (is_string($value) && $value !== '' && !in_array($value, $out, true)) {
+                $out[] = $value;
+            }
+        }
+
+        return $out;
     }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }

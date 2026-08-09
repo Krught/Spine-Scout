@@ -78,6 +78,7 @@ final class UsersControllerTest extends WebTestCase
             'manage_settings' => '1',
             'interactive_search' => '1',
             'reimport' => '1',
+            'view_freeleech' => '1',
             'auto_approve' => '1',
         ]);
 
@@ -88,6 +89,7 @@ final class UsersControllerTest extends WebTestCase
         self::assertFalse($alice->canManageUsers());
         self::assertTrue($alice->canUseInteractiveSearch());
         self::assertTrue($alice->canReimport());
+        self::assertTrue($alice->canViewFreeleech());
         self::assertTrue($alice->isAutoApproveRequests());
         self::assertFalse($alice->isMaster());
     }

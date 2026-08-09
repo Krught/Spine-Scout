@@ -36,3 +36,5 @@ framework:
             App\Message\RewriteAudiobookSidecar: async
             App\Message\TriggerGrimmorySidecarImport: async
             App\Message\ReimportDownloadJob: async
+            App\Message\RefreshMamFreeleech: async
+            App\Message\ResolveMamFreeleech: async

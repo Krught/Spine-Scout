@@ -132,6 +132,34 @@
 .card-status-rejected { background: rgb(180, 60, 60);  color: rgb(180, 60, 60);  }
 .card-status-downloaded { background: rgb(45, 166, 184); color: rgb(45, 166, 184); }
 
+/* Freeleech coin, top-LEFT so it never collides with the status icons above, which keep
+   visual priority (the templates suppress the coin whenever one of them renders). */
+.card-freeleech {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    padding: 0 0.15rem;
+    border-radius: 999px;
+    background: #d4a017;
+    color: #6b4c00;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.card-freeleech svg {
+    flex: none;
+}
+.card-freeleech-vip {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    padding-right: 0.15rem;
+}
+
 .card-overlay {
     position: absolute;
     inset: 0;

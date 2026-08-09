@@ -7,7 +7,9 @@ use App\Message\PruneFulfillmentEvents;
 use App\Message\PurgeExpiredSessions;
 use App\Message\ReconcileTorrents;
 use App\Message\RefreshHardcoverTrending;
+use App\Message\RefreshMamFreeleech;
 use App\Message\RefreshOpenLibraryTrending;
+use App\Message\ResolveMamFreeleech;
 use App\Message\RetryApprovedSearches;
 use App\Message\SyncGrimmoryLibrary;
 use Symfony\Component\Scheduler\Attribute\AsSchedule;
@@ -37,6 +39,8 @@ class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::every('3 hours', new RetryApprovedSearches()))
             ->add(RecurringMessage::every('1 minute', new PollTorrentJobs()))
             ->add(RecurringMessage::every('15 minutes', new ReconcileTorrents()))
+            ->add(RecurringMessage::every('15 minutes', new RefreshMamFreeleech()))
+            ->add(RecurringMessage::every('5 minutes', new ResolveMamFreeleech()))
         ;
     }
 }

@@ -77,6 +77,18 @@ final class MarkAvailableFormatTest extends WebTestCase
         self::assertSame(BookRequest::STATUS_AVAILABLE, $request->getStatus());
     }
 
+    public function testOwnedAudiobookProfileFormatMarksAudiobookRequestAvailable(): void
+    {
+        // BookLore-synced audiobooks carry the mediaProfile-derived 'audiobook'
+        // token instead of a file extension; it must satisfy the request the same way.
+        $this->seedOwned('Project Hail Mary', 'Andy Weir', 'audiobook');
+        $request = $this->seedRequest('Project Hail Mary', 'Andy Weir', audiobook: true);
+
+        self::assertSame(1, $this->flip());
+        $this->em->refresh($request);
+        self::assertSame(BookRequest::STATUS_AVAILABLE, $request->getStatus());
+    }
+
     public function testOwnedEbookStillMarksBookRequestAvailable(): void
     {
         $this->seedOwned('Foundation', 'Asimov', 'epub');

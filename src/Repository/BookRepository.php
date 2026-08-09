@@ -86,6 +86,33 @@ final class BookRepository extends ServiceEntityRepository
         return $t . '|' . $a;
     }
 
+    /**
+     * Every non-removed book as {@see normalizeTitleAuthor()} key → id, so a caller resolving a
+     * batch of foreign titles can match against the catalog in memory instead of one query per
+     * item. Downloaded copies win a key collision: the library row is the better answer.
+     *
+     * @return array<string, int>
+     */
+    public function titleAuthorKeyMap(): array
+    {
+        $rows = $this->createQueryBuilder('b')
+            ->select('b.id', 'b.title', 'b.author', 'b.downloaded')
+            ->where('b.removedAt IS NULL')
+            ->orderBy('b.downloaded', 'DESC')
+            ->addOrderBy('b.id', 'ASC')
+            ->getQuery()
+            ->getArrayResult();
+
+        $out = [];
+        foreach ($rows as $row) {
+            $key = self::normalizeTitleAuthor((string) ($row['title'] ?? ''), $row['author'] ?? null);
+            if ($key !== null && !isset($out[$key])) {
+                $out[$key] = (int) $row['id'];
+            }
+        }
+        return $out;
+    }
+
     /** @return array<string, true> */
     public function downloadedIsbns(?bool $audiobook = null): array
     {

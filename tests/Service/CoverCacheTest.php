@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Service;
 
 use App\Entity\Book;
+use App\Entity\FreeleechItem;
 use App\Entity\Integration;
 use App\Integration\Hardcover\HardcoverClient;
 use App\Mirror\MirrorListNormalizer;
@@ -368,5 +369,144 @@ final class CoverCacheTest extends TestCase
         self::assertSame('isbn:9781234567897', $sidecar['fp'] ?? null);
         self::assertArrayNotHasKey('failedAt', $sidecar);
         self::assertSame(1, $http->getRequestsCount());
+    }
+
+    // ------------------------------------------------------- MAM freeleech covers
+
+    private const MAM_TORRENT_ID = 991;
+    private const MAM_THUMB_URL  = 'https://cdn.myanonamouse.net/tor/991.jpg';
+
+    private function mamHash(): string
+    {
+        return sha1('mam:' . self::MAM_TORRENT_ID . ':' . self::MAM_THUMB_URL);
+    }
+
+    private function mamPath(string $extension): string
+    {
+        $hash = $this->mamHash();
+        return $this->cacheDir . '/' . substr($hash, 0, 2) . '/' . $hash . '.' . $extension;
+    }
+
+    private function freeleechItem(?string $thumbnailUrl = self::MAM_THUMB_URL): FreeleechItem
+    {
+        return (new FreeleechItem(self::MAM_TORRENT_ID, 'Red Rising [English / M4B]', true))
+            ->setThumbnailUrl($thumbnailUrl);
+    }
+
+    private function pngBytes(): string
+    {
+        $im = imagecreatetruecolor(4, 4);
+        ob_start();
+        imagepng($im);
+        $png = (string) ob_get_clean();
+        imagedestroy($im);
+        return $png;
+    }
+
+    /** MAM is hit exactly once: the second request serves the re-encoded webp off disk. */
+    #[RequiresPhpExtension('gd')]
+    public function testMamThumbnailIsFetchedOnceThenServedFromDisk(): void
+    {
+        $http = new MockHttpClient([new MockResponse($this->pngBytes())]);
+        $cache = $this->cache($http, null);
+
+        $first = $cache->fetchMamThumbnail($this->freeleechItem());
+
+        self::assertNotNull($first);
+        self::assertSame($this->mamHash(), $first['hash']);
+        self::assertSame($this->mamPath('webp'), $first['path']);
+        self::assertSame('image/webp', $first['contentType']);
+        self::assertStringStartsWith('RIFF', (string) file_get_contents($this->mamPath('webp')));
+
+        $second = $cache->fetchMamThumbnail($this->freeleechItem());
+
+        self::assertSame($first, $second);
+        self::assertSame(1, $http->getRequestsCount());
+    }
+
+    /** The sidecar records the MAM origin while resolving through the plain remote path. */
+    #[RequiresPhpExtension('gd')]
+    public function testMamSidecarRecordsOriginAndSendsIdentifiedCookielessGet(): void
+    {
+        $seen = null;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$seen): MockResponse {
+            $seen = ['method' => $method, 'url' => $url, 'headers' => $options['headers'] ?? []];
+            return new MockResponse($this->pngBytes());
+        });
+
+        self::assertNotNull($this->cache($http, null)->fetchMamThumbnail($this->freeleechItem()));
+
+        $sidecar = json_decode((string) file_get_contents($this->mamPath('meta')), true);
+        self::assertIsArray($sidecar);
+        self::assertSame('mam', $sidecar['origin'] ?? null);
+        self::assertSame('remote', $sidecar['kind'] ?? null);
+        self::assertSame(self::MAM_THUMB_URL, $sidecar['url'] ?? null);
+
+        self::assertIsArray($seen);
+        self::assertSame('GET', $seen['method']);
+        self::assertSame(self::MAM_THUMB_URL, $seen['url']);
+        $headers = implode("\n", array_map(strtolower(...), $seen['headers']));
+        self::assertStringContainsString('user-agent: spinescout/1.0', $headers);
+        self::assertStringNotContainsString('cookie:', $headers);
+    }
+
+    /** A non-200 from MAM negative-caches: null now, and no re-hit inside the backoff window. */
+    public function testMamFetchFailureIsNegativeCached(): void
+    {
+        $http = new MockHttpClient([new MockResponse('', ['http_code' => 404])]);
+        $cache = $this->cache($http, null);
+
+        self::assertNull($cache->fetchMamThumbnail($this->freeleechItem()));
+        self::assertFileDoesNotExist($this->mamPath('webp'));
+
+        $sidecar = json_decode((string) file_get_contents($this->mamPath('meta')), true);
+        self::assertIsArray($sidecar);
+        self::assertIsInt($sidecar['failedAt'] ?? null);
+
+        self::assertNull($cache->fetchMamThumbnail($this->freeleechItem()));
+        self::assertSame(1, $http->getRequestsCount());
+    }
+
+    /** No thumbnail URL: nothing is fetched and nothing is written. */
+    public function testMamThumbnailWithoutUrlIsNeverFetched(): void
+    {
+        $http = new MockHttpClient();
+
+        self::assertNull($this->cache($http, null)->fetchMamThumbnail($this->freeleechItem(null)));
+        self::assertSame(0, $http->getRequestsCount());
+    }
+
+    /**
+     * clearAll wipes every shard — images, sidecars and stray tmp files alike — and
+     * reports how many images were removed. A cleared entry no longer resolves (no
+     * sidecar left to refetch from), so the proxy 404s until a page render re-registers it.
+     */
+    public function testClearAllWipesImagesSidecarsAndTmpFilesAcrossShards(): void
+    {
+        $cache = $this->cache(new MockHttpClient(), null);
+        $this->writeEntry(['kind' => 'komga', 'id' => self::KOMGA_ID, 'fp' => 'isbn:9781234567897'], 'FAKEWEBP');
+
+        $remoteHash = sha1('remote:http://img.test/cover.jpg');
+        $remoteDir = $this->cacheDir . '/' . substr($remoteHash, 0, 2);
+        @mkdir($remoteDir, 0775, true);
+        file_put_contents($remoteDir . '/' . $remoteHash . '.webp', 'IMG2');
+        file_put_contents($remoteDir . '/' . $remoteHash . '.meta', '{"kind":"remote","url":"http://img.test/cover.jpg"}');
+        file_put_contents($remoteDir . '/' . $remoteHash . '.webp.deadbeef.tmp', 'PARTIAL');
+
+        self::assertSame(2, $cache->clearAll());
+
+        self::assertFileDoesNotExist($this->imagePath());
+        self::assertFileDoesNotExist($this->metaPath());
+        self::assertFileDoesNotExist($remoteDir . '/' . $remoteHash . '.webp');
+        self::assertFileDoesNotExist($remoteDir . '/' . $remoteHash . '.meta');
+        self::assertFileDoesNotExist($remoteDir . '/' . $remoteHash . '.webp.deadbeef.tmp');
+
+        self::assertNull($cache->resolve($this->komgaHash()));
+    }
+
+    /** An empty (or never-created) cache dir clears cleanly to zero. */
+    public function testClearAllOnEmptyCacheReturnsZero(): void
+    {
+        self::assertSame(0, $this->cache(new MockHttpClient(), null)->clearAll());
     }
 }
