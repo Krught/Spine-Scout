@@ -481,6 +481,8 @@ final class MyAnonamouseClient
         return [
             'tor'        => $tor,
             'thumbnails' => '1',
+            // MAM omits the per-row `dl` download hash unless the request opts in.
+            'dlLink'     => '1',
         ];
     }
 
@@ -520,6 +522,8 @@ final class MyAnonamouseClient
         return [
             'tor'        => $tor,
             'thumbnails' => '1',
+            // MAM omits the per-row `dl` download hash unless the request opts in.
+            'dlLink'     => '1',
         ];
     }
 

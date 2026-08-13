@@ -52,6 +52,7 @@ final class MyAnonamouseClientTest extends TestCase
         self::assertStringContainsString('tor[perpage]=100', $body);
         self::assertStringContainsString('tor[startNumber]=0', $body);
         self::assertStringContainsString('thumbnails=1', $body);
+        self::assertStringContainsString('dlLink=1', $body, 'without the dlLink opt-in MAM omits every row\'s dl download hash');
 
         self::assertStringContainsString('tor[startNumber]=100', urldecode($requests[1]['body']), 'second page must advance the offset');
         self::assertStringContainsString('mam_id=session-cookie-value', implode("\n", $requests[0]['headers']));
@@ -557,6 +558,7 @@ final class MyAnonamouseClientTest extends TestCase
         self::assertStringContainsString('tor[sortType]=default', $body);
         self::assertStringContainsString('tor[perpage]=100', $body);
         self::assertStringContainsString('thumbnails=1', $body);
+        self::assertStringContainsString('dlLink=1', $body, 'without the dlLink opt-in MAM omits every row\'s dl download hash');
         self::assertStringContainsString('tor[main_cat][0]=13', $body, 'an audiobook plan scopes to MAM main category 13');
 
         self::assertCount(3, $releases, 'categories mode trusts MAMs own scoping — nothing is dropped client-side');

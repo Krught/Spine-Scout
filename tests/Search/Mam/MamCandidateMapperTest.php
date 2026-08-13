@@ -83,10 +83,14 @@ final class MamCandidateMapperTest extends TestCase
         self::assertSame(['vip_freeleech'], $this->flags($this->release(flVip: true)));
         self::assertSame(['personal_freeleech'], $this->flags($this->release(personalFreeleech: true)));
         self::assertSame(['vip'], $this->flags($this->release(vip: true)));
+        // MAM stamps fl_vip on effectively the whole tracker, so only the strongest
+        // freeleech reason becomes a chip — a sitewide-free row must not read as VIP.
         self::assertSame(
-            ['freeleech', 'vip_freeleech', 'personal_freeleech', 'vip'],
+            ['freeleech', 'vip'],
             $this->flags($this->release(free: true, flVip: true, personalFreeleech: true, vip: true)),
         );
+        self::assertSame(['freeleech'], $this->flags($this->release(free: true, flVip: true)));
+        self::assertSame(['personal_freeleech'], $this->flags($this->release(flVip: true, personalFreeleech: true)));
     }
 
     public function testRowWithoutDlHashHasNoDownloadUrlButKeepsAnEmptyHash(): void

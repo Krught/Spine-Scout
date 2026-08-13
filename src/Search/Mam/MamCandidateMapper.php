@@ -83,6 +83,11 @@ final class MamCandidateMapper
      * The panel's flag chips. `freeleech` reuses the existing chip styling; the
      * VIP/personal variants get their own modifiers in the interactive search UI.
      *
+     * Only the strongest freeleech reason becomes a chip: MAM stamps `fl_vip` on
+     * effectively the whole tracker, so a sitewide-free or personal-freeleech row
+     * would otherwise always show the VIP chip too and read as "VIP freeleech"
+     * when it is plain freeleech for everyone.
+     *
      * @return list<string>
      */
     private static function flags(MamRelease $release): array
@@ -90,12 +95,10 @@ final class MamCandidateMapper
         $flags = [];
         if ($release->free) {
             $flags[] = 'freeleech';
-        }
-        if ($release->flVip) {
-            $flags[] = 'vip_freeleech';
-        }
-        if ($release->personalFreeleech) {
+        } elseif ($release->personalFreeleech) {
             $flags[] = 'personal_freeleech';
+        } elseif ($release->flVip) {
+            $flags[] = 'vip_freeleech';
         }
         if ($release->vip) {
             $flags[] = 'vip';
