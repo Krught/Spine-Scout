@@ -188,7 +188,13 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
                 // as "Name: value" lines, which Symfony's HttpClient accepts mixed
                 // with the associative auth headers.
                 'headers' => array_merge($this->authHeaders($row, $sid), $form->getPreparedHeaders()->toArray()),
-                'body'    => $form->bodyToIterable(),
+                // The body MUST be a fully-built string, not bodyToIterable(): a
+                // streamed body goes out as Transfer-Encoding: chunked, which
+                // qBittorrent's embedded HTTP server cannot parse — it then sees an
+                // add with no torrent files and answers 409 for every upload. A
+                // string body is sent with Content-Length instead (and a .torrent
+                // is a few hundred KB at most, so buffering it is free).
+                'body'    => $form->bodyToString(),
             ];
         } else {
             $payload['urls'] = $url;

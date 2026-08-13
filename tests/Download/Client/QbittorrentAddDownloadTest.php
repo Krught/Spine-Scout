@@ -342,9 +342,11 @@ final class QbittorrentAddDownloadTest extends TestCase
         $torrentBytes = 'd8:announce30:https://mam.test/announce.php4:infod4:name3:fooee';
         $addBody = null;
         $addHeaders = [];
+        $bodyWasString = false;
         $tag = null;
-        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$addBody, &$addHeaders, &$tag, $torrentBytes): MockResponse {
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$addBody, &$addHeaders, &$bodyWasString, &$tag, $torrentBytes): MockResponse {
             if (str_contains($url, '/torrents/add')) {
+                $bodyWasString = is_string($options['body'] ?? null);
                 $addBody = self::bodyToString($options['body'] ?? '');
                 $addHeaders = $options['headers'] ?? [];
                 if (preg_match('/name="tags"\r\n\r\n([^\r]+)/', (string) $addBody, $m) === 1) {
@@ -385,6 +387,13 @@ final class QbittorrentAddDownloadTest extends TestCase
 
         $headerBlob = implode("\n", array_map(strval(...), $addHeaders));
         self::assertStringContainsString('multipart/form-data; boundary=', $headerBlob);
+
+        // Production bug: a streamed (iterable) body goes out as
+        // Transfer-Encoding: chunked, which qBittorrent's embedded HTTP server
+        // cannot parse — every MAM file upload then 409s ("could not be added")
+        // while Prowlarr's form-encoded URL adds keep working. The body must be a
+        // pre-built string so the request carries Content-Length instead.
+        self::assertTrue($bodyWasString, 'the multipart body must be a string (Content-Length framing), never a chunked stream');
     }
 
     public function testFileContentsAddNeverShortCircuitsOnAMagnetLookingUrl(): void
