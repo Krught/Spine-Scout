@@ -127,6 +127,14 @@ class FreeleechItem
     #[ORM\Column(length: 16, options: ['default' => self::RESOLUTION_PENDING])]
     private string $resolution = self::RESOLUTION_PENDING;
 
+    /**
+     * Hardcover's book-level users_count, captured when the reverse lookup resolves
+     * this item. The shelf's trending order keys off it; null (unmatched, or resolved
+     * before this column existed) falls back to the most-recently-seen order.
+     */
+    #[ORM\Column(nullable: true)]
+    private ?int $popularity = null;
+
     /** The Hardcover-backed catalog row this item resolved to, if any. */
     #[ORM\ManyToOne(targetEntity: Book::class)]
     #[ORM\JoinColumn(name: 'book_id', referencedColumnName: 'id', nullable: true, onDelete: 'SET NULL')]
@@ -201,6 +209,9 @@ class FreeleechItem
 
     public function getTimesCompleted(): int { return $this->timesCompleted; }
     public function setTimesCompleted(int $times): self { $this->timesCompleted = $times; return $this; }
+
+    public function getPopularity(): ?int { return $this->popularity; }
+    public function setPopularity(?int $popularity): self { $this->popularity = $popularity; return $this; }
 
     public function isVip(): bool { return $this->vip; }
     public function setVip(bool $vip): self { $this->vip = $vip; return $this; }

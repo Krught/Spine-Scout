@@ -84,6 +84,22 @@
 .status-pill-off .dot { background: #ef4444; }
 .status-error { color: #ef4444; }
 
+/* Account facts shown under the MyAnonamouse status pill. */
+.mam-account-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.75rem;
+    margin: -0.75rem 0 1.5rem 0.25rem;
+    font-size: 0.85rem;
+}
+.mam-account-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+}
+.mam-account-stat-label { color: var(--fg-muted); }
+.mam-account-stat-value { font-weight: 600; }
+
 .flash {
     padding: 0.7rem 1rem;
     border-radius: 6px;

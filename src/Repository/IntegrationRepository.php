@@ -287,6 +287,8 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
             $config->vipFetchLimit,
             $config->dynamicSeedboxUpdate,
             $config->proxyUrl,
+            $config->alwaysUseWedge,
+            $config->autoWedgeMinGb,
         );
     }
 
@@ -362,10 +364,16 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
     /** @param array<string, mixed> $state */
     public function saveMamAccountState(array $state): void
     {
+        $this->saveMamOptionsBlob('account', $state);
+    }
+
+    /** @param array<string, mixed> $state */
+    private function saveMamOptionsBlob(string $key, array $state): void
+    {
         $em = $this->getEntityManager();
         $integration = $this->getOrCreate(Integration::KIND_MYANONAMOUSE);
         $options = $integration->getOptions();
-        $options['account'] = $state;
+        $options[$key] = $state;
         $integration->setOptions($options);
         if ($integration->getId() === null) {
             $integration->setAuthType(Integration::AUTH_API_KEY);

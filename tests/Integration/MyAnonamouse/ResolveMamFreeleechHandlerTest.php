@@ -8,6 +8,7 @@ use App\Entity\Book;
 use App\Entity\FreeleechItem;
 use App\Entity\Integration;
 use App\Integration\Hardcover\HardcoverClient;
+use App\Integration\MyAnonamouse\MamAccountStateUpdater;
 use App\Integration\MyAnonamouse\MamFreeleechRefresher;
 use App\Integration\MyAnonamouse\MyAnonamouseClient;
 use App\Integration\MyAnonamouse\MyAnonamouseConfig;
@@ -83,6 +84,14 @@ final class ResolveMamFreeleechHandlerTest extends WebTestCase
 
         self::assertSame([], $this->handle($this->hardcoverBatched($catalog)), 'nothing left to drain');
         self::assertSame(0, $this->items->countByResolution()[FreeleechItem::RESOLUTION_PENDING]);
+
+        foreach ($this->items->findByMamTorrentIds([101, 102, 103]) as $mamId => $item) {
+            self::assertSame(
+                1000 + ($mamId - 100),
+                $item->getPopularity(),
+                'a resolution captures Hardcover users_count for the trending order',
+            );
+        }
     }
 
     public function testASkippedRunDoesNotChain(): void
@@ -152,6 +161,7 @@ final class ResolveMamFreeleechHandlerTest extends WebTestCase
             new MatchScorer(),
             $this->em,
             new NullLogger(),
+            new MamAccountStateUpdater(),
         );
 
         (new ResolveMamFreeleechHandler($refresher, $bus, new NullLogger()))(new ResolveMamFreeleech($maxResolutions));
@@ -215,6 +225,7 @@ final class ResolveMamFreeleechHandlerTest extends WebTestCase
                         'id'                  => (int) $id,
                         'title'               => $entry[0],
                         'slug'                => $entry[2],
+                        'users_count'         => 1000 + (int) $id,
                         'cached_image'        => ['url' => 'https://hardcover.example/' . $entry[2] . '.jpg'],
                         'cached_contributors' => [['author' => ['name' => $entry[1]]]],
                         'editions'            => [['isbn_13' => '9780345539809', 'reading_format_id' => 4]],

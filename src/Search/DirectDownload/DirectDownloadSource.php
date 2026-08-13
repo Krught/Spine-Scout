@@ -31,6 +31,8 @@ enum DirectDownloadSource: string
     case Welib = 'welib';
     /** BitTorrent: search the configured indexers and hand the best match to the download client. */
     case Torrent = 'torrent';
+    /** MyAnonamouse: search the tracker directly with the operator's session cookie. */
+    case Mam = 'mam';
 
     public function label(): string
     {
@@ -40,6 +42,7 @@ enum DirectDownloadSource: string
             self::ZLibrary => 'Z-Library',
             self::Welib => 'Welib',
             self::Torrent => 'Torrent',
+            self::Mam => 'MyAnonamouse',
         };
     }
 
@@ -52,17 +55,20 @@ enum DirectDownloadSource: string
             self::ZLibrary => 'Z-Library mirror base URLs (/s/{query} results, book page → /dl/ download link). Publicly accessible — no login required.',
             self::Welib => 'Welib mirror base URLs (Anna’s-Archive-style /search and /md5/{hash} pages).',
             self::Torrent => 'Searches your configured indexers and sends the best match to your download client (Settings → Torrents). No mirror URLs needed.',
+            self::Mam => 'Searches MyAnonamouse directly with your session cookie (Settings → MyAnonamouse) and sends the best match to your torrent download client. No mirror URLs needed.',
         };
     }
 
     /**
      * Whether this source is configured with operator-supplied mirror URLs. Torrent
-     * is not — it uses the indexers + download client configured under Settings →
-     * Torrents — so the mirror-URL UI and the HTTP cascade skip it.
+     * and MyAnonamouse are not — Torrent uses the indexers + download client
+     * configured under Settings → Torrents, and MyAnonamouse the session cookie
+     * under Settings → MyAnonamouse — so the mirror-URL UI and the HTTP cascade
+     * skip them.
      */
     public function usesMirrors(): bool
     {
-        return $this !== self::Torrent;
+        return !in_array($this, [self::Torrent, self::Mam], true);
     }
 
     /**
@@ -83,7 +89,7 @@ enum DirectDownloadSource: string
      */
     public static function defaultOrder(): array
     {
-        return [self::AnnasArchive, self::LibGen, self::ZLibrary, self::Welib, self::Torrent];
+        return [self::AnnasArchive, self::LibGen, self::ZLibrary, self::Welib, self::Torrent, self::Mam];
     }
 
     public static function tryFromId(string $id): ?self

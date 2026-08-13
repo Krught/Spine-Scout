@@ -5,9 +5,8 @@
         <h2 class="panel-title">MyAnonamouse</h2>
         <p class="panel-sub">
             Pull MyAnonamouse's current freeleech catalog on an interval, match it against your
-            library, and surface it on the homepage and in browse. Read-only: nothing is grabbed
-            from the tracker, and who can see freeleech items is granted per user under
-            <a href="{{ path('users') }}">Users</a>.
+            library, and surface it on the homepage and in browse. Who can see freeleech items
+            is granted per user under <a href="{{ path('users') }}">Users</a>.
         </p>
     </div>
 
@@ -22,12 +21,44 @@
             {% endif %}
             {% if account.username is defined and account.username %}
                 · {{ account.username }}{% if account.class is defined and account.class %} ({{ account.class }}){% endif %}
-                {%- if account.ratio is defined and account.ratio is not null %}, ratio {{ account.ratio }}{% endif %}
             {% endif %}
             {% if integration.lastError %}
                 · <span class="status-error">Last error: {{ integration.lastError }}</span>
             {% endif %}
         </div>
+        {% if account.checkedAt is defined %}
+            <div class="mam-account-stats">
+                <div class="mam-account-stat">
+                    <span class="mam-account-stat-label">Bonus points</span>
+                    <span class="mam-account-stat-value">{{ account.seedbonus is defined and account.seedbonus is not null ? account.seedbonus|number_format(0, '.', ',') : '—' }}</span>
+                </div>
+                <div class="mam-account-stat">
+                    <span class="mam-account-stat-label">Wedges</span>
+                    <span class="mam-account-stat-value">{{ account.wedges is defined and account.wedges is not null ? account.wedges : '—' }}</span>
+                </div>
+                <div class="mam-account-stat">
+                    <span class="mam-account-stat-label">Ratio</span>
+                    <span class="mam-account-stat-value">{{ account.ratio is defined and account.ratio is not null ? account.ratio : '—' }}</span>
+                </div>
+                <div class="mam-account-stat">
+                    <span class="mam-account-stat-label">Up / down</span>
+                    <span class="mam-account-stat-value">
+                        {{- account.uploaded is defined and account.uploaded ? account.uploaded : '—' }} /
+                        {{ account.downloaded is defined and account.downloaded ? account.downloaded : '—' -}}
+                    </span>
+                </div>
+                <div class="mam-account-stat">
+                    <span class="mam-account-stat-label">Unsatisfied</span>
+                    <span class="mam-account-stat-value">
+                        {%- if account.unsatCount is defined and account.unsatCount is not null -%}
+                            {{ account.unsatCount }}{% if account.unsatLimit is defined and account.unsatLimit is not null %} / {{ account.unsatLimit }}{% endif %}
+                        {%- else -%}
+                            —
+                        {%- endif -%}
+                    </span>
+                </div>
+            </div>
+        {% endif %}
     {% endif %}
 
     <form method="post" action="{{ path('settings_myanonamouse') }}" class="settings-form" novalidate>
@@ -152,6 +183,24 @@
                     Per format, newest first. Only used when "Also pull VIP freeleech" is on.
                     Between {{ mam_vip_fetch_limit_min }} and {{ mam_vip_fetch_limit_max }}; anything
                     outside that is clamped.
+                </p>
+            </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Downloading</legend>
+            <label class="field-checkbox">
+                <input type="checkbox" name="alwaysUseWedge" value="1" {{ config.alwaysUseWedge ? 'checked' : '' }}>
+                <span>Always use a freeleech wedge when grabbing (unless the release is already free for you)</span>
+            </label>
+            <div class="field">
+                <label for="autoWedgeMinGb">Auto-use a wedge when the release is at least this many GB</label>
+                <input type="number" id="autoWedgeMinGb" name="autoWedgeMinGb" min="0" step="0.1"
+                       value="{{ config.autoWedgeMinGb }}">
+                <p class="form-note">
+                    Leave blank to turn auto-wedging off. Wedges are spent from your bonus points,
+                    and one is never spent on a release that is already free for you — regular or
+                    personal freeleech, or VIP freeleech on a VIP account.
                 </p>
             </div>
         </fieldset>

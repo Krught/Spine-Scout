@@ -26,6 +26,7 @@ export default class extends Controller {
     static targets = [
         'panel', 'sources', 'mirrors', 'mirrorRow',
         'methods', 'methodRow',
+        'wedgeRow', 'wedgeToggle', 'wedgeNote',
         'title', 'author', 'isbn',
         'status', 'searchUrl', 'results',
         'spinner', 'searchButton', 'modeChip',
@@ -94,6 +95,7 @@ export default class extends Controller {
             this.searchUrlTarget.textContent = '';
             this.mirrorRowTarget.hidden = true;
             this.methodRowTarget.hidden = true;
+            this.hideWedgeRow();
             this.sourcesTarget.querySelectorAll('.ix-source.is-active').forEach((b) => b.classList.remove('is-active'));
         }
         this.panelTarget.hidden = false;
@@ -149,9 +151,14 @@ export default class extends Controller {
         return !!source && source.id === 'torrent';
     }
 
+    /** MAM is torrent-like: no mirrors, method toggle, grab-based downloads. */
+    isMamSource(source) {
+        return !!source && source.id === 'mam';
+    }
+
     sourceUsable(source) {
         if (!source) return false;
-        if (this.isTorrentSource(source)) return source.enabled !== false;
+        if (this.isTorrentSource(source) || this.isMamSource(source)) return source.enabled !== false;
         return (source.mirrors || []).length > 0;
     }
 
@@ -161,9 +168,13 @@ export default class extends Controller {
                 const disabled = !this.sourceUsable(s);
                 let title = '';
                 if (disabled) {
-                    title = this.isTorrentSource(s)
-                        ? ' title="No torrent indexers/client configured in Settings"'
-                        : ' title="No mirrors configured in Settings"';
+                    if (this.isTorrentSource(s)) {
+                        title = ' title="No torrent indexers/client configured in Settings"';
+                    } else if (this.isMamSource(s)) {
+                        title = ' title="MyAnonamouse integration or torrent client not configured in Settings"';
+                    } else {
+                        title = ' title="No mirrors configured in Settings"';
+                    }
                 }
                 return (
                     `<button type="button" class="ix-source" data-source="${this.escAttr(s.id)}"` +
@@ -191,8 +202,8 @@ export default class extends Controller {
             b.classList.toggle('is-active', b.dataset.source === id);
         });
 
-        if (this.isTorrentSource(source)) {
-            // Torrent search is indexer-driven; there is no mirror to choose,
+        if (this.isTorrentSource(source) || this.isMamSource(source)) {
+            // Torrent/MAM search is indexer-driven; there is no mirror to choose,
             // but the query-scoping method is. Starts on the saved default.
             this.activeMirror = null;
             this.mirrorsTarget.innerHTML = '';
@@ -224,13 +235,19 @@ export default class extends Controller {
     }
 
     /**
-     * The torrent method toggle, styled like the mirror buttons. Three fixed
-     * options; the tooltip carries what each one actually does.
+     * The torrent/MAM method toggle, styled like the mirror buttons. Three fixed
+     * options; the tooltip carries what each one actually does — the categories
+     * hint switches wording for MAM, whose scope is its two main categories.
      */
     renderMethods() {
+        const mam = this.activeSource === 'mam';
         const options = [
-            { id: 'categories', label: 'Categories', hint: 'Send the configured Torznab categories with the query (classic scope)' },
-            { id: 'raw', label: 'Raw', hint: 'No category filter — every indexer result shows' },
+            { id: 'categories', label: 'Categories', hint: mam
+                ? "Scope the query to the matching MAM main category (Audiobooks or E-books)"
+                : 'Send the configured Torznab categories with the query (classic scope)' },
+            { id: 'raw', label: 'Raw', hint: mam
+                ? 'No main-category filter — every MyAnonamouse result shows'
+                : 'No category filter — every indexer result shows' },
             { id: 'filtered', label: 'Filtered', hint: 'No category filter on the query; results recognizably the wrong type (ebook vs audiobook) are dropped afterwards' },
         ];
         this.methodsTarget.innerHTML = options
@@ -285,26 +302,32 @@ export default class extends Controller {
 
     async runSearch() {
         const torrentMode = this.activeSource === 'torrent';
+        const mamMode = this.activeSource === 'mam';
+        // Torrent and MAM are mirror-less; every other source needs one picked.
+        const mirrorless = torrentMode || mamMode;
         if (!this.activeSource) return;
-        if (!torrentMode && !this.activeMirror) return;
+        if (!mirrorless && !this.activeMirror) return;
 
         const seq = ++this.runSeq;
         this.hasRun = true;
         this.selectedRow = null;
+        this.hideWedgeRow();
         this.searchUrlTarget.textContent = '';
         // Stale results are replaced by a placeholder so nothing on screen looks
         // like it answers the query that's currently in flight.
         this.resultsTarget.innerHTML = this.skeletonMarkup();
         this.setSearchBusy(true);
-        this.setStatus(torrentMode
-            ? 'Searching torrent indexers…'
-            : 'Searching… this can take a moment per result.');
+        this.setStatus(mamMode
+            ? 'Searching MyAnonamouse…'
+            : torrentMode
+                ? 'Searching torrent indexers…'
+                : 'Searching… this can take a moment per result.');
 
         try {
             const data = await this.post(this.runUrlValue, {
                 source: this.activeSource,
-                mirror: torrentMode ? undefined : this.activeMirror,
-                searchMethod: torrentMode ? this.searchMethod || undefined : undefined,
+                mirror: mirrorless ? undefined : this.activeMirror,
+                searchMethod: mirrorless ? this.searchMethod || undefined : undefined,
                 bookId: this.bookIdValue > 0 ? this.bookIdValue : undefined,
                 title: this.titleTarget.value.trim(),
                 author: this.authorTarget.value.trim(),
@@ -409,7 +432,8 @@ export default class extends Controller {
             : '';
         this.setStatus(`${results.length} result(s)${note}. Match % is relevance against your query.${skipNote}`);
 
-        // Stash the exact payload the grab endpoint needs, per torrent row.
+        // Stash the exact payload the grab endpoint needs, per torrent row. MAM
+        // rows carry their `mam` block along so the grab can post it back.
         if (torrentMode) {
             results.forEach((r) => {
                 if (!r || !r.torrent) return;
@@ -421,6 +445,7 @@ export default class extends Controller {
                     sizeBytes: typeof r.sizeBytes === 'number' ? r.sizeBytes : undefined,
                     indexer: r.torrent.indexer || undefined,
                     seeders: typeof r.torrent.seeders === 'number' ? r.torrent.seeders : undefined,
+                    mam: r.mam || undefined,
                 };
             });
         }
@@ -561,10 +586,15 @@ export default class extends Controller {
         const t = r.torrent || {};
         const seeders = typeof t.seeders === 'number' ? String(t.seeders) : '?';
         const leechers = typeof t.leechers === 'number' ? String(t.leechers) : '?';
+        // The three freeleech variants get their own colored modifiers; the MAM
+        // underscore names render as friendlier labels.
+        const flagLabels = { vip_freeleech: 'vip freeleech', personal_freeleech: 'personal FL' };
+        const flagMods = ['freeleech', 'vip_freeleech', 'personal_freeleech'];
         const flags = (t.flags || [])
             .map((f) => {
-                const mod = String(f) === 'freeleech' ? ' ix-flag--freeleech' : '';
-                return `<span class="ix-flag${mod}">${this.esc(f)}</span>`;
+                const name = String(f);
+                const mod = flagMods.includes(name) ? ` ix-flag--${name}` : '';
+                return `<span class="ix-flag${mod}">${this.esc(flagLabels[name] || name)}</span>`;
             })
             .join('');
         // The indexer's publish date backfills the Year column when the release
@@ -606,8 +636,54 @@ export default class extends Controller {
         if (radio) radio.checked = true;
         if (this.downloadButton && !this.searchBusy) {
             this.downloadButton.disabled = false;
+            // MAM rows are torrent rows too — same client, same label.
             this.downloadButton.textContent = row.torrent ? 'Send to Torrent Client' : 'Manual Download';
         }
+        this.updateWedgeRow(row);
+    }
+
+    /** The saved wedge context the /sources response shipped for MAM (or {}). */
+    mamWedgeConfig() {
+        const s = (this.sourceList || []).find((x) => x && x.id === 'mam');
+        return (s && s.wedge) || {};
+    }
+
+    /**
+     * Show the wedge toggle for a picked MAM row, defaulted to the server's
+     * wedgeDecision(). Forced states are disabled with a short note: already-free
+     * releases must never cost a wedge, and the operator's "always use wedge"
+     * setting wins over the checkbox (the server re-validates both anyway).
+     */
+    updateWedgeRow(row) {
+        if (!this.hasWedgeRowTarget) return;
+        const mam = row && row.mam;
+        if (!mam) {
+            this.hideWedgeRow();
+            return;
+        }
+        const toggle = this.wedgeToggleTarget;
+        let note = '';
+        if (mam.alreadyFree) {
+            toggle.checked = false;
+            toggle.disabled = true;
+            note = 'already freeleech for you';
+        } else if (this.mamWedgeConfig().alwaysUse) {
+            toggle.checked = true;
+            toggle.disabled = true;
+            note = 'always use wedge is enabled in settings';
+        } else {
+            toggle.disabled = false;
+            toggle.checked = !!mam.wedgeDefault;
+        }
+        if (this.hasWedgeNoteTarget) {
+            this.wedgeNoteTarget.textContent = note;
+            this.wedgeNoteTarget.hidden = note === '';
+        }
+        this.wedgeRowTarget.hidden = false;
+    }
+
+    hideWedgeRow() {
+        if (this.hasWedgeRowTarget) this.wedgeRowTarget.hidden = true;
     }
 
     /** Don't let an info-link click also select the row. */
@@ -670,11 +746,15 @@ export default class extends Controller {
             '<p class="form-note ix-working"><span class="ix-spinner ix-spinner--inline" aria-hidden="true"></span>' +
             'Sending the release to the torrent client…</p>';
 
+        // MAM rows post their identity block plus the wedge choice; the plain
+        // torrent payload stays exactly as before (no `source` key).
+        const isMam = !!meta.mam;
         try {
             const data = await this.post(this.grabUrlValue, {
                 bookId: this.bookIdValue || undefined,
                 bookSource: this.bookSeed.source || undefined,
                 externalId: this.bookSeed.externalId || undefined,
+                source: isMam ? 'mam' : undefined,
                 id: meta.id,
                 title: meta.title,
                 link: meta.link,
@@ -682,6 +762,10 @@ export default class extends Controller {
                 sizeBytes: meta.sizeBytes,
                 indexer: meta.indexer,
                 seeders: meta.seeders,
+                mam: isMam ? meta.mam : undefined,
+                useWedge: isMam
+                    ? this.hasWedgeToggleTarget && this.wedgeToggleTarget.checked
+                    : undefined,
                 audiobook: this.seedAudiobook ?? undefined,
             });
             this.renderGrab(data);

@@ -37,6 +37,7 @@ final class HardcoverClient
             id
             title
             slug
+            users_count
             cached_image
             cached_contributors
             editions(limit: 200) {
@@ -58,6 +59,7 @@ final class HardcoverClient
         id
         title
         slug
+        users_count
         cached_image
         cached_contributors
         editions(limit: 200) {
@@ -424,6 +426,7 @@ final class HardcoverClient
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
                 audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
+                usersCount: isset($row['users_count']) && is_numeric($row['users_count']) ? (int) $row['users_count'] : null,
             );
         }
         return $out;
@@ -643,6 +646,7 @@ final class HardcoverClient
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
                 audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
+                usersCount: isset($row['users_count']) && is_numeric($row['users_count']) ? (int) $row['users_count'] : null,
             );
         }
         return $out;
@@ -748,6 +752,7 @@ final class HardcoverClient
                     externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                     isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
                     audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
+                    usersCount: isset($row['users_count']) && is_numeric($row['users_count']) ? (int) $row['users_count'] : null,
                 );
             }
             $out[$key] = $books;
@@ -1100,6 +1105,7 @@ final class HardcoverClient
                 externalUrl: !empty($row['slug']) ? 'https://hardcover.app/books/' . $row['slug'] : null,
                 isbns: $this->extractIsbns($row['editions'] ?? null, $prefs),
                 audiobook: $this->hasAudiobookEdition($row['editions'] ?? null),
+                usersCount: isset($row['users_count']) && is_numeric($row['users_count']) ? (int) $row['users_count'] : null,
             );
         }
         return $out;

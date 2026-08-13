@@ -68,4 +68,16 @@
     <p class="ix-search-url" data-interactive-search-target="searchUrl"></p>
 
     <div class="ix-results" data-interactive-search-target="results"></div>
+
+    {# MyAnonamouse-only: whether to spend a personal-freeleech wedge on the picked
+       release. Hidden until a MAM row is selected; the controller defaults the
+       checkbox from the server's wedge decision and disables it (with a note)
+       when the release is already free or "always use wedge" is switched on. #}
+    <div class="ix-wedge-row" data-interactive-search-target="wedgeRow" hidden>
+        <label class="ix-wedge-label">
+            <input type="checkbox" data-interactive-search-target="wedgeToggle">
+            <span>Spend a freeleech wedge on this grab</span>
+        </label>
+        <span class="ix-wedge-note" data-interactive-search-target="wedgeNote" hidden></span>
+    </div>
 </section>

@@ -4,23 +4,29 @@ declare(strict_types=1);
 
 namespace App\Integration\MyAnonamouse;
 
+use App\Search\Source\ReleaseCandidate;
+use App\Search\Source\ReleaseSearchPlan;
+use App\Search\Torrent\ProwlarrConfig;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
- * Reads MyAnonamouse's JSON endpoints: the current freeleech catalog, the account
- * summary behind the connection test, and the dynamic-seedbox IP keepalive. Every
- * call carries the operator's `mam_id` session cookie and persists the rotated value
- * MAM hands back, or the session dies. This is a private tracker: requests are
- * sequential, paced, hard-capped, and an auth failure degrades to []/null/ok=false
- * without a single retry — never throwing into the scheduler.
+ * Talks to MyAnonamouse's JSON endpoints: the current freeleech catalog, on-demand
+ * release search, the .torrent file download, the personal-freeleech wedge spend,
+ * the account summary behind the connection test, and the dynamic-seedbox IP
+ * keepalive. Every call carries the operator's `mam_id` session cookie and persists
+ * the rotated value MAM hands back, or the session dies. This is a private tracker:
+ * requests are sequential, paced, hard-capped, and an auth failure degrades to
+ * []/null/ok=false without a single retry — never throwing into the scheduler.
  */
 final class MyAnonamouseClient
 {
     private const SEARCH_PATH = '/tor/js/loadSearchJSONbasic.php';
     private const USER_INFO_PATH = '/jsonLoad.php?snatch_summary';
+    private const BONUS_BUY_PATH = '/json/bonusBuy.php/';
+    private const TORRENT_DOWNLOAD_PATH = '/tor/download.php/';
     /** The IP keepalive lives on the tracker subdomain, not the configured base URL. */
     private const DYNAMIC_SEEDBOX_URL = 'https://t.myanonamouse.net/json/dynamicSeedbox.php';
 
@@ -104,8 +110,27 @@ final class MyAnonamouseClient
     }
 
     /**
-     * @return array{username: string, class: string, ratio: string|float|null, isVip: bool}|null
+     * The account summary behind the connection test and the stats page. The first
+     * four keys are the connection-test contract and never change shape; the rest
+     * are the stats-page extras, each read tolerantly and null when MAM's summary
+     * does not carry it (the wedge count and VIP expiry are not in every account's
+     * payload).
+     *
+     * @return array{username: string, class: string, ratio: string|float|null, isVip: bool, seedbonus: ?int, unsatCount: ?int, unsatLimit: ?int, wedges: ?int, vipUntil: ?string, uploaded: ?string, downloaded: ?string}|null
      */
+    /**
+     * The account summary exactly as MAM sent it, undecoded into our shape — the
+     * probe's field-discovery dump (`--user-info-raw`), for checking what extras a
+     * given account's payload actually carries before teaching fetchUserInfo() to
+     * parse them. Null on the same failures as fetchUserInfo().
+     *
+     * @return array<string, mixed>|null
+     */
+    public function fetchUserInfoRaw(): ?array
+    {
+        return $this->requestJson('GET', $this->baseUrl() . self::USER_INFO_PATH);
+    }
+
     public function fetchUserInfo(): ?array
     {
         $data = $this->requestJson('GET', $this->baseUrl() . self::USER_INFO_PATH);
@@ -115,12 +140,20 @@ final class MyAnonamouseClient
 
         $class = self::firstString($data, ['class', 'classname', 'class_name', 'className']) ?? '';
         $ratio = $data['ratio'] ?? null;
+        $unsat = is_array($data['unsat'] ?? null) ? $data['unsat'] : [];
 
         return [
-            'username' => self::firstString($data, ['username', 'user_name', 'name']) ?? '',
-            'class'    => $class,
-            'ratio'    => is_string($ratio) || is_float($ratio) || is_int($ratio) ? (is_int($ratio) ? (float) $ratio : $ratio) : null,
-            'isVip'    => in_array(strtolower(trim($class)), self::VIP_CLASSES, true),
+            'username'   => self::firstString($data, ['username', 'user_name', 'name']) ?? '',
+            'class'      => $class,
+            'ratio'      => is_string($ratio) || is_float($ratio) || is_int($ratio) ? (is_int($ratio) ? (float) $ratio : $ratio) : null,
+            'isVip'      => in_array(strtolower(trim($class)), self::VIP_CLASSES, true),
+            'seedbonus'  => self::firstInt($data, ['seedbonus', 'seed_bonus', 'seedBonus']),
+            'unsatCount' => self::firstInt($unsat, ['count']),
+            'unsatLimit' => self::firstInt($unsat, ['limit']),
+            'wedges'     => self::firstInt($data, ['wedges', 'fl_wedges', 'flWedges']),
+            'vipUntil'   => self::firstString($data, ['vip_until', 'vipUntil', 'vip_expires']),
+            'uploaded'   => self::firstString($data, ['uploaded', 'upload']),
+            'downloaded' => self::firstString($data, ['downloaded', 'download']),
         ];
     }
 
@@ -296,6 +329,110 @@ final class MyAnonamouseClient
     }
 
     /**
+     * One on-demand release search for a book, mapped to MamRelease rows. Unlike
+     * the freeleech sweep this is a single request — no paging, no windows —
+     * because fulfilment wants the best few matches for one title, not a catalog.
+     *
+     * $method is one of ProwlarrConfig::METHODS and carries the same semantics as
+     * the Prowlarr search: `categories` pins the query to the plan's MAM main
+     * category (13 audiobooks / 14 e-books), `raw` sends no category filter at
+     * all, and `filtered` sends none but afterwards drops rows whose category
+     * contradicts the plan's content type. An unknown method is a programming
+     * error and degrades to [] like any failure, without a request.
+     *
+     * $limit caps how many rows the caller gets back; MAM is still asked for a
+     * full page so the filtered method has rows to drop.
+     *
+     * @return list<MamRelease>
+     */
+    public function searchReleases(ReleaseSearchPlan $plan, string $method, int $limit = 50): array
+    {
+        if (!in_array($method, ProwlarrConfig::METHODS, true)) {
+            $this->logger->warning('MyAnonamouse search method is not supported', ['method' => $method]);
+
+            return [];
+        }
+        if (!$this->isConfigured() || $limit <= 0) {
+            return [];
+        }
+
+        $data = $this->requestJson('POST', $this->baseUrl() . self::SEARCH_PATH, [
+            'body' => self::queryPayload($plan, $method),
+        ]);
+        if ($data === null) {
+            return [];
+        }
+
+        $rows = $data['data'] ?? null;
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        /** @var list<MamRelease> $out */
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $out[] = self::mapRelease($row);
+        }
+
+        if ($method === ProwlarrConfig::METHOD_FILTERED) {
+            $wantAudiobook = $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK;
+            $out = array_values(array_filter(
+                $out,
+                static fn (MamRelease $release): bool => $release->audiobook === $wantAudiobook,
+            ));
+        }
+
+        return self::truncate($out, $limit);
+    }
+
+    /**
+     * Spend one personal-freeleech wedge (bought from the operator's bonus points)
+     * on a torrent, so the grab that follows costs no download quota. A refusal —
+     * not enough points, torrent already free, unknown id — is logged and reported
+     * as false; like every MAM call this never throws and never retries.
+     */
+    public function spendWedge(int $torrentId): bool
+    {
+        $data = $this->requestJson(
+            'GET',
+            $this->baseUrl() . self::BONUS_BUY_PATH . '?spendtype=personalFL&torrentid=' . $torrentId,
+        );
+        if ($data === null) {
+            return false;
+        }
+
+        if (!self::toBool($data['success'] ?? $data['Success'] ?? false)) {
+            $this->logger->warning('MyAnonamouse refused the wedge spend', [
+                'torrentId' => $torrentId,
+                'message'   => self::firstString($data, ['error', 'msg', 'message']) ?? '',
+            ]);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Fetch the .torrent file behind a search row's `dl` hash. Returns the raw
+     * bytes, or null when MAM refused the download or served its HTML login page
+     * instead — a dead cookie's login page must never reach the download client
+     * as a .torrent file.
+     */
+    public function downloadTorrentFile(string $dlHash): ?string
+    {
+        $dlHash = trim($dlHash);
+        if ($dlHash === '') {
+            return null;
+        }
+
+        return $this->requestRaw('GET', $this->baseUrl() . self::TORRENT_DOWNLOAD_PATH . $dlHash);
+    }
+
+    /**
      * Re-register the server's current public IP with the MAM session. Only works
      * for sessions the operator created with the dynamic-IP flag; false on anything
      * else, including a refusal from MAM.
@@ -339,6 +476,45 @@ final class MyAnonamouseClient
         ];
         if ($endDate !== null) {
             $tor['endDate'] = $endDate;
+        }
+
+        return [
+            'tor'        => $tor,
+            'thumbnails' => '1',
+        ];
+    }
+
+    /**
+     * The single-request payload behind searchReleases(): the plan's title +
+     * author as MAM's free-text query — an ISBN-only plan falls back to the ISBN,
+     * best effort, because MAM has no ISBN parameter — searched across
+     * title/author/narrator in MAM's default relevance order, one page of 100.
+     * METHOD_CATEGORIES pins `tor[main_cat]` to the plan's category; the other
+     * methods send no category filter.
+     *
+     * @return array<string, mixed>
+     */
+    private static function queryPayload(ReleaseSearchPlan $plan, string $method): array
+    {
+        $text = $plan->primaryQuery();
+        if ($text === '' && $plan->hasIsbn()) {
+            $text = $plan->isbnCandidates[0];
+        }
+
+        $tor = [
+            'text'        => $text,
+            'srchIn'      => ['title' => 'true', 'author' => 'true', 'narrator' => 'true'],
+            'searchType'  => 'all',
+            'sortType'    => 'default',
+            'perpage'     => (string) self::PER_PAGE,
+            'startNumber' => '0',
+        ];
+        if ($method === ProwlarrConfig::METHOD_CATEGORIES) {
+            $tor['main_cat'] = [
+                $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK
+                    ? MyAnonamouseConfig::MAIN_CAT_AUDIOBOOK
+                    : MyAnonamouseConfig::MAIN_CAT_BOOK,
+            ];
         }
 
         return [
@@ -405,6 +581,78 @@ final class MyAnonamouseClient
 
             return null;
         }
+    }
+
+    /**
+     * One authenticated raw fetch — requestJson()'s cookie/proxy/rotation/timeout
+     * handling for a body that is not JSON (the .torrent download). Returns the
+     * body bytes, or null on any failure — including MAM's HTML login page, which
+     * comes back as a 200 text/html for a dead cookie.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function requestRaw(string $method, string $url, array $options = []): ?string
+    {
+        $cookie = $this->settings->getMamSessionCookie();
+        if ($cookie === null || trim($cookie) === '') {
+            return null;
+        }
+        $cookie = trim($cookie);
+
+        $config = $this->settings->getMyAnonamouseConfig();
+        $options['headers'] = [
+            'Cookie'     => 'mam_id=' . $cookie,
+            'User-Agent' => self::USER_AGENT,
+        ];
+        $options['timeout'] = self::TIMEOUT_SECONDS;
+        if ($config->proxyUrl !== null && trim($config->proxyUrl) !== '') {
+            $options['proxy'] = trim($config->proxyUrl);
+        }
+
+        try {
+            $response = $this->httpClient->request($method, $url, $options);
+            $status   = $response->getStatusCode();
+            $body     = $response->getContent(false);
+            $this->syncRotatedCookie($response, $cookie);
+
+            if ($status !== 200) {
+                $this->logger->warning('MyAnonamouse request failed', ['url' => $url, 'status' => $status]);
+
+                return null;
+            }
+            if (self::looksLikeHtml($response, $body)) {
+                $this->logger->warning('MyAnonamouse returned HTML instead of a torrent file — the session cookie is likely expired', ['url' => $url]);
+
+                return null;
+            }
+
+            return $body;
+        } catch (HttpExceptionInterface $e) {
+            $this->logger->warning('MyAnonamouse request failed', ['url' => $url, 'error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    /**
+     * MAM's login page where a torrent file was asked for: a text/html content
+     * type, or an HTML tag at the top of the body. A real .torrent is bencoded
+     * and starts with `d`, so neither check can misfire on one.
+     */
+    private static function looksLikeHtml(ResponseInterface $response, string $body): bool
+    {
+        try {
+            $headers = $response->getHeaders(false);
+        } catch (HttpExceptionInterface) {
+            $headers = [];
+        }
+        foreach ($headers['content-type'] ?? [] as $type) {
+            if (is_string($type) && str_contains(strtolower($type), 'text/html')) {
+                return true;
+            }
+        }
+
+        return str_contains(strtolower(substr(ltrim($body), 0, 64)), '<html');
     }
 
     /**
@@ -569,6 +817,26 @@ final class MyAnonamouseClient
         }
 
         return in_array(strtolower(trim($raw)), ['1', 'true', 'yes', 'y'], true);
+    }
+
+    /**
+     * The first numeric value under any of $keys, as an int. Null when none of
+     * them carries a number — absence is meaningful to the caller (fetchUserInfo's
+     * "MAM did not report this"), so 0 is never fabricated.
+     *
+     * @param array<string, mixed> $row
+     * @param list<string>         $keys
+     */
+    private static function firstInt(array $row, array $keys): ?int
+    {
+        foreach ($keys as $key) {
+            $value = $row[$key] ?? null;
+            if (is_numeric($value)) {
+                return (int) $value;
+            }
+        }
+
+        return null;
     }
 
     /**

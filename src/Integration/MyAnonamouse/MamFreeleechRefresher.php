@@ -66,6 +66,7 @@ final class MamFreeleechRefresher
         private readonly MatchScorer $scorer,
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface $logger,
+        private readonly MamAccountStateUpdater $accountStateUpdater,
     ) {
     }
 
@@ -211,11 +212,9 @@ final class MamFreeleechRefresher
         if ($userInfo === null) {
             $errors[] = 'MyAnonamouse account check failed — the session cookie may be expired.';
         } else {
-            $state['username']  = $userInfo['username'];
-            $state['class']     = $userInfo['class'];
-            $state['ratio']     = $userInfo['ratio'];
-            $state['isVip']     = $userInfo['isVip'];
-            $state['checkedAt'] = $now->format(\DateTimeInterface::ATOM);
+            // The shared updater folds in the settings-page facts (bonus points, wedges,
+            // ratio, unsat counts) alongside the identity keys this sweep always kept.
+            $state = $this->accountStateUpdater->apply($state, $userInfo, $now);
         }
         if ($config->dynamicSeedboxUpdate && $this->ipUpdateDue($state, $now)) {
             $state['lastIpUpdateOk'] = $this->client->updateDynamicSeedboxIp();
@@ -541,6 +540,7 @@ final class MamFreeleechRefresher
         }
         $item->setBook($book);
         $item->setResolution(FreeleechItem::RESOLUTION_RESOLVED);
+        $item->setPopularity($best->usersCount);
 
         return true;
     }

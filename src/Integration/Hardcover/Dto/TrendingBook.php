@@ -16,6 +16,9 @@ final readonly class TrendingBook
 {
     /**
      * @param list<string> $isbns
+     * @param int|null     $usersCount Hardcover's book-level users_count (reader-count
+     *                                 popularity proxy); null when the provider or query
+     *                                 doesn't expose it
      */
     public function __construct(
         public string $title,
@@ -24,10 +27,11 @@ final readonly class TrendingBook
         public ?string $externalUrl = null,
         public array $isbns = [],
         public bool $audiobook = false,
+        public ?int $usersCount = null,
     ) {
     }
 
-    /** @return array{title: string, author: ?string, coverUrl: ?string, externalUrl: ?string, isbns: list<string>, audiobook: bool} */
+    /** @return array{title: string, author: ?string, coverUrl: ?string, externalUrl: ?string, isbns: list<string>, audiobook: bool, usersCount: ?int} */
     public function toArray(): array
     {
         return [
@@ -37,6 +41,7 @@ final readonly class TrendingBook
             'externalUrl' => $this->externalUrl,
             'isbns' => $this->isbns,
             'audiobook' => $this->audiobook,
+            'usersCount' => $this->usersCount,
         ];
     }
 }

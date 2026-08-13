@@ -237,6 +237,26 @@ final class FreeleechItemRepositoryTest extends WebTestCase
         );
     }
 
+    public function testTrendingSortPutsScoredItemsFirstAndFallsBackToRecency(): void
+    {
+        $older = new \DateTimeImmutable('-3 days');
+        $newer = new \DateTimeImmutable('-1 day');
+
+        $this->item(101, 'Unresolved Newer')->setLastSeenAt($newer);
+        $this->item(102, 'Unresolved Older')->setLastSeenAt($older);
+        $this->item(103, 'Mildly Popular')->setPopularity(10)->setLastSeenAt($older);
+        $this->item(104, 'Very Popular')->setPopularity(5000)->setLastSeenAt($older);
+        // A real Hardcover match nobody has shelved yet still outranks every unscored row.
+        $this->item(105, 'Scored Zero')->setPopularity(0)->setLastSeenAt($newer);
+        $this->em->flush();
+
+        self::assertSame(
+            [104, 103, 105, 101, 102],
+            self::ids($this->repository->pageForBrowse(null, null, false, 'trending', 'desc', 0, 10)),
+            'popularity descending first, then the unscored tail by recency',
+        );
+    }
+
     /**
      * @param list<FreeleechItem> $items
      *

@@ -5,29 +5,38 @@ declare(strict_types=1);
 namespace App\Tests\MessageHandler;
 
 use App\Download\Bypass\BypassResolver;
+use App\Download\Client\DownloadClientInterface;
+use App\Download\Client\DownloadStatus;
 use App\Download\Client\HttpDownloadClient;
 use App\Download\FileMover;
 use App\Download\FilenameTemplate;
 use App\Download\FulfillmentLog;
+use App\Download\Mam\MamFulfillment;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Metadata\EpubMetadataWriter;
 use App\Download\Torrent\TorrentFulfillmentInterface;
+use App\Integration\MyAnonamouse\MyAnonamouseClient;
+use App\Integration\MyAnonamouse\MyAnonamouseConfig;
 use App\Service\AppSettingsProvider;
 use App\Service\BookCoverProvider;
+use App\Tests\Integration\MyAnonamouse\FakeMyAnonamouseSettings;
 use Doctrine\DBAL\Connection;
 use App\Entity\Book;
 use App\Entity\BookRequest;
 use App\Entity\DownloadJob;
+use App\Entity\Integration;
 use App\Entity\User;
 use App\Message\ProcessDownloadJob;
 use App\MessageHandler\ProcessDownloadJobHandler;
 use App\Repository\BlockedReleaseRepository;
+use App\Repository\IntegrationRepository;
 use App\Search\BestMatch\BestMatchPolicy;
 use App\Search\BestMatch\BestMatchSelector;
 use App\Search\DirectDownload\DirectDownloadCascade;
 use App\Search\DirectDownload\DirectDownloadConfig;
 use App\Search\DirectDownload\ReleaseSourceScorer;
 use App\Search\Match\MatchScorer;
+use App\Search\Torrent\TorrentMatchScorer;
 use App\Search\Source\DirectHttpProtocol\AAStyleHttpProtocol;
 use App\Search\SearchSettingsProvider;
 use App\Search\Source\ReleaseCandidate;
@@ -45,10 +54,14 @@ final class ProcessDownloadJobHandlerTest extends TestCase
     private string $root;
     private DownloadJob $currentJob;
 
+    /** Ordered record of what the fake MAM transport served: 'search', 'torrent-file'. */
+    private array $mamEvents = [];
+
     protected function setUp(): void
     {
         $this->root = sys_get_temp_dir() . '/spinescout_proc_' . bin2hex(random_bytes(6));
         mkdir($this->root, 0o775, true);
+        $this->mamEvents = [];
     }
 
     protected function tearDown(): void
@@ -264,7 +277,7 @@ final class ProcessDownloadJobHandlerTest extends TestCase
      *        getBestMatchPolicy() calls (1st: the handler's format gate, 2nd: the
      *        cascade). Null = one permissive policy for both.
      */
-    private function handler(array $clients, string $outputDir, array $links, string $format, ?TorrentFulfillmentInterface $torrent = null, ?array $priority = null, ?BlockedReleaseRepository $blockedReleases = null, ?array $policies = null): ProcessDownloadJobHandler
+    private function handler(array $clients, string $outputDir, array $links, string $format, ?TorrentFulfillmentInterface $torrent = null, ?array $priority = null, ?BlockedReleaseRepository $blockedReleases = null, ?array $policies = null, ?MamFulfillment $mam = null, string $mirrorSource = 'libgen'): ProcessDownloadJobHandler
     {
         $blockedReleases ??= $this->createStub(BlockedReleaseRepository::class);
         $em = $this->createStub(EntityManagerInterface::class);
@@ -274,8 +287,8 @@ final class ProcessDownloadJobHandlerTest extends TestCase
         // Built via the constructor (not fromArray) so an empty $outputDir stays
         // empty — fromArray would substitute the default output directory.
         $config = new DirectDownloadConfig(
-            $priority ?? [['id' => 'libgen', 'enabled' => true]],
-            ['libgen' => \App\Mirror\MirrorList::fromRaw(['https://m.test'], new \App\Mirror\MirrorListNormalizer())],
+            $priority ?? [['id' => $mirrorSource, 'enabled' => true]],
+            [$mirrorSource => \App\Mirror\MirrorList::fromRaw(['https://m.test'], new \App\Mirror\MirrorListNormalizer())],
             false,
             $outputDir,
             DirectDownloadConfig::DEFAULT_FILENAME_TEMPLATE,
@@ -291,7 +304,7 @@ final class ProcessDownloadJobHandlerTest extends TestCase
 
         $log = new FulfillmentLog($this->createStub(Connection::class), new NullLogger());
 
-        $source = new CascadeFakeSource('libgen', $format, $links);
+        $source = new CascadeFakeSource($mirrorSource, $format, $links);
         $cascade = new DirectDownloadCascade([$source], new ReleaseSourceScorer(new MatchScorer()), new BestMatchSelector(), $settings, $log, $blockedReleases);
 
         // Injector wired with the toggle off, so downloads in these tests are moved
@@ -314,6 +327,7 @@ final class ProcessDownloadJobHandlerTest extends TestCase
             new FilenameTemplate(),
             $injector,
             $torrent ?? $this->noTorrent(),
+            $mam ?? $this->mamFulfillment(enabled: false),
             $log,
             new NullLogger(),
             $blockedReleases,
@@ -354,6 +368,295 @@ final class ProcessDownloadJobHandlerTest extends TestCase
         self::assertSame(DownloadJob::STATUS_DOWNLOADING, $job->getStatus());
         self::assertSame('deadbeefdeadbeef', $job->getClientRef());
         self::assertSame(ReleaseCandidate::PROTOCOL_TORRENT, $job->getProtocol());
+    }
+
+    public function testMamFirstSourceHandsJobToPollerWithoutHttpOrTorrent(): void
+    {
+        // MAM is the highest-priority enabled source and available → the job is
+        // grabbed from MAM (source=mam + client_ref + DOWNLOADING) and neither the
+        // HTTP cascade nor the torrent source is ever reached.
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+        $torrent = $this->recordingTorrent();
+
+        $handler = $this->handler(
+            [],
+            $this->root . '/library',
+            [],
+            'epub',
+            torrent: $torrent,
+            priority: [['id' => 'mam', 'enabled' => true], ['id' => 'annas_archive', 'enabled' => true], ['id' => 'torrent', 'enabled' => true]],
+            mam: $this->mamFulfillment(searchRows: [$this->mamSearchRow(id: 4242, dl: 'dl-hash-42')]),
+            mirrorSource: 'annas_archive',
+        );
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_DOWNLOADING, $job->getStatus());
+        self::assertSame('mam', $job->getSource());
+        self::assertSame('4242', $job->getSourceId());
+        self::assertSame(ReleaseCandidate::PROTOCOL_TORRENT, $job->getProtocol());
+        self::assertSame('mam-added-hash', $job->getClientRef());
+        self::assertSame(['search', 'torrent-file'], $this->mamEvents);
+        self::assertFalse($torrent->called, 'a MAM success must stop the walk before the torrent source');
+    }
+
+    public function testMamFailureFallsThroughToCascadeThenTorrent(): void
+    {
+        // Priority [mam, annas_archive, torrent]: MAM finds nothing, the HTTP
+        // cascade fails on its only link, and torrent — ranked below the mirror
+        // source — runs after the cascade and wins.
+        $http = new MockHttpClient([new MockResponse('', ['http_code' => 500])]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+        $torrent = $this->recordingTorrent(succeeds: true);
+
+        $handler = $this->handler(
+            [$client],
+            $this->root . '/library',
+            ['https://m.test/fail'],
+            'epub',
+            torrent: $torrent,
+            priority: [['id' => 'mam', 'enabled' => true], ['id' => 'annas_archive', 'enabled' => true], ['id' => 'torrent', 'enabled' => true]],
+            mam: $this->mamFulfillment(searchRows: []),
+            mirrorSource: 'annas_archive',
+        );
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(['search'], $this->mamEvents, 'MAM ran (and found nothing) before the cascade');
+        self::assertSame(1, $http->getRequestsCount(), 'the HTTP cascade must have been attempted');
+        self::assertTrue($torrent->called, 'torrent is ranked below the mirror source, so it runs after the cascade');
+        self::assertSame(DownloadJob::STATUS_DOWNLOADING, $job->getStatus());
+        self::assertSame('deadbeefdeadbeef', $job->getClientRef());
+    }
+
+    public function testMamAfterMirrorsRunsOnlyAfterTheCascadeFails(): void
+    {
+        // Priority [libgen, mam]: the cascade runs first; when it produces nothing
+        // the MAM fallback grabs the release.
+        $http = new MockHttpClient([new MockResponse('', ['http_code' => 500])]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+
+        $handler = $this->handler(
+            [$client],
+            $this->root . '/library',
+            ['https://m.test/fail'],
+            'epub',
+            priority: [['id' => 'libgen', 'enabled' => true], ['id' => 'mam', 'enabled' => true]],
+            mam: $this->mamFulfillment(searchRows: [$this->mamSearchRow(id: 4242, dl: 'dl-hash-42')]),
+        );
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_DOWNLOADING, $job->getStatus());
+        self::assertSame('mam', $job->getSource());
+        self::assertSame('mam-added-hash', $job->getClientRef());
+        self::assertSame(1, $http->getRequestsCount(), 'the cascade link was attempted before the MAM fallback');
+    }
+
+    public function testMamAfterMirrorsIsSkippedWhenTheCascadeSucceeds(): void
+    {
+        $http = new MockHttpClient([new MockResponse('BOOKBYTES')]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+
+        $handler = $this->handler(
+            [$client],
+            $this->root . '/library',
+            ['https://m.test/ok'],
+            'epub',
+            priority: [['id' => 'libgen', 'enabled' => true], ['id' => 'mam', 'enabled' => true]],
+            mam: $this->mamFulfillment(searchRows: [$this->mamSearchRow(id: 4242, dl: 'dl-hash-42')]),
+        );
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_COMPLETE, $job->getStatus());
+        self::assertSame('libgen', $job->getSource());
+        self::assertSame([], $this->mamEvents, 'a cascade success must never reach the MAM fallback');
+    }
+
+    public function testUnavailableMamIsSkippedEntirely(): void
+    {
+        // MAM is first in priority but the integration is disabled (isAvailable()
+        // false) → it is never contacted and the cascade proceeds as usual.
+        $http = new MockHttpClient([new MockResponse('BOOKBYTES')]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+
+        $handler = $this->handler(
+            [$client],
+            $this->root . '/library',
+            ['https://m.test/ok'],
+            'epub',
+            priority: [['id' => 'mam', 'enabled' => true], ['id' => 'libgen', 'enabled' => true]],
+            mam: $this->mamFulfillment(enabled: false, searchRows: [$this->mamSearchRow(id: 4242, dl: 'dl-hash-42')]),
+        );
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(DownloadJob::STATUS_COMPLETE, $job->getStatus());
+        self::assertSame('libgen', $job->getSource());
+        self::assertSame([], $this->mamEvents, 'an unavailable MAM must never be contacted');
+    }
+
+    public function testMamThrowingIsNonFatalAndTheWalkContinues(): void
+    {
+        // MAM finds a release but refuses to serve the .torrent file (expired
+        // cookie → grab() throws). The handler logs a warning and falls through to
+        // the cascade, which completes the job.
+        $http = new MockHttpClient([new MockResponse('BOOKBYTES')]);
+        $client = new HttpDownloadClient($http, $this->root . '/staging', new AAStyleHttpProtocol(), $this->bypassResolver());
+
+        $job = $this->job(title: 'Red Rising', author: 'Pierce Brown', year: '2014');
+
+        $handler = $this->handler(
+            [$client],
+            $this->root . '/library',
+            ['https://m.test/ok'],
+            'epub',
+            priority: [['id' => 'mam', 'enabled' => true], ['id' => 'libgen', 'enabled' => true]],
+            mam: $this->mamFulfillment(searchRows: [$this->mamSearchRow(id: 4242, dl: 'dl-hash-42')], torrentFileOk: false),
+        );
+        $handler(new ProcessDownloadJob(1));
+
+        self::assertSame(['search', 'torrent-file'], $this->mamEvents, 'MAM was tried and threw on the .torrent fetch');
+        self::assertSame(DownloadJob::STATUS_COMPLETE, $job->getStatus());
+        self::assertSame('libgen', $job->getSource());
+    }
+
+    /**
+     * A real MamFulfillment over a mocked MAM transport (the class is final, so it
+     * cannot be stubbed): searchRows drive tryFulfill's search, torrentFileOk
+     * controls whether the .torrent fetch succeeds (false → grab() throws), and
+     * enabled: false makes isAvailable() report the integration as unusable.
+     *
+     * @param list<array<string, mixed>> $searchRows
+     */
+    private function mamFulfillment(bool $enabled = true, array $searchRows = [], bool $torrentFileOk = true): MamFulfillment
+    {
+        $http = new MockHttpClient(function (string $method, string $url) use ($searchRows, $torrentFileOk): MockResponse {
+            if (str_contains($url, 'loadSearchJSONbasic.php')) {
+                $this->mamEvents[] = 'search';
+
+                return new MockResponse(json_encode(['data' => $searchRows, 'found' => \count($searchRows)], JSON_THROW_ON_ERROR));
+            }
+            if (str_contains($url, '/tor/download.php/')) {
+                $this->mamEvents[] = 'torrent-file';
+
+                return $torrentFileOk
+                    ? new MockResponse('d8:announce20:https://mam.test/ann4:infod4:name3:fooee', ['response_headers' => ['content-type' => 'application/x-bittorrent']])
+                    : new MockResponse('<html>Login required</html>', ['response_headers' => ['content-type' => 'text/html']]);
+            }
+
+            self::fail('unexpected MAM request: ' . $url);
+        });
+
+        $settings = new FakeMyAnonamouseSettings(new MyAnonamouseConfig(enabled: $enabled, baseUrl: 'https://mam.test'));
+
+        // tryFulfill() reads the shared Prowlarr match policy via findByKind(); the
+        // repository is final, so seed its private memo with a null prowlarr row —
+        // that short-circuits before the entity manager and yields the default.
+        $integrations = (new \ReflectionClass(IntegrationRepository::class))->newInstanceWithoutConstructor();
+        (new \ReflectionProperty(IntegrationRepository::class, 'memo'))
+            ->setValue($integrations, [Integration::KIND_PROWLARR => null]);
+
+        $blocked = $this->createStub(BlockedReleaseRepository::class);
+        $blocked->method('blockedKeysForBook')->willReturn([]);
+
+        return new MamFulfillment(
+            [$this->mamTorrentClient()],
+            new MyAnonamouseClient($http, $settings, new NullLogger(), 0),
+            $settings,
+            new TorrentMatchScorer(new MatchScorer()),
+            $integrations,
+            new FulfillmentLog($this->createStub(Connection::class), new NullLogger()),
+            $blocked,
+            new NullLogger(),
+        );
+    }
+
+    /**
+     * One MAM search-endpoint row in the raw JSON shape mapRelease() consumes,
+     * matching the test book so the scorer ranks it.
+     *
+     * @return array<string, mixed>
+     */
+    private function mamSearchRow(int $id, string $dl): array
+    {
+        return [
+            'id'                 => $id,
+            'title'              => 'Red Rising',
+            'author_info'        => json_encode(['1' => 'Pierce Brown'], JSON_THROW_ON_ERROR),
+            'main_cat'           => 14,
+            'catname'            => 'Ebooks - Fiction',
+            'filetypes'          => 'epub',
+            'size'               => '100 MiB',
+            'seeders'            => 10,
+            'leechers'           => 1,
+            'times_completed'    => 5,
+            'vip'                => 0,
+            'fl_vip'             => 0,
+            'free'               => 0,
+            'personal_freeleech' => 0,
+            'dl'                 => $dl,
+            'added'              => '2024-05-01 12:34:56',
+        ];
+    }
+
+    /** Torrent-protocol download client for the MAM fulfillment: accepts every add. */
+    private function mamTorrentClient(): DownloadClientInterface
+    {
+        return new class implements DownloadClientInterface {
+            public function getName(): string
+            {
+                return 'fake';
+            }
+
+            public function getProtocol(): string
+            {
+                return ReleaseCandidate::PROTOCOL_TORRENT;
+            }
+
+            public function isConfigured(): bool
+            {
+                return true;
+            }
+
+            public function testConnection(): array
+            {
+                return [true, 'ok'];
+            }
+
+            public function addDownload(string $url, string $name, array $options = []): string
+            {
+                return 'mam-added-hash';
+            }
+
+            public function getStatus(string $downloadId): DownloadStatus
+            {
+                throw new \LogicException('not used');
+            }
+
+            public function cancel(string $downloadId, bool $deleteFiles = false): bool
+            {
+                throw new \LogicException('not used');
+            }
+
+            public function listDownloads(): array
+            {
+                return [];
+            }
+        };
+    }
+
+    /**
+     * Torrent fulfillment that records whether it was invoked; when $succeeds it
+     * stamps the job the way TorrentFulfillment does and reports the add.
+     */
+    private function recordingTorrent(bool $succeeds = false): RecordingTorrentFulfillment
+    {
+        return new RecordingTorrentFulfillment($succeeds);
     }
 
     /** Torrent fulfillment that is never available — these tests exercise the HTTP cascade. */
@@ -400,6 +703,42 @@ final class ProcessDownloadJobHandlerTest extends TestCase
             is_dir($path) ? $this->rrmdir($path) : @unlink($path);
         }
         @rmdir($dir);
+    }
+}
+
+/**
+ * Available torrent fulfillment that records whether tryFulfill was invoked;
+ * when $succeeds it stamps the job the way TorrentFulfillment does.
+ */
+final class RecordingTorrentFulfillment implements TorrentFulfillmentInterface
+{
+    public bool $called = false;
+
+    public function __construct(private readonly bool $succeeds)
+    {
+    }
+
+    public function isAvailable(): bool
+    {
+        return true;
+    }
+
+    public function tryFulfill(DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool
+    {
+        $this->called = true;
+        if (!$this->succeeds) {
+            return false;
+        }
+        $job->setProtocol(ReleaseCandidate::PROTOCOL_TORRENT)
+            ->setClientRef('deadbeefdeadbeef')
+            ->setStatus(DownloadJob::STATUS_DOWNLOADING);
+
+        return true;
+    }
+
+    public function grab(DownloadJob $job, ReleaseCandidate $candidate, string $subject): bool
+    {
+        return false;
     }
 }
 

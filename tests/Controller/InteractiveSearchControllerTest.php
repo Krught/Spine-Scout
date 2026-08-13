@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Tests\Controller;
 
+use App\Download\Client\DownloadClientInterface;
+use App\Download\FulfillmentLog;
+use App\Download\Mam\MamFulfillment;
 use App\Download\Torrent\TorrentFulfillment;
 use App\Download\Torrent\TorrentFulfillmentInterface;
 use App\Entity\Book;
@@ -12,15 +15,24 @@ use App\Entity\DownloadJob;
 use App\Entity\Integration;
 use App\Entity\User;
 use App\Controller\InteractiveSearchController;
+use App\Integration\MyAnonamouse\MyAnonamouseClient;
+use App\Integration\MyAnonamouse\MyAnonamouseConfig;
 use App\Mirror\MirrorListNormalizer;
 use PHPUnit\Framework\Attributes\DataProvider;
+use App\Repository\BlockedReleaseRepository;
 use App\Repository\IntegrationRepository;
 use App\Search\DirectDownload\DirectDownloadConfig;
+use App\Search\Match\MatchScorer;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Torrent\ScoredRelease;
+use App\Search\Torrent\TorrentMatchScorer;
+use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
+use Psr\Log\NullLogger;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class InteractiveSearchControllerTest extends WebTestCase
 {
@@ -716,6 +728,472 @@ final class InteractiveSearchControllerTest extends WebTestCase
         ], new MirrorListNormalizer());
         $this->integrations->saveDirectDownloadConfig($config, true, $this->em);
         $this->em->flush();
+    }
+
+    // --- MyAnonamouse source ----------------------------------------------
+
+    /**
+     * With the integration + a torrent client available, the mam source entry is
+     * enabled, mirror-less, seeded with the shared search-method default, and
+     * carries the wedge context the panel's toggle needs.
+     */
+    public function testSourcesIncludesMamWithWedgeBlockWhenAvailable(): void
+    {
+        $this->saveConfigWithMam();
+        $this->seedMam(alwaysUseWedge: true, autoWedgeMinGb: 2.5, isVip: true);
+        $this->stubMam();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/sources', ['_token' => $token]);
+
+        self::assertResponseIsSuccessful();
+        $mam = $this->sourceEntry('mam');
+        self::assertNotNull($mam);
+        self::assertSame('MyAnonamouse', $mam['label']);
+        self::assertTrue($mam['enabled']);
+        self::assertSame([], $mam['mirrors']);
+        self::assertSame('categories', $mam['searchMethod']);
+        self::assertSame([
+            'userIsVip' => true,
+            'alwaysUse' => true,
+            'autoMinGb' => 2.5,
+        ], $mam['wedge']);
+    }
+
+    /**
+     * Switched on in the priority list but never configured (no cookie, no MAM
+     * integration): listed greyed out, with a default wedge block — exactly like
+     * the torrent source without its stack.
+     */
+    public function testSourcesListsMamDisabledWhenUnconfigured(): void
+    {
+        $this->saveConfigWithMam();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/sources', ['_token' => $token]);
+
+        self::assertResponseIsSuccessful();
+        $mam = $this->sourceEntry('mam');
+        self::assertNotNull($mam);
+        self::assertFalse($mam['enabled']);
+        self::assertSame([], $mam['mirrors']);
+        self::assertSame([
+            'userIsVip' => false,
+            'alwaysUse' => false,
+            'autoMinGb' => null,
+        ], $mam['wedge']);
+    }
+
+    public function testRunMamWithoutConfigReturns409(): void
+    {
+        $this->saveConfigWithMam();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/run', [
+            '_token' => $token,
+            'source' => 'mam',
+            'title'  => 'Red Rising',
+        ]);
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('MyAnonamouse search is not configured.', $this->json()['error']);
+    }
+
+    /**
+     * MAM rows come back in the torrent row shape (the panel's torrent table
+     * renders them unchanged) plus a `mam` block: alreadyFree applies the
+     * VIP-aware freeleech rule, wedgeDefault the auto-wedge size threshold.
+     */
+    public function testRunMamReturnsTorrentShapedRowsWithMamBlock(): void
+    {
+        $this->saveConfigWithMam();
+        // VIP account; auto-wedge from 0.05 GB (the 100 MiB rows are above it).
+        $this->seedMam(autoWedgeMinGb: 0.05, isVip: true);
+        $this->stubMam(searchRows: [
+            $this->mamSearchRow(id: 111, dl: 'dl-a', free: true),
+            $this->mamSearchRow(id: 222, dl: 'dl-b', flVip: true),
+            $this->mamSearchRow(id: 333, dl: 'dl-c'),
+        ]);
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/run', [
+            '_token' => $token,
+            'source' => 'mam',
+            'title'  => 'Red Rising',
+            'author' => 'Pierce Brown',
+        ]);
+
+        self::assertResponseIsSuccessful();
+        $data = $this->json();
+        self::assertSame('mam', $data['source']);
+        self::assertNull($data['mirror']);
+        self::assertStringContainsString('/tor/browse.php', (string) $data['searchUrl']);
+
+        $rows = [];
+        foreach ($data['results'] as $row) {
+            $rows[$row['id']] = $row;
+        }
+        self::assertCount(3, $rows);
+
+        foreach ($rows as $row) {
+            self::assertSame('MyAnonamouse', $row['torrent']['indexer']);
+        }
+
+        // Sitewide freeleech: already free, never wedge.
+        self::assertTrue($rows['111']['mam']['free']);
+        self::assertTrue($rows['111']['mam']['alreadyFree']);
+        self::assertFalse($rows['111']['mam']['wedgeDefault']);
+        self::assertSame('dl-a', $rows['111']['mam']['dlHash']);
+        self::assertSame(111, $rows['111']['mam']['torrentId']);
+        self::assertContains('freeleech', $rows['111']['torrent']['flags']);
+
+        // VIP freeleech + VIP account: already free too.
+        self::assertTrue($rows['222']['mam']['flVip']);
+        self::assertTrue($rows['222']['mam']['alreadyFree']);
+        self::assertFalse($rows['222']['mam']['wedgeDefault']);
+        self::assertContains('vip_freeleech', $rows['222']['torrent']['flags']);
+
+        // Plain release above the auto-wedge threshold: wedge on by default.
+        self::assertFalse($rows['333']['mam']['alreadyFree']);
+        self::assertTrue($rows['333']['mam']['wedgeDefault']);
+    }
+
+    /**
+     * For a non-VIP account a VIP-freeleech release still costs ratio, and
+     * "always use wedge" flips every not-free row's default on — but never a
+     * sitewide-freeleech row's.
+     */
+    public function testRunMamWedgeDefaultRespectsAlwaysUseWedgeForNonVip(): void
+    {
+        $this->saveConfigWithMam();
+        $this->seedMam(alwaysUseWedge: true, isVip: false);
+        $this->stubMam(searchRows: [
+            $this->mamSearchRow(id: 111, dl: 'dl-a', free: true),
+            $this->mamSearchRow(id: 222, dl: 'dl-b', flVip: true),
+        ]);
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/run', [
+            '_token' => $token,
+            'source' => 'mam',
+            'title'  => 'Red Rising',
+        ]);
+
+        self::assertResponseIsSuccessful();
+        $rows = [];
+        foreach ($this->json()['results'] as $row) {
+            $rows[$row['id']] = $row;
+        }
+
+        self::assertTrue($rows['111']['mam']['alreadyFree']);
+        self::assertFalse($rows['111']['mam']['wedgeDefault']);
+
+        self::assertFalse($rows['222']['mam']['alreadyFree'], 'VIP freeleech is not free for a non-VIP account');
+        self::assertTrue($rows['222']['mam']['wedgeDefault'], 'alwaysUseWedge covers every not-free release');
+    }
+
+    /** An unrecognized method falls back to categories — MAM gets a main_cat scope. */
+    public function testRunMamInvalidMethodFallsBackToCategories(): void
+    {
+        $this->saveConfigWithMam();
+        $this->seedMam();
+        $this->stubMam(searchRows: [$this->mamSearchRow(id: 111, dl: 'dl-a')]);
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/run', [
+            '_token'       => $token,
+            'source'       => 'mam',
+            'title'        => 'Red Rising',
+            'searchMethod' => 'bogus',
+        ]);
+
+        self::assertResponseIsSuccessful();
+        $search = $this->mamRequestContaining('loadSearchJSONbasic.php');
+        self::assertNotNull($search);
+        self::assertStringContainsString('tor[main_cat][0]=14', urldecode($search), 'ebook default under the categories method');
+    }
+
+    /**
+     * A MAM grab creates a source='mam' torrent-protocol job, spends the wedge
+     * (useWedge=true, not free) BEFORE fetching the .torrent, and stamps the
+     * client hash — the async poller takes it from there.
+     */
+    public function testGrabMamCreatesMamJobAndSpendsWedge(): void
+    {
+        $this->saveConfigWithMam();
+        $this->seedMam();
+        $this->stubMam();
+        $book = $this->seedBook();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/grab', $this->mamGrabPayload($token, $book, useWedge: true));
+
+        self::assertResponseIsSuccessful();
+        self::assertTrue($this->json()['queued']);
+
+        $this->em->clear();
+        $jobs = $this->em->getRepository(DownloadJob::class)->findAll();
+        self::assertCount(1, $jobs);
+        self::assertSame('mam', $jobs[0]->getSource());
+        self::assertSame('123456', $jobs[0]->getSourceId());
+        self::assertSame(ReleaseCandidate::PROTOCOL_TORRENT, $jobs[0]->getProtocol());
+        self::assertSame('added-hash', $jobs[0]->getClientRef());
+        self::assertSame(DownloadJob::STATUS_DOWNLOADING, $jobs[0]->getStatus());
+
+        $joined = implode("\n", $this->mamRequests);
+        self::assertStringContainsString('bonusBuy.php', $joined);
+        self::assertStringContainsString('spendtype=personalFL&torrentid=123456', $joined);
+        self::assertStringContainsString('/tor/download.php/dl-hash-abc', $joined);
+    }
+
+    /**
+     * The posted wedge flag is re-validated server-side: a release that is
+     * already free for this account (here VIP freeleech + VIP user, recomputed
+     * from the account snapshot) never spends a wedge, whatever the client said.
+     */
+    public function testGrabMamForcesWedgeOffWhenAlreadyFree(): void
+    {
+        $this->saveConfigWithMam();
+        $this->seedMam(isVip: true);
+        $this->stubMam();
+        $book = $this->seedBook();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/grab', $this->mamGrabPayload($token, $book, useWedge: true, flVip: true));
+
+        self::assertResponseIsSuccessful();
+        self::assertTrue($this->json()['queued']);
+        self::assertStringNotContainsString('bonusBuy.php', implode("\n", $this->mamRequests), 'never wedge an already-free release');
+    }
+
+    /** "Always use wedge" wins over an unchecked toggle on a not-free release. */
+    public function testGrabMamForcesWedgeOnWhenAlwaysUseWedge(): void
+    {
+        $this->saveConfigWithMam();
+        $this->seedMam(alwaysUseWedge: true);
+        $this->stubMam();
+        $book = $this->seedBook();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/grab', $this->mamGrabPayload($token, $book, useWedge: false));
+
+        self::assertResponseIsSuccessful();
+        self::assertTrue($this->json()['queued']);
+        self::assertStringContainsString('bonusBuy.php', implode("\n", $this->mamRequests), 'alwaysUseWedge overrides the posted choice');
+    }
+
+    public function testGrabMamWithoutConfigReturns409(): void
+    {
+        $this->saveConfigWithMam();
+        $book = $this->seedBook();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $this->postJson('/interactive-search/grab', $this->mamGrabPayload($token, $book, useWedge: false));
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('MyAnonamouse downloading is not configured.', $this->json()['error']);
+    }
+
+    public function testGrabMamRejectsMissingMamBlock(): void
+    {
+        $this->saveConfigWithMam();
+        $this->seedMam();
+        $this->stubMam();
+        $book = $this->seedBook();
+
+        $this->client->loginUser($this->loadUser());
+        $token = $this->csrfToken();
+        $payload = $this->mamGrabPayload($token, $book, useWedge: false);
+        unset($payload['mam']);
+        $this->postJson('/interactive-search/grab', $payload);
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('This result is missing its MyAnonamouse download data.', $this->json()['error']);
+    }
+
+    // --- MAM helpers ------------------------------------------------------
+
+    /** Requested MAM URLs + form bodies ("url|body"), for asserting on wedge/search calls. */
+    private array $mamRequests = [];
+
+    /** The seeded config, with mam appended enabled. */
+    private function saveConfigWithMam(): void
+    {
+        $this->saveConfig([
+            ['id' => 'annas_archive', 'enabled' => true],
+            ['id' => 'libgen', 'enabled' => true],
+            ['id' => 'zlibrary', 'enabled' => false],
+            ['id' => 'welib', 'enabled' => false],
+            ['id' => 'torrent', 'enabled' => true],
+            ['id' => 'mam', 'enabled' => true],
+        ], [
+            'annas_archive' => ['https://aa.test'],
+            'libgen'        => ['https://lg.test'],
+        ]);
+    }
+
+    /** Enabled MAM integration: config + session cookie + account snapshot. */
+    private function seedMam(bool $alwaysUseWedge = false, ?float $autoWedgeMinGb = null, bool $isVip = false): void
+    {
+        $config = new MyAnonamouseConfig(
+            enabled: true,
+            baseUrl: 'https://mam.test',
+            alwaysUseWedge: $alwaysUseWedge,
+            autoWedgeMinGb: $autoWedgeMinGb,
+        );
+        $this->integrations->saveMyAnonamouseConfig($config, true, $this->em);
+        $this->em->flush();
+        $this->integrations->persistRotatedMamSessionCookie('test-cookie');
+        $this->integrations->saveMamAccountState(['isVip' => $isVip]);
+    }
+
+    /**
+     * Swap the MAM stack for one that answers from canned rows over a mocked HTTP
+     * layer. MamFulfillment is final, so a REAL instance is wired (mock transport,
+     * stub torrent client) and set under the concrete ids the controller injects
+     * — the same pattern as stubTorrents(), one level deeper.
+     *
+     * @param list<array<string, mixed>> $searchRows
+     */
+    private function stubMam(array $searchRows = []): void
+    {
+        $this->client->disableReboot();
+        $this->mamRequests = [];
+
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use ($searchRows): MockResponse {
+            $body = is_string($options['body'] ?? null) ? $options['body'] : '';
+            $this->mamRequests[] = $url . '|' . $body;
+            if (str_contains($url, 'loadSearchJSONbasic.php')) {
+                return new MockResponse(json_encode(['data' => $searchRows, 'found' => \count($searchRows)], JSON_THROW_ON_ERROR));
+            }
+            if (str_contains($url, 'bonusBuy.php')) {
+                return new MockResponse(json_encode(['success' => true], JSON_THROW_ON_ERROR));
+            }
+            if (str_contains($url, '/tor/download.php/')) {
+                return new MockResponse(
+                    'd8:announce26:https://mam.test/announce4:infod4:name3:fooee',
+                    ['response_headers' => ['content-type' => 'application/x-bittorrent']],
+                );
+            }
+
+            self::fail('unexpected MAM request: ' . $url);
+        });
+        $mamClient = new MyAnonamouseClient($http, $this->integrations, new NullLogger(), 0);
+
+        $download = $this->createStub(DownloadClientInterface::class);
+        $download->method('getProtocol')->willReturn(ReleaseCandidate::PROTOCOL_TORRENT);
+        $download->method('isConfigured')->willReturn(true);
+        $download->method('addDownload')->willReturn('added-hash');
+
+        $blocked = $this->createStub(BlockedReleaseRepository::class);
+        $blocked->method('blockedKeysForBook')->willReturn([]);
+
+        $container = self::getContainer();
+        $container->set(MyAnonamouseClient::class, $mamClient);
+        $container->set(MamFulfillment::class, new MamFulfillment(
+            [$download],
+            $mamClient,
+            $this->integrations,
+            new TorrentMatchScorer(new MatchScorer()),
+            $this->integrations,
+            new FulfillmentLog($this->createStub(Connection::class), new NullLogger()),
+            $blocked,
+            new NullLogger(),
+        ));
+    }
+
+    /**
+     * The /sources entry with this id from the last response, or null.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function sourceEntry(string $id): ?array
+    {
+        foreach ($this->json()['sources'] as $source) {
+            if ($source['id'] === $id) {
+                return $source;
+            }
+        }
+
+        return null;
+    }
+
+    /** First recorded MAM request ("url|body") whose URL matches, or null. */
+    private function mamRequestContaining(string $needle): ?string
+    {
+        foreach ($this->mamRequests as $request) {
+            if (str_contains($request, $needle)) {
+                return $request;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * One MAM search-endpoint row in the raw JSON shape mapRelease() consumes
+     * (mirrors MamFulfillmentTest::searchRow).
+     *
+     * @return array<string, mixed>
+     */
+    private function mamSearchRow(int $id, string $dl, bool $free = false, bool $flVip = false): array
+    {
+        return [
+            'id'                 => $id,
+            'title'              => 'Red Rising',
+            'author_info'        => json_encode(['1' => 'Pierce Brown'], JSON_THROW_ON_ERROR),
+            'main_cat'           => 14,
+            'catname'            => 'Ebooks - Fiction',
+            'filetypes'          => 'epub',
+            'size'               => '100 MiB',
+            'seeders'            => 10,
+            'leechers'           => 1,
+            'times_completed'    => 5,
+            'vip'                => 0,
+            'fl_vip'             => $flVip ? 1 : 0,
+            'free'               => $free ? 1 : 0,
+            'personal_freeleech' => 0,
+            'dl'                 => $dl,
+            'added'              => '2024-05-01 12:34:56',
+        ];
+    }
+
+    /**
+     * The grab payload the panel posts for a picked MAM row.
+     *
+     * @return array<string, mixed>
+     */
+    private function mamGrabPayload(string $token, Book $book, bool $useWedge, bool $free = false, bool $flVip = false): array
+    {
+        return [
+            '_token'   => $token,
+            'source'   => 'mam',
+            'bookId'   => $book->getId(),
+            'id'       => '123456',
+            'title'    => 'Red Rising',
+            'link'     => 'https://mam.test/tor/download.php/dl-hash-abc',
+            'format'   => 'epub',
+            'indexer'  => 'MyAnonamouse',
+            'seeders'  => 10,
+            'useWedge' => $useWedge,
+            'mam'      => [
+                'torrentId'         => 123456,
+                'dlHash'            => 'dl-hash-abc',
+                'free'              => $free,
+                'flVip'             => $flVip,
+                'personalFreeleech' => false,
+            ],
+        ];
     }
 
     private function loadUser(string $username = 'member'): User

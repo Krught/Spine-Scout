@@ -7,6 +7,7 @@ namespace App\Controller;
 use App\Download\Client\DownloadClientInterface;
 use App\Download\FileMover;
 use App\Download\FilenameTemplate;
+use App\Download\Mam\MamFulfillment;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Progress\CollectingDownloadProgressReporter;
 use App\Entity\Book;
@@ -14,6 +15,9 @@ use App\Entity\BookRequest;
 use App\Entity\DownloadJob;
 use App\Download\Torrent\TorrentFulfillmentInterface;
 use App\Entity\User;
+use App\Integration\MyAnonamouse\MyAnonamouseClient;
+use App\Integration\MyAnonamouse\MyAnonamouseConfig;
+use App\Integration\MyAnonamouse\MyAnonamouseSettingsProvider;
 use App\Integration\Prowlarr\ProwlarrClient;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
@@ -22,8 +26,12 @@ use App\Repository\IntegrationRepository;
 use App\Search\DirectDownload\DirectDownloadProbe;
 use App\Search\DirectDownload\DirectDownloadSource;
 use App\Search\DirectDownload\ScoredCandidate;
+use App\Search\Mam\MamCandidateMapper;
 use App\Search\Source\ReleaseCandidate;
+use App\Search\Source\ReleaseSearchPlan;
+use App\Search\Torrent\ProwlarrConfig;
 use App\Search\Torrent\ScoredRelease;
+use App\Search\Torrent\TorrentMatchPolicy;
 use App\Search\Torrent\TorrentMatchScorer;
 use App\Service\BookMetadataService;
 use App\Support\AudioFormat;
@@ -82,6 +90,9 @@ final class InteractiveSearchController extends AbstractController
         private readonly ProwlarrClient $prowlarr,
         private readonly TorrentMatchScorer $scorer,
         private readonly TorrentFulfillmentInterface $torrents,
+        private readonly MamFulfillment $mamFulfillment,
+        private readonly MyAnonamouseClient $mam,
+        private readonly MyAnonamouseSettingsProvider $mamSettings,
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface $logger,
     ) {
@@ -124,16 +135,34 @@ final class InteractiveSearchController extends AbstractController
             // operator enabled but never finished configuring (no mirrors / no
             // torrent stack) still shows, greyed out, so they can see why.
             $isTorrent = $source === DirectDownloadSource::Torrent;
-            $mirrors = $isTorrent ? [] : $config->mirrorsFor($source->value)->toArray();
+            $isMam = $source === DirectDownloadSource::Mam;
+            $mirrors = ($isTorrent || $isMam) ? [] : $config->mirrorsFor($source->value)->toArray();
             $entry = [
                 'id'      => $source->value,
                 'label'   => $source->label(),
-                'enabled' => $isTorrent ? $this->torrents->isAvailable() : $mirrors !== [],
+                'enabled' => match (true) {
+                    $isTorrent => $this->torrents->isAvailable(),
+                    $isMam     => $this->mamFulfillment->isAvailable(),
+                    default    => $mirrors !== [],
+                },
                 'mirrors' => $mirrors,
             ];
-            if ($isTorrent) {
-                // The operator's saved default; the panel's method toggle starts here.
+            if ($isTorrent || $isMam) {
+                // The operator's saved default; the panel's method toggle starts
+                // here. MAM deliberately shares the Prowlarr default: the three
+                // method ids are identical and it is the only persisted
+                // search-method preference.
                 $entry['searchMethod'] = $this->integrations->getProwlarrConfig()->searchMethod;
+            }
+            if ($isMam) {
+                // Everything the panel's wedge toggle needs to pick its default
+                // and explain a forced state, without another round-trip.
+                $mamConfig = $this->mamSettings->getMyAnonamouseConfig();
+                $entry['wedge'] = [
+                    'userIsVip' => (bool) ($this->mamSettings->getMamAccountState()['isVip'] ?? false),
+                    'alwaysUse' => $mamConfig->alwaysUseWedge,
+                    'autoMinGb' => $mamConfig->autoWedgeMinGb,
+                ];
             }
             $sources[] = $entry;
         }
@@ -160,6 +189,9 @@ final class InteractiveSearchController extends AbstractController
         }
         if ($sourceId === DirectDownloadSource::Torrent->value) {
             return $this->runTorrent($payload);
+        }
+        if ($sourceId === DirectDownloadSource::Mam->value) {
+            return $this->runMam($payload);
         }
         $config = $this->probe->config();
 
@@ -261,6 +293,146 @@ final class InteractiveSearchController extends AbstractController
     }
 
     /**
+     * The MAM half of run(), mirroring runTorrent(): search MyAnonamouse directly
+     * (no Prowlarr, no mirror) with the user-edited metadata and rank with the same
+     * weighted policy the MAM auto pipeline uses. Rows reuse the torrent row shape
+     * (the panel's torrent table renders them unchanged) plus a `mam` block with
+     * the freeleech facts the wedge toggle needs.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function runMam(array $payload): JsonResponse
+    {
+        if (!$this->mamFulfillment->isAvailable()) {
+            return $this->json(['error' => 'MyAnonamouse search is not configured.'], 409);
+        }
+
+        // Same contract as runTorrent(): the query is what the user typed, the
+        // audiobook toggle only stamps the plan's content type (MAM's main
+        // category keys off it), it never swaps the query.
+        $book = $this->resolveBook($payload);
+        $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
+        $plan = $this->probe->buildPlan(
+            trim((string) ($payload['isbn'] ?? '')),
+            trim((string) ($payload['author'] ?? '')),
+            trim((string) ($payload['title'] ?? '')),
+            trim((string) ($payload['publisher'] ?? '')),
+            trim((string) ($payload['year'] ?? '')),
+            trim((string) ($payload['language'] ?? '')),
+        );
+        if ($audiobook && $plan->contentType !== ReleaseCandidate::CONTENT_AUDIOBOOK) {
+            $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
+        }
+
+        // The panel's Categories / Raw / Filtered toggle — the same three ids the
+        // torrent method toggle uses. Anything unrecognized falls back to the
+        // categories default rather than failing the search.
+        $method = $payload['searchMethod'] ?? null;
+        if (!is_string($method) || !in_array($method, ProwlarrConfig::METHODS, true)) {
+            $method = ProwlarrConfig::METHOD_CATEGORIES;
+        }
+
+        $mamConfig = $this->mamSettings->getMyAnonamouseConfig();
+        $scored = $this->scorer->scored(
+            MamCandidateMapper::mapAll(
+                $this->mam->searchReleases($plan, $method, self::MAX_RESULTS),
+                $mamConfig->baseUrl,
+            ),
+            $plan,
+            $this->mamMatchPolicy($plan),
+        );
+
+        $threshold = $this->probe->matchThreshold();
+        $userIsVip = (bool) ($this->mamSettings->getMamAccountState()['isVip'] ?? false);
+        $rows = array_map(
+            static fn (ScoredRelease $sr): array => self::mamRow($sr, $threshold, $plan->contentType, $userIsVip, $mamConfig),
+            array_slice($scored, 0, self::MAX_RESULTS),
+        );
+
+        return $this->json([
+            'source'    => DirectDownloadSource::Mam->value,
+            'mirror'    => null,
+            'searchUrl' => self::mamSearchUrl($plan, $mamConfig->baseUrl),
+            'threshold' => $threshold,
+            'truncated' => \count($scored) > self::MAX_RESULTS,
+            'acceptedFormats' => $this->acceptedFormats(),
+            'results'   => $rows,
+        ]);
+    }
+
+    /**
+     * One ranked MAM release: the torrent row shape (the indexer column reads
+     * 'MyAnonamouse') plus a `mam` block. `alreadyFree` applies Prowlarr's
+     * "already free for this user" rule (MamRelease::isFreeForUser — sitewide
+     * freeleech, personal freeleech, or VIP freeleech for a VIP account), and
+     * `wedgeDefault` is the same MyAnonamouseConfig::wedgeDecision() the auto
+     * pipeline uses — the panel's wedge checkbox starts there.
+     *
+     * @return array<string, mixed>
+     */
+    private static function mamRow(ScoredRelease $sr, int $threshold, string $planContentType, bool $userIsVip, MyAnonamouseConfig $config): array
+    {
+        $row = self::torrentRow($sr, $threshold, $planContentType);
+
+        $mam = is_array($sr->candidate->extra['mam'] ?? null) ? $sr->candidate->extra['mam'] : [];
+        $free = (bool) ($mam['free'] ?? false);
+        $flVip = (bool) ($mam['flVip'] ?? false);
+        $personal = (bool) ($mam['personalFreeleech'] ?? false);
+        $alreadyFree = $free || $personal || ($userIsVip && $flVip);
+
+        $row['mam'] = [
+            'torrentId'         => is_numeric($mam['torrentId'] ?? null) ? (int) $mam['torrentId'] : 0,
+            'dlHash'            => (string) ($mam['dlHash'] ?? ''),
+            'free'              => $free,
+            'flVip'             => $flVip,
+            'personalFreeleech' => $personal,
+            'alreadyFree'       => $alreadyFree,
+            'wedgeDefault'      => $config->wedgeDecision($sr->candidate->sizeBytes, $alreadyFree),
+        ];
+
+        return $row;
+    }
+
+    /**
+     * The ranking criteria for a MAM search — replicates the (private)
+     * MamFulfillment::policyFor() so the interactive panel ranks exactly like the
+     * auto pipeline: MAM's own seed floor, the shared Prowlarr size cap and axis
+     * weights, and a format rank matching the plan's content type.
+     */
+    private function mamMatchPolicy(ReleaseSearchPlan $plan): TorrentMatchPolicy
+    {
+        $shared = $this->integrations->getProwlarrConfig()->matchPolicy();
+
+        return new TorrentMatchPolicy(
+            minSeeders: $this->mamSettings->getMyAnonamouseConfig()->minSeeders,
+            maxSizeBytes: $shared->maxSizeBytes,
+            weights: $shared->weights,
+            formatRank: $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK
+                ? TorrentMatchPolicy::FORMAT_RANK
+                : TorrentMatchPolicy::EBOOK_FORMAT_RANK,
+        );
+    }
+
+    /**
+     * Best-effort human-facing MAM browse URL for the query the panel just ran —
+     * the on-site equivalent of the JSON search, mirroring the mirror sources'
+     * `searchUrl`. Null when there is nothing to search for (then the panel simply
+     * shows no query link, like the torrent source).
+     */
+    private static function mamSearchUrl(ReleaseSearchPlan $plan, string $baseUrl): ?string
+    {
+        $text = $plan->primaryQuery();
+        if ($text === '' && $plan->hasIsbn()) {
+            $text = $plan->isbnCandidates[0];
+        }
+        if ($text === '') {
+            return null;
+        }
+
+        return rtrim($baseUrl, '/') . '/tor/browse.php?' . http_build_query(['tor' => ['text' => $text]]);
+    }
+
+    /**
      * The Best Match policy's format allow-list, so the panel can flag results
      * whose format the automatic pipeline would reject. Empty = allow all.
      *
@@ -284,6 +456,12 @@ final class InteractiveSearchController extends AbstractController
             return $error;
         }
         $payload = $this->payload($request);
+
+        // MAM grabs branch off before the torrent path, which stays untouched:
+        // torrent rows post no `source`, MAM rows post source=mam.
+        if (trim((string) ($payload['source'] ?? '')) === DirectDownloadSource::Mam->value) {
+            return $this->grabMam($payload);
+        }
 
         $book = $this->resolveBook($payload);
         if ($book === null) {
@@ -363,6 +541,137 @@ final class InteractiveSearchController extends AbstractController
         $this->em->flush();
         $this->logger->info('Interactive torrent grab queued', [
             'book' => $book->getId(), 'job' => $job->getId(), 'hash' => $job->getClientRef(),
+        ]);
+
+        return $this->json([
+            'ok'     => true,
+            'queued' => true,
+            'jobId'  => $job->getId(),
+            'error'  => null,
+        ]);
+    }
+
+    /**
+     * The MAM half of grab(): the same book/request/job scaffolding as the torrent
+     * path, but the job is stamped source=mam and the release goes through
+     * MamFulfillment — which optionally spends a personal-freeleech wedge, fetches
+     * the .torrent bytes off the row's dl hash, and hands them to the torrent
+     * client. The posted wedge choice is re-validated server-side: never spend on
+     * a release that is already free for this account, always spend when the
+     * operator switched "always use wedge" on.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function grabMam(array $payload): JsonResponse
+    {
+        $book = $this->resolveBook($payload);
+        if ($book === null) {
+            return $this->json(['error' => 'Could not resolve the book to download.'], 400);
+        }
+
+        $title = (string) ($this->blankToNull($payload['title'] ?? null) ?? '');
+        $mam = is_array($payload['mam'] ?? null) ? $payload['mam'] : [];
+        $torrentId = is_numeric($mam['torrentId'] ?? null) ? (int) $mam['torrentId'] : 0;
+        $dlHash = is_string($mam['dlHash'] ?? null) ? trim($mam['dlHash']) : '';
+        if ($title === '' || $torrentId <= 0 || $dlHash === '') {
+            return $this->json(['error' => 'This result is missing its MyAnonamouse download data.'], 400);
+        }
+
+        if (!$this->mamFulfillment->isAvailable()) {
+            return $this->json(['error' => 'MyAnonamouse downloading is not configured.'], 409);
+        }
+
+        $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
+
+        /** @var User $user */
+        $user = $this->getUser();
+        // Book and audiobook are independent requests for the same work, so the
+        // lookup is scoped to the edition this grab is for (RequestsController::create).
+        $bookRequest = $this->requests->findOneByUserAndBook($user, $book, $audiobook);
+        if ($bookRequest === null) {
+            $bookRequest = new BookRequest($user, $book);
+            $bookRequest->setAudiobook($audiobook);
+            $this->em->persist($bookRequest);
+        }
+        $bookRequest->setStatus(BookRequest::STATUS_APPROVED);
+
+        if ($bookRequest->getId() !== null && $this->jobs->hasActiveJobForRequest($bookRequest)) {
+            return $this->json(['error' => 'A download is already in progress for this book.'], 409);
+        }
+
+        $config = $this->mamSettings->getMyAnonamouseConfig();
+        $free = (bool) filter_var($mam['free'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $flVip = (bool) filter_var($mam['flVip'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $personal = (bool) filter_var($mam['personalFreeleech'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $userIsVip = (bool) ($this->mamSettings->getMamAccountState()['isVip'] ?? false);
+        $alreadyFree = $free || $personal || ($userIsVip && $flVip);
+
+        // The panel's checkbox is only a request — recomputed here so a stale or
+        // forged payload can neither waste a wedge on a free release nor dodge
+        // the operator's "always use wedge" setting.
+        $useWedge = (bool) filter_var($payload['useWedge'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        if ($alreadyFree) {
+            $useWedge = false;
+        } elseif ($config->alwaysUseWedge) {
+            $useWedge = true;
+        }
+
+        $link = (string) ($this->blankToNull($payload['link'] ?? null)
+            ?? rtrim($config->baseUrl, '/') . '/tor/download.php/' . $dlHash);
+
+        $job = new DownloadJob(
+            source: DirectDownloadSource::Mam->value,
+            sourceId: (string) $torrentId,
+            protocol: ReleaseCandidate::PROTOCOL_TORRENT,
+            bookRequest: $bookRequest,
+        );
+        $job->setStatus(DownloadJob::STATUS_QUEUED);
+        $bookRequest->setDeliveryStatus(DownloadJob::STATUS_QUEUED);
+        $this->em->persist($job);
+
+        $candidate = new ReleaseCandidate(
+            source: DirectDownloadSource::Mam->value,
+            sourceId: (string) $torrentId,
+            title: $title,
+            format: $this->blankToNull($payload['format'] ?? null),
+            sizeBytes: isset($payload['sizeBytes']) && is_numeric($payload['sizeBytes']) ? (int) $payload['sizeBytes'] : null,
+            downloadUrl: $link,
+            protocol: ReleaseCandidate::PROTOCOL_TORRENT,
+            indexer: MamCandidateMapper::INDEXER,
+            seeders: isset($payload['seeders']) && is_numeric($payload['seeders']) ? (int) $payload['seeders'] : null,
+            contentType: $audiobook ? ReleaseCandidate::CONTENT_AUDIOBOOK : ReleaseCandidate::CONTENT_EBOOK,
+            extra: [
+                'mam' => [
+                    'torrentId'         => $torrentId,
+                    'dlHash'            => $dlHash,
+                    'free'              => $free,
+                    'flVip'             => $flVip,
+                    'personalFreeleech' => $personal,
+                ],
+            ],
+        );
+
+        // Soft failure at 200, matching the torrent path: the panel renders the
+        // message inline instead of treating it as a transport error.
+        try {
+            $added = $this->mamFulfillment->grab($job, $candidate, $book->getTitle(), $useWedge);
+            $error = $added ? null : 'No torrent download client is configured.';
+        } catch (\Throwable $e) {
+            $error = 'Download client add failed: ' . $e->getMessage();
+        }
+
+        if ($error !== null) {
+            $job->setStatus(DownloadJob::STATUS_ERROR)->setStatusMessage($error);
+            $bookRequest->setDeliveryStatus(DownloadJob::STATUS_ERROR);
+            $this->em->flush();
+            $this->logger->warning('Interactive MyAnonamouse grab failed', ['book' => $book->getId(), 'error' => $error]);
+
+            return $this->json(['ok' => false, 'queued' => false, 'error' => $error]);
+        }
+
+        $this->em->flush();
+        $this->logger->info('Interactive MyAnonamouse grab queued', [
+            'book' => $book->getId(), 'job' => $job->getId(), 'hash' => $job->getClientRef(), 'wedge' => $useWedge,
         ]);
 
         return $this->json([

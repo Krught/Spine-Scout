@@ -34,6 +34,12 @@ final class MyAnonamouseConfig
     public readonly int $vipFetchLimit;
 
     /**
+     * Auto-wedge size threshold in GB; null = off. Not promoted: the constructor clamps
+     * zero/negative values to null, so the invariant holds for every instance.
+     */
+    public readonly ?float $autoWedgeMinGb;
+
+    /**
      * @param bool        $enabled                 Master switch for the integration. NOT part of the options['config']
      *                                             blob (toArray() omits it) — it mirrors the myanonamouse Integration
      *                                             row's `enabled` column, injected by
@@ -50,6 +56,11 @@ final class MyAnonamouseConfig
      *                                             MIN_VIP_FETCH_LIMIT..MAX_VIP_FETCH_LIMIT on construction.
      * @param bool        $dynamicSeedboxUpdate    Re-register the server's public IP with the MAM session on refresh
      * @param string|null $proxyUrl                Optional http|socks5 proxy applied to MAM traffic only; null = direct
+     * @param bool        $alwaysUseWedge          Spend a freeleech wedge on every grab that isn't already free for
+     *                                             the user
+     * @param float|null  $autoWedgeMinGb          Spend a wedge automatically when a not-already-free release is at
+     *                                             least this many GB. Null (or any value ≤ 0, clamped on
+     *                                             construction) = off.
      */
     public function __construct(
         public readonly bool $enabled = false,
@@ -63,8 +74,11 @@ final class MyAnonamouseConfig
         int $vipFetchLimit = self::DEFAULT_VIP_FETCH_LIMIT,
         public readonly bool $dynamicSeedboxUpdate = false,
         public readonly ?string $proxyUrl = null,
+        public readonly bool $alwaysUseWedge = false,
+        ?float $autoWedgeMinGb = null,
     ) {
         $this->vipFetchLimit = self::clampVipFetchLimit($vipFetchLimit);
+        $this->autoWedgeMinGb = ($autoWedgeMinGb !== null && $autoWedgeMinGb > 0) ? $autoWedgeMinGb : null;
     }
 
     /** The only place the VIP cap's bounds are enforced; every entry point routes through it. */
@@ -99,6 +113,11 @@ final class MyAnonamouseConfig
             ? (int) $config['vipFetchLimit']
             : self::DEFAULT_VIP_FETCH_LIMIT;
 
+        // The constructor clamps ≤ 0 to null, so junk values stored as 0/-1 read back as "off".
+        $autoWedgeMinGb = isset($config['autoWedgeMinGb']) && is_numeric($config['autoWedgeMinGb'])
+            ? (float) $config['autoWedgeMinGb']
+            : null;
+
         return new self(
             $enabled,
             $baseUrl !== '' ? $baseUrl : self::DEFAULT_BASE_URL,
@@ -111,6 +130,8 @@ final class MyAnonamouseConfig
             $vipFetchLimit,
             (bool) ($config['dynamicSeedboxUpdate'] ?? false),
             $proxyUrl !== '' ? $proxyUrl : null,
+            (bool) ($config['alwaysUseWedge'] ?? false),
+            $autoWedgeMinGb,
         );
     }
 
@@ -128,7 +149,34 @@ final class MyAnonamouseConfig
             'vipFetchLimit'          => $this->vipFetchLimit,
             'dynamicSeedboxUpdate'   => $this->dynamicSeedboxUpdate,
             'proxyUrl'               => $this->proxyUrl,
+            'alwaysUseWedge'         => $this->alwaysUseWedge,
+            'autoWedgeMinGb'         => $this->autoWedgeMinGb,
         ];
+    }
+
+    /**
+     * Single decision point for spending a freeleech wedge on a grab — backs the interactive
+     * search default, its server-side re-validation, and auto (background) grabs alike.
+     *
+     * Never spend on a release that is already free for the user; otherwise "always use"
+     * wins, then the size threshold ({@see $autoWedgeMinGb}, GB) when both it and the
+     * release size are known.
+     *
+     * @param int|null $sizeBytes   Release size in bytes; null = unknown (threshold can't apply)
+     * @param bool     $alreadyFree Release is already free for the user (freeleech, personal FL, or VIP FL for VIPs)
+     */
+    public function wedgeDecision(?int $sizeBytes, bool $alreadyFree): bool
+    {
+        if ($alreadyFree) {
+            return false;
+        }
+        if ($this->alwaysUseWedge) {
+            return true;
+        }
+
+        return $this->autoWedgeMinGb !== null
+            && $sizeBytes !== null
+            && $sizeBytes >= $this->autoWedgeMinGb * 1024 ** 3;
     }
 
     /**

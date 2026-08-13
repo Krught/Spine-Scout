@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace App\Tests\Integration\MyAnonamouse;
 
+use App\Entity\Book;
+use App\Integration\MyAnonamouse\MamRelease;
 use App\Integration\MyAnonamouse\MyAnonamouseClient;
 use App\Integration\MyAnonamouse\MyAnonamouseConfig;
+use App\Search\Source\ReleaseCandidate;
+use App\Search\Source\ReleaseSearchPlan;
+use App\Search\Torrent\ProwlarrConfig;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\AbstractLogger;
 use Psr\Log\NullLogger;
@@ -531,6 +536,296 @@ final class MyAnonamouseClientTest extends TestCase
         self::assertSame('socks5://127.0.0.1:1080', $requests[0]['proxy']);
     }
 
+    public function testSearchReleasesSendsOneQueryScopedToThePlansCategory(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+
+        $releases = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(), ProwlarrConfig::METHOD_CATEGORIES);
+
+        self::assertCount(1, $requests, 'an on-demand search is a single request, never a walk');
+        self::assertSame('POST', $requests[0]['method']);
+        self::assertStringEndsWith('/tor/js/loadSearchJSONbasic.php', $requests[0]['url']);
+
+        $body = urldecode($requests[0]['body']);
+        self::assertStringContainsString('tor[text]=The Hobbit J. R. R. Tolkien', $body, 'the query is the plan title plus author');
+        self::assertStringContainsString('tor[srchIn][title]=true', $body);
+        self::assertStringContainsString('tor[srchIn][author]=true', $body);
+        self::assertStringContainsString('tor[srchIn][narrator]=true', $body);
+        self::assertStringContainsString('tor[searchType]=all', $body);
+        self::assertStringContainsString('tor[sortType]=default', $body);
+        self::assertStringContainsString('tor[perpage]=100', $body);
+        self::assertStringContainsString('thumbnails=1', $body);
+        self::assertStringContainsString('tor[main_cat][0]=13', $body, 'an audiobook plan scopes to MAM main category 13');
+
+        self::assertCount(3, $releases, 'categories mode trusts MAMs own scoping — nothing is dropped client-side');
+        self::assertSame([555001, 555002, 555003], array_map(static fn ($release) => $release->mamTorrentId, $releases));
+
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+
+        (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(contentType: ReleaseCandidate::CONTENT_EBOOK), ProwlarrConfig::METHOD_CATEGORIES);
+
+        self::assertStringContainsString('tor[main_cat][0]=14', urldecode($requests[0]['body']), 'an ebook plan scopes to main category 14');
+    }
+
+    public function testSearchReleasesRawSendsNoCategoryFilter(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+
+        $releases = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(), ProwlarrConfig::METHOD_RAW);
+
+        self::assertStringNotContainsString('tor[main_cat]', urldecode($requests[0]['body']));
+        self::assertCount(3, $releases);
+    }
+
+    public function testSearchReleasesFilteredDropsRowsThatContradictThePlansContentType(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+
+        $releases = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(), ProwlarrConfig::METHOD_FILTERED);
+
+        self::assertStringNotContainsString('tor[main_cat]', urldecode($requests[0]['body']), 'filtered mode sends no category filter either');
+        self::assertSame([555001, 555003], array_map(static fn ($release) => $release->mamTorrentId, $releases), 'the ebook row contradicts the audiobook plan');
+
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+
+        $releases = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(contentType: ReleaseCandidate::CONTENT_EBOOK), ProwlarrConfig::METHOD_FILTERED);
+
+        self::assertSame([555002], array_map(static fn ($release) => $release->mamTorrentId, $releases), 'the audiobook rows contradict the ebook plan');
+    }
+
+    public function testSearchReleasesMapsTheGrabFieldsAndTheirHelpers(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+
+        [$first, $second, $third] = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(), ProwlarrConfig::METHOD_RAW);
+
+        self::assertTrue($first->free);
+        self::assertSame(
+            'https://www.myanonamouse.net/tor/download.php/aa11bb22cc33',
+            $first->downloadUrl('https://www.myanonamouse.net/'),
+            'the download URL is built from the rows dl hash, base slash normalized',
+        );
+        self::assertTrue($first->isFreeForUser(false), 'sitewide freeleech is free for everyone');
+
+        self::assertTrue($second->flVip);
+        self::assertFalse($second->isFreeForUser(false), 'a VIP freeleech costs a non-VIP account');
+        self::assertTrue($second->isFreeForUser(true));
+
+        self::assertTrue($third->personalFreeleech);
+        self::assertTrue($third->isFreeForUser(false), 'a personal freeleech is free regardless of class');
+
+        $noHash = new MamRelease(
+            mamTorrentId: 1,
+            title: 'Hashless',
+            authors: [],
+            narrators: [],
+            audiobook: false,
+            catName: null,
+            langCode: null,
+            filetypes: null,
+            sizeBytes: null,
+            seeders: 0,
+            leechers: 0,
+            timesCompleted: 0,
+            vip: false,
+            flVip: false,
+            free: false,
+            personalFreeleech: false,
+            dlHash: null,
+            thumbnailUrl: null,
+            addedAt: null,
+        );
+        self::assertNull($noHash->downloadUrl('https://www.myanonamouse.net'), 'a row without a dl hash cannot be grabbed');
+    }
+
+    public function testSearchReleasesSendsTheIsbnAsTextWhenThePlanHasNothingElse(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+
+        (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(title: '', author: '', isbns: ['9780618968633']), ProwlarrConfig::METHOD_CATEGORIES);
+
+        self::assertStringContainsString('tor[text]=9780618968633', urldecode($requests[0]['body']), 'MAM has no ISBN param — the ISBN rides in as free text');
+    }
+
+    public function testSearchReleasesRespectsTheLimitBySlicing(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->searchPage(range(1, 100), 0)], $requests);
+
+        $releases = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(), ProwlarrConfig::METHOD_RAW, limit: 5);
+
+        self::assertCount(1, $requests, 'the limit never buys a second request — MAM is asked for a full page regardless');
+        self::assertStringContainsString('tor[perpage]=100', urldecode($requests[0]['body']));
+        self::assertSame(range(1, 5), array_map(static fn ($release) => $release->mamTorrentId, $releases));
+    }
+
+    public function testSearchReleasesRefusesAnUnknownMethodWithoutARequest(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('search_query.json'))], $requests);
+        $logger = new RecordingLogger();
+
+        self::assertSame([], (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), $logger))
+            ->searchReleases($this->plan(), 'categories; DROP'));
+
+        self::assertSame([], $requests, 'a garbage method never reaches MAM');
+        self::assertStringContainsString('search method is not supported', implode("\n", $logger->messages));
+    }
+
+    public function testSearchReleasesIsSkippedWhenUnconfiguredOrAskedForNothing(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([], $requests);
+
+        self::assertSame([], (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config(enabled: false)), new NullLogger()))
+            ->searchReleases($this->plan(), ProwlarrConfig::METHOD_CATEGORIES));
+        self::assertSame([], (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->searchReleases($this->plan(), ProwlarrConfig::METHOD_CATEGORIES, limit: 0));
+        self::assertSame([], $requests);
+    }
+
+    public function testSpendWedgeHitsBonusBuyAndReportsSuccess(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('bonus_buy_success.json'))], $requests);
+
+        $ok = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->spendWedge(555003);
+
+        self::assertTrue($ok);
+        self::assertCount(1, $requests, 'a wedge spend is a single request, never retried');
+        self::assertSame('GET', $requests[0]['method']);
+        self::assertSame('https://www.myanonamouse.net/json/bonusBuy.php/?spendtype=personalFL&torrentid=555003', $requests[0]['url']);
+    }
+
+    public function testSpendWedgeRefusalIsLoggedAndFalseNeverThrown(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            $this->json($this->fixture('bonus_buy_refused.json')),
+            new MockResponse('', ['http_code' => 403]),
+        ], $requests);
+        $logger = new RecordingLogger();
+        $client = new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), $logger);
+
+        self::assertFalse($client->spendWedge(555003), 'a lowercase success:false is a refusal too');
+        self::assertStringContainsString('Not enough seedbonus', implode("\n", array_map('json_encode', $logger->contexts)));
+        self::assertContains('warning', $logger->levels);
+
+        self::assertFalse($client->spendWedge(555003), 'an auth failure degrades to false');
+        self::assertCount(2, $requests);
+    }
+
+    public function testDownloadTorrentFileReturnsTheRawBytes(): void
+    {
+        $torrent = 'd8:announce40:https://t.myanonamouse.net/tracker.php4:infod4:name5:book1ee';
+        $requests = [];
+        $http = $this->mockClient([
+            new MockResponse($torrent, ['response_headers' => ['content-type' => 'application/x-bittorrent']]),
+        ], $requests);
+
+        $bytes = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->downloadTorrentFile('aa11bb22cc33');
+
+        self::assertSame($torrent, $bytes);
+        self::assertSame('https://www.myanonamouse.net/tor/download.php/aa11bb22cc33', $requests[0]['url']);
+        self::assertStringContainsString('mam_id=session-cookie-value', implode("\n", $requests[0]['headers']));
+    }
+
+    public function testDownloadTorrentFileRejectsHtmlLoginPagesAndFailures(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            new MockResponse($this->fixture('auth_failure.html'), ['response_headers' => ['content-type' => 'text/html']]),
+            new MockResponse("\n<html><body>Please log in</body></html>", ['response_headers' => ['content-type' => 'application/octet-stream']]),
+            new MockResponse('', ['http_code' => 403]),
+        ], $requests);
+        $client = new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger());
+
+        self::assertNull($client->downloadTorrentFile('deadbeef'), 'a text/html login page is not a torrent');
+        self::assertNull($client->downloadTorrentFile('deadbeef'), 'an HTML body is rejected whatever the content type claims');
+        self::assertNull($client->downloadTorrentFile('deadbeef'), 'a 403 is a failure, not bytes');
+        self::assertCount(3, $requests, 'no failure is retried');
+
+        self::assertNull($client->downloadTorrentFile('  '), 'an empty hash never reaches MAM');
+        self::assertCount(3, $requests);
+    }
+
+    public function testDownloadTorrentFilePersistsARotatedCookieLikeEveryOtherCall(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            new MockResponse('d4:infod4:name1:xee', ['response_headers' => [
+                'content-type' => 'application/x-bittorrent',
+                'set-cookie'   => 'mam_id=rotated-value; Path=/; HttpOnly',
+            ]]),
+            new MockResponse('d4:infod4:name1:yee', ['response_headers' => ['content-type' => 'application/x-bittorrent']]),
+        ], $requests);
+        $settings = new FakeMyAnonamouseSettings($this->config());
+        $client = new MyAnonamouseClient($http, $settings, new NullLogger());
+
+        $client->downloadTorrentFile('aa11bb22cc33');
+        self::assertSame(['rotated-value'], $settings->rotations);
+
+        $client->downloadTorrentFile('dd44ee55ff66');
+        self::assertStringContainsString('mam_id=rotated-value', implode("\n", $requests[1]['headers']));
+    }
+
+    public function testFetchUserInfoParsesTheExtendedAccountSummary(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([$this->json($this->fixture('user_info.json'))], $requests);
+
+        $info = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->fetchUserInfo();
+
+        // The connection-test contract stays untouched…
+        self::assertSame('bookmouse', $info['username']);
+        self::assertSame('Elite VIP', $info['class']);
+        self::assertSame('12.34', $info['ratio']);
+        self::assertTrue($info['isVip']);
+        // …and the stats extras ride alongside.
+        self::assertSame(51234, $info['seedbonus']);
+        self::assertSame(0, $info['unsatCount']);
+        self::assertSame(5, $info['unsatLimit']);
+        self::assertSame('4.2 TiB', $info['uploaded']);
+        self::assertSame('349.1 GiB', $info['downloaded']);
+        self::assertNull($info['wedges'], 'the summary does not report wedges — null, never a fabricated 0');
+        self::assertNull($info['vipUntil']);
+    }
+
+    public function testFetchUserInfoReadsWedgesAndVipExpiryWhenPresent(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            $this->json('{"username":"mouse","classname":"VIP","ratio":1.0,"seedbonus":"1000","unsat":{"count":"2","limit":"10"},"fl_wedges":"7","vip_until":"2027-01-01 00:00:00","uploaded":"1 TiB","downloaded":"10 GiB"}'),
+        ], $requests);
+
+        $info = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->fetchUserInfo();
+
+        self::assertSame(1000, $info['seedbonus'], 'numeric strings are coerced');
+        self::assertSame(2, $info['unsatCount']);
+        self::assertSame(10, $info['unsatLimit']);
+        self::assertSame(7, $info['wedges'], 'the fl_wedges spelling is accepted');
+        self::assertSame('2027-01-01 00:00:00', $info['vipUntil']);
+    }
+
     public function testTransportErrorsNeverEscapeTheClient(): void
     {
         $http = new MockHttpClient(static function (): MockResponse {
@@ -541,6 +836,9 @@ final class MyAnonamouseClientTest extends TestCase
         self::assertSame([], $client->fetchFreeleech(13));
         self::assertNull($client->fetchUserInfo());
         self::assertFalse($client->updateDynamicSeedboxIp());
+        self::assertSame([], $client->searchReleases($this->plan(), ProwlarrConfig::METHOD_CATEGORIES));
+        self::assertFalse($client->spendWedge(1));
+        self::assertNull($client->downloadTorrentFile('deadbeef'));
     }
 
     /**
@@ -613,6 +911,27 @@ final class MyAnonamouseClientTest extends TestCase
         return (string) file_get_contents(\dirname(__DIR__, 2) . '/Fixtures/responses/mam/' . $name);
     }
 
+    /**
+     * A release-search plan the way the fulfilment pipeline builds one: title
+     * variants + author, optional ISBNs, content type defaulting to audiobook.
+     *
+     * @param list<string> $isbns
+     */
+    private function plan(
+        string $title = 'The Hobbit',
+        string $author = 'J. R. R. Tolkien',
+        array $isbns = [],
+        string $contentType = ReleaseCandidate::CONTENT_AUDIOBOOK,
+    ): ReleaseSearchPlan {
+        return new ReleaseSearchPlan(
+            book: new Book('hardcover', 'hb-1', $title !== '' ? $title : 'Untitled'),
+            isbnCandidates: $isbns,
+            author: $author,
+            titleVariants: $title === '' ? [] : [$title],
+            contentType: $contentType,
+        );
+    }
+
     private function config(bool $enabled = true, ?string $proxy = null): MyAnonamouseConfig
     {
         return new MyAnonamouseConfig(
@@ -642,9 +961,13 @@ final class RecordingLogger extends AbstractLogger
     /** @var list<array<string, mixed>> */
     public array $contexts = [];
 
+    /** @var list<string> */
+    public array $levels = [];
+
     public function log($level, \Stringable|string $message, array $context = []): void
     {
         $this->messages[] = (string) $message;
         $this->contexts[] = $context;
+        $this->levels[] = (string) $level;
     }
 }

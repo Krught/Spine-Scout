@@ -83,6 +83,36 @@ final class TorrentMatchScorerTest extends TestCase
         self::assertSame([], $this->scorer->rank([], $plan, TorrentMatchPolicy::fromProwlarrConfig(ProwlarrConfig::default())));
     }
 
+    public function testEbookFormatRankPrefersEpubOverPdf(): void
+    {
+        $plan = $this->plan('Dungeon Crawler Carl', 'Matt Dinniman');
+        // Format-only weighting so the ebook rank alone decides the order.
+        $policy = new TorrentMatchPolicy(
+            minSeeders: 0,
+            maxSizeBytes: null,
+            weights: ['match' => 0.0, 'seeders' => 0.0, 'size' => 0.0, 'format' => 1.0],
+            formatRank: TorrentMatchPolicy::EBOOK_FORMAT_RANK,
+        );
+
+        $ebook = static fn (string $format): ReleaseCandidate => new ReleaseCandidate(
+            source: 'mam',
+            sourceId: 'id-' . $format,
+            title: 'Dungeon Crawler Carl',
+            format: $format,
+            sizeBytes: 500_000_000,
+            downloadUrl: 'https://mam.test/tor/download.php/' . $format,
+            protocol: ReleaseCandidate::PROTOCOL_TORRENT,
+            seeders: 10,
+            contentType: ReleaseCandidate::CONTENT_EBOOK,
+            author: 'Matt Dinniman',
+        );
+
+        $ranked = $this->scorer->rank([$ebook('pdf'), $ebook('epub')], $plan, $policy);
+
+        self::assertSame('epub', $ranked[0]->format, 'the ebook rank must put epub ahead of pdf');
+        self::assertSame('pdf', $ranked[1]->format);
+    }
+
     private function plan(string $title, string $author): ReleaseSearchPlan
     {
         $book = new Book('test', 'ext-1', $title);

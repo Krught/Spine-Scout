@@ -229,7 +229,7 @@ final class HomeController extends AbstractController
                 $shared = $sharedData();
                 $row = [
                     'items' => $this->shelves->freeleechCards(
-                        $freeleech->pageForBrowse(null, null, $shared['include_vip'], 'added', 'desc', 0, self::FREELEECH_ROW_LIMIT),
+                        $freeleech->pageForBrowse(null, null, $shared['include_vip'], 'trending', 'desc', 0, self::FREELEECH_ROW_LIMIT),
                         $shared['isbns'],
                         $shared['keys'],
                         $shared['status'],

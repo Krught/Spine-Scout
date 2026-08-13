@@ -620,9 +620,10 @@ final class BrowseController extends AbstractController
         if (!in_array($owned, self::OWNED_FILTERS, true)) {
             $owned = 'all';
         }
-        // The browse sort select speaks trending/title/released/author; the shelf's natural
-        // order (most recently seen free) stands in for everything that isn't title/author.
-        $shelfSort = in_array($sort, ['title', 'author'], true) ? $sort : 'added';
+        // The browse sort select speaks trending/title/released/author. Trending maps to the
+        // repository's Hardcover-popularity order (with most-recently-seen as its fallback);
+        // the shelf's natural order (most recently seen free) stands in for "released".
+        $shelfSort = in_array($sort, ['title', 'author', 'trending'], true) ? $sort : 'added';
 
         $rows = $freeleech->pageForBrowse($audiobookOnly, $q, $includeVip, $shelfSort, $dir, $offset, $limit);
         $cards = $shelves->freeleechCards($rows, $libraryIsbns, $libraryKeys, $statusMaps);

@@ -8,6 +8,7 @@ use App\Entity\Book;
 use App\Entity\FreeleechItem;
 use App\Entity\Integration;
 use App\Integration\Hardcover\HardcoverClient;
+use App\Integration\MyAnonamouse\MamAccountStateUpdater;
 use App\Integration\MyAnonamouse\MamFreeleechRefresher;
 use App\Integration\MyAnonamouse\MyAnonamouseClient;
 use App\Integration\MyAnonamouse\MyAnonamouseConfig;
@@ -951,6 +952,7 @@ final class MamFreeleechRefresherTest extends WebTestCase
             new MatchScorer(),
             $this->em,
             new NullLogger(),
+            new MamAccountStateUpdater(),
         );
     }
 

@@ -39,4 +39,27 @@ final readonly class MamRelease
         public ?\DateTimeImmutable $addedAt,
     ) {
     }
+
+    /**
+     * Whether grabbing this torrent already costs the operator nothing: sitewide
+     * freeleech, a personal freeleech they hold on it, or — for VIP accounts —
+     * a VIP freeleech. Prowlarr's rule; a wedge must never be spent on these.
+     */
+    public function isFreeForUser(bool $userIsVip): bool
+    {
+        return $this->free || $this->personalFreeleech || ($userIsVip && $this->flVip);
+    }
+
+    /**
+     * The authenticated .torrent download URL for this row, built from the row's
+     * `dl` hash. Null when MAM served no hash — the row cannot be grabbed.
+     */
+    public function downloadUrl(string $baseUrl): ?string
+    {
+        if ($this->dlHash === null || trim($this->dlHash) === '') {
+            return null;
+        }
+
+        return rtrim($baseUrl, '/') . '/tor/download.php/' . $this->dlHash;
+    }
 }

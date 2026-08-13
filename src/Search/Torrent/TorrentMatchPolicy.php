@@ -30,14 +30,32 @@ final class TorrentMatchPolicy
     ];
 
     /**
+     * Preferred ebook format ranking (best → good), used when the policy scores an
+     * ebook search instead of an audiobook one (the MAM source ranks both kinds).
+     * Anything unlisted falls back to the same low default as the audio rank.
+     *
+     * @var array<string, float>
+     */
+    public const EBOOK_FORMAT_RANK = [
+        'epub' => 1.0,
+        'azw3' => 0.9,
+        'mobi' => 0.8,
+        'pdf'  => 0.5,
+    ];
+
+    /**
      * @param int                                                          $minSeeders   Releases below this are discarded
      * @param int|null                                                     $maxSizeBytes Releases above this are discarded; null = no cap
      * @param array{match: float, seeders: float, size: float, format: float} $weights    Relative scoring weights
+     * @param array<string, float>                                         $formatRank   Format-preference table for formatScore();
+     *                                                                                   defaults to the audio rank so existing
+     *                                                                                   (Prowlarr) call sites are unchanged
      */
     public function __construct(
         public readonly int $minSeeders,
         public readonly ?int $maxSizeBytes,
         public readonly array $weights,
+        public readonly array $formatRank = self::FORMAT_RANK,
     ) {
     }
 
@@ -53,6 +71,6 @@ final class TorrentMatchPolicy
             return 0.2;
         }
 
-        return self::FORMAT_RANK[strtolower($format)] ?? 0.2;
+        return $this->formatRank[strtolower($format)] ?? 0.2;
     }
 }

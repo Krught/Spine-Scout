@@ -8,6 +8,7 @@ use App\Download\Client\DownloadClientInterface;
 use App\Download\FileMover;
 use App\Download\FilenameTemplate;
 use App\Download\FulfillmentLog;
+use App\Download\Mam\MamFulfillment;
 use App\Download\Metadata\EbookMetadataInjector;
 use App\Download\Progress\FulfillmentDownloadProgressReporter;
 use App\Download\Torrent\TorrentFulfillmentInterface;
@@ -59,6 +60,7 @@ final class ProcessDownloadJobHandler
         private readonly FilenameTemplate $filenames,
         private readonly EbookMetadataInjector $metadataInjector,
         private readonly TorrentFulfillmentInterface $torrents,
+        private readonly MamFulfillment $mamFulfillment,
         private readonly FulfillmentLog $log,
         private readonly LoggerInterface $logger,
         private readonly BlockedReleaseRepository $blockedReleases,
@@ -82,15 +84,20 @@ final class ProcessDownloadJobHandler
         $subject = $this->baseName($job);
         $plan = $this->planFor($request->getBook());
 
-        // "Torrent" is one entry in the operator's Source priority. If it's the
-        // highest-priority enabled source, try it before the HTTP cascade; otherwise
-        // it runs as a fallback after the HTTP sources (below). A successful add hands
-        // the job to the async torrent poller and we stop here.
+        // Torrent and MyAnonamouse are "out-of-band" entries in the operator's
+        // Source priority: they have no mirrors and hand the job to the async
+        // torrent poller instead of streaming a file here. Those ranked above the
+        // first enabled mirror source run before the HTTP cascade (in priority
+        // order); the rest run after it as fallbacks. Mirror sources interleaved
+        // between out-of-band entries still run as ONE cascade block in their own
+        // priority order — the same approximation the previous torrent-only
+        // special case made. A successful add stops here.
         $ddConfig = $this->settings->getDirectDownloadConfig();
-        $torrentEnabled = $ddConfig->isIndexerEnabled(DirectDownloadSource::Torrent->value) && $this->torrents->isAvailable();
-        $torrentFirst = $torrentEnabled && $this->firstEnabledSource($ddConfig) === DirectDownloadSource::Torrent->value;
-        if ($torrentFirst && $this->tryTorrent($job, $plan, $subject)) {
-            return;
+        [$beforeCascade, $afterCascade] = $this->outOfBandSources($ddConfig);
+        foreach ($beforeCascade as $sourceId) {
+            if ($this->tryOutOfBand($sourceId, $job, $plan, $subject)) {
+                return;
+            }
         }
 
         $staged = null;
@@ -144,10 +151,12 @@ final class ProcessDownloadJobHandler
         }
 
         if ($staged === null || $picked === null) {
-            // HTTP cascade produced nothing. If torrent is enabled but wasn't already
-            // tried first, try it now as a fallback before giving up.
-            if ($torrentEnabled && !$torrentFirst && $this->tryTorrent($job, $plan, $subject)) {
-                return;
+            // HTTP cascade produced nothing. Try the out-of-band sources ranked
+            // below the first enabled mirror source as fallbacks before giving up.
+            foreach ($afterCascade as $sourceId) {
+                if ($this->tryOutOfBand($sourceId, $job, $plan, $subject)) {
+                    return;
+                }
             }
             // Total failure: every attempted candidate failed on every mirror/link,
             // so block each one (with its captured reason) for this book — the next
@@ -207,6 +216,57 @@ final class ProcessDownloadJobHandler
     }
 
     /**
+     * Partition the enabled-and-available out-of-band (non-mirror) source ids by
+     * their position in the operator's priority list: sources ranked above the
+     * first enabled mirror source run before the HTTP cascade, the rest after it.
+     * Each half preserves the priority order. Mirror sources interleaved between
+     * out-of-band entries still run as one cascade block (documented above).
+     *
+     * @return array{list<string>, list<string>} [before-cascade ids, after-cascade ids]
+     */
+    private function outOfBandSources(DirectDownloadConfig $config): array
+    {
+        $before = [];
+        $after = [];
+        $mirrorSeen = false;
+        foreach ($config->indexerPriority as $row) {
+            $id = (string) ($row['id'] ?? '');
+            if (!$config->isIndexerEnabled($id)) {
+                continue;
+            }
+            if (DirectDownloadSource::tryFromId($id)?->usesMirrors() ?? true) {
+                $mirrorSeen = true;
+                continue;
+            }
+            if ($this->outOfBandAvailable($id)) {
+                $mirrorSeen ? $after[] = $id : $before[] = $id;
+            }
+        }
+
+        return [$before, $after];
+    }
+
+    /** Whether the fulfillment backing an out-of-band source id is usable right now. */
+    private function outOfBandAvailable(string $sourceId): bool
+    {
+        return match ($sourceId) {
+            DirectDownloadSource::Torrent->value => $this->torrents->isAvailable(),
+            DirectDownloadSource::Mam->value => $this->mamFulfillment->isAvailable(),
+            default => false,
+        };
+    }
+
+    /** Dispatch one out-of-band source attempt; true means the job was handed off. */
+    private function tryOutOfBand(string $sourceId, DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool
+    {
+        return match ($sourceId) {
+            DirectDownloadSource::Torrent->value => $this->tryTorrent($job, $plan, $subject),
+            DirectDownloadSource::Mam->value => $this->tryMam($job, $plan, $subject),
+            default => false,
+        };
+    }
+
+    /**
      * Try the torrent source: search indexers, add the best match to the download
      * client, and hand the job to the async poller. Returns true when a torrent was
      * added (the caller stops here); false when nothing matched or the add failed.
@@ -230,16 +290,30 @@ final class ProcessDownloadJobHandler
         return true;
     }
 
-    /** Id of the highest-priority enabled source, or null when none are enabled. */
-    private function firstEnabledSource(DirectDownloadConfig $config): ?string
+    /**
+     * Try MyAnonamouse: search the tracker directly, add the best match to the
+     * download client (spending a wedge per the operator's settings), and hand the
+     * job to the async torrent poller — the exact twin of tryTorrent(). A throw
+     * (expired cookie, unreachable client, …) is logged and treated as "nothing
+     * added" so the walk continues with the next source.
+     */
+    private function tryMam(DownloadJob $job, ReleaseSearchPlan $plan, string $subject): bool
     {
-        foreach ($config->indexerPriority as $row) {
-            if ($row['enabled'] ?? false) {
-                return $row['id'];
-            }
-        }
+        try {
+            $added = $this->mamFulfillment->tryFulfill($job, $plan, $subject);
+        } catch (\Throwable $e) {
+            $this->log->warn('MyAnonamouse add failed: ' . $e->getMessage(), $subject);
 
-        return null;
+            return false;
+        }
+        if (!$added) {
+            return false;
+        }
+        $this->em->flush();
+        $this->log->info('Handed to download client; awaiting completion', $subject);
+        $this->logger->info('Book torrent queued', ['job' => $job->getId(), 'hash' => $job->getClientRef(), 'source' => 'mam']);
+
+        return true;
     }
 
     /**

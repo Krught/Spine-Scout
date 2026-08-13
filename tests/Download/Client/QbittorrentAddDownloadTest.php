@@ -243,7 +243,127 @@ final class QbittorrentAddDownloadTest extends TestCase
         $this->client($http)->addDownload($this->proxyUrl(), 'Fourth Wing');
     }
 
+    public function testFileContentsAddPostsMultipartWithTorrentsPartAndCategory(): void
+    {
+        $torrentBytes = 'd8:announce30:https://mam.test/announce.php4:infod4:name3:fooee';
+        $addBody = null;
+        $addHeaders = [];
+        $tag = null;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$addBody, &$addHeaders, &$tag, $torrentBytes): MockResponse {
+            if (str_contains($url, '/torrents/add')) {
+                $addBody = self::bodyToString($options['body'] ?? '');
+                $addHeaders = $options['headers'] ?? [];
+                if (preg_match('/name="tags"\r\n\r\n([^\r]+)/', (string) $addBody, $m) === 1) {
+                    $tag = $m[1];
+                }
+
+                return new MockResponse('Ok.');
+            }
+            if (str_contains($url, '/torrents/info')) {
+                return new MockResponse(json_encode([
+                    ['hash' => strtoupper(self::HEX_HASH), 'tags' => (string) $tag, 'state' => 'metaDL'],
+                ], JSON_THROW_ON_ERROR));
+            }
+
+            return new MockResponse('Ok.'); // createTags / deleteTags
+        });
+
+        $hash = $this->client($http)->addDownload(
+            'https://mam.test/tor/download.php/dl-hash-abc',
+            'Red Rising',
+            ['fileContents' => $torrentBytes],
+        );
+
+        // Same tag-and-poll resolution as any other non-magnet add.
+        self::assertSame(self::HEX_HASH, $hash);
+        self::assertNotNull($tag);
+        self::assertStringStartsWith('spinescout-add-', (string) $tag);
+
+        // Multipart body: the torrents file part with its filename/content type,
+        // plus the same category field the urls path sends — and no urls field.
+        self::assertStringContainsString('name="torrents"', (string) $addBody);
+        self::assertStringContainsString('filename="Red Rising.torrent"', (string) $addBody);
+        self::assertStringContainsString('application/x-bittorrent', (string) $addBody);
+        self::assertStringContainsString($torrentBytes, (string) $addBody);
+        self::assertStringContainsString('name="category"', (string) $addBody);
+        self::assertStringNotContainsString('name="urls"', (string) $addBody);
+        self::assertStringNotContainsString('download.php', (string) $addBody, 'the session-authenticated URL must not be handed to qBittorrent');
+
+        $headerBlob = implode("\n", array_map(strval(...), $addHeaders));
+        self::assertStringContainsString('multipart/form-data; boundary=', $headerBlob);
+    }
+
+    public function testFileContentsAddNeverShortCircuitsOnAMagnetLookingUrl(): void
+    {
+        // Even when the accompanying URL happens to carry a parseable hash, a file
+        // upload must resolve via the tag: the client indexes the add under the
+        // file's real info-hash, not the URL's.
+        $polled = false;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$polled): MockResponse {
+            if (str_contains($url, '/torrents/info')) {
+                $polled = true;
+                parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+                return new MockResponse(json_encode([
+                    ['hash' => self::HEX_HASH, 'tags' => (string) ($query['tag'] ?? ''), 'state' => 'metaDL'],
+                ], JSON_THROW_ON_ERROR));
+            }
+
+            return new MockResponse('Ok.');
+        });
+
+        $hash = $this->client($http)->addDownload(
+            'magnet:?xt=urn:btih:' . str_repeat('f', 40),
+            'Piranesi',
+            ['fileContents' => 'd4:infod4:name3:fooee'],
+        );
+
+        self::assertTrue($polled, 'the hash must come from tag polling, not the magnet URL');
+        self::assertSame(self::HEX_HASH, $hash);
+    }
+
+    public function testUrlAddStillPostsFormEncodedUrls(): void
+    {
+        $addBody = null;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$addBody): MockResponse {
+            if (str_contains($url, '/torrents/add')) {
+                $addBody = self::bodyToString($options['body'] ?? '');
+            }
+
+            return new MockResponse('Ok.');
+        });
+
+        $this->client($http)->addDownload('magnet:?xt=urn:btih:' . self::HEX_HASH, 'Dune');
+
+        parse_str((string) $addBody, $parsed);
+        self::assertSame('magnet:?xt=urn:btih:' . self::HEX_HASH, $parsed['urls'] ?? null);
+        self::assertArrayHasKey('category', $parsed);
+    }
+
     // --- helpers ----------------------------------------------------------
+
+    /** Drain whatever shape prepareRequest() normalized the body into. */
+    private static function bodyToString(mixed $body): string
+    {
+        if (is_string($body)) {
+            return $body;
+        }
+        $out = '';
+        if ($body instanceof \Closure) {
+            while ('' !== $chunk = (string) $body(16372)) {
+                $out .= $chunk;
+            }
+
+            return $out;
+        }
+        if (is_iterable($body)) {
+            foreach ($body as $chunk) {
+                $out .= $chunk;
+            }
+        }
+
+        return $out;
+    }
 
     private function client(MockHttpClient $http, int $attempts = 30): QbittorrentDownloadClient
     {

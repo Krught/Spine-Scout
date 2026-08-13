@@ -47,9 +47,9 @@ final class SettingsGeneralControllerTest extends WebTestCase
         self::assertSelectorExists('input[type="hidden"][name="indexerPriority"]');
 
         $list = $crawler->filter('[data-controller="orderable-list"]');
-        // All five sources render, in default order on a fresh install.
+        // All six sources render, in default order on a fresh install.
         self::assertSame(
-            ['annas_archive', 'libgen', 'zlibrary', 'welib', 'torrent'],
+            ['annas_archive', 'libgen', 'zlibrary', 'welib', 'torrent', 'mam'],
             array_column(json_decode((string) $list->attr('data-orderable-list-initial-value'), true), 'id'),
         );
         // No direct_download row yet → the master switch defaults to on → nothing locked.
@@ -74,15 +74,16 @@ final class SettingsGeneralControllerTest extends WebTestCase
         self::assertResponseIsSuccessful();
 
         $list = $crawler->filter('[data-controller="orderable-list"]');
-        // The four HTTP mirror sources are locked; the torrent row stays interactive.
+        // The four HTTP mirror sources are locked; the torrent and mam rows stay interactive.
         self::assertSame(
             ['annas_archive', 'libgen', 'zlibrary', 'welib'],
             json_decode((string) $list->attr('data-orderable-list-locked-ids-value'), true),
         );
         // The rows still carry the STORED ticks (not the force-disabled view), so a
-        // save round-trips them unchanged.
+        // save round-trips them unchanged. The mam row is absent from this stored
+        // config and renders backfilled with the fresh-install default tick.
         self::assertSame(
-            ['annas_archive' => true, 'libgen' => false, 'zlibrary' => true, 'welib' => true, 'torrent' => true],
+            ['annas_archive' => true, 'libgen' => false, 'zlibrary' => true, 'welib' => true, 'torrent' => true, 'mam' => true],
             array_column(json_decode((string) $list->attr('data-orderable-list-initial-value'), true), 'enabled', 'id'),
         );
         // And the note links the operator to the tab that re-enables them.
@@ -118,7 +119,7 @@ final class SettingsGeneralControllerTest extends WebTestCase
                 ['id' => 'bogus', 'enabled' => true], // unknown id — must be dropped
                 ['id' => 'annas_archive', 'enabled' => true],
                 ['id' => 'libgen', 'enabled' => true],
-                // welib omitted — must be backfilled, disabled
+                // welib and mam omitted — must be backfilled, disabled
             ]),
         ]);
 
@@ -135,6 +136,7 @@ final class SettingsGeneralControllerTest extends WebTestCase
                 ['id' => 'annas_archive', 'enabled' => true],
                 ['id' => 'libgen', 'enabled' => true],
                 ['id' => 'welib', 'enabled' => false],
+                ['id' => 'mam', 'enabled' => false],
             ],
             $config->indexerPriority,
         );
@@ -155,6 +157,32 @@ final class SettingsGeneralControllerTest extends WebTestCase
         $app = $this->integrations->findByKind(Integration::KIND_APP);
         self::assertNotNull($app);
         self::assertTrue($app->isOverwriteMetadataEnabled());
+    }
+
+    public function testPostRoundTripsAllSixSourceIdsInThePostedOrder(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/general');
+
+        // Every known source posted, scrambled, with mixed ticks — nothing to
+        // drop, nothing to backfill.
+        $posted = [
+            ['id' => 'mam', 'enabled' => true],
+            ['id' => 'torrent', 'enabled' => false],
+            ['id' => 'welib', 'enabled' => true],
+            ['id' => 'annas_archive', 'enabled' => false],
+            ['id' => 'zlibrary', 'enabled' => true],
+            ['id' => 'libgen', 'enabled' => true],
+        ];
+        $this->client->request('POST', '/settings/general', [
+            '_token'          => $token,
+            'indexerPriority' => json_encode($posted),
+        ]);
+
+        self::assertResponseRedirects('/settings/general');
+
+        $this->em->clear();
+        self::assertSame($posted, $this->integrations->getDirectDownloadConfig()->indexerPriority);
     }
 
     public function testPostOnFreshInstallCreatesTheRowWithMasterSwitchOn(): void

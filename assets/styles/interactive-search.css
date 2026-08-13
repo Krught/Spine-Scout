@@ -81,6 +81,8 @@
     gap: 0.6rem;
     flex-wrap: wrap;
 }
+/* display:flex outranks the UA's [hidden] rule, so restate it. */
+.ix-mirror-row[hidden] { display: none; }
 .ix-mirror-label {
     font-size: 0.75rem;
     text-transform: uppercase;
@@ -308,6 +310,40 @@
     background: rgba(34, 197, 94, 0.12);
     border-color: rgba(34, 197, 94, 0.35);
     color: var(--success, #4ade80);
+}
+/* MAM's two freeleech variants keep the freeleech treatment in their own hues:
+ * VIP freeleech gold/amber, personal freeleech teal. */
+.ix-flag--vip_freeleech {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.35);
+    color: #fbbf24;
+}
+.ix-flag--personal_freeleech {
+    background: rgba(20, 184, 166, 0.12);
+    border-color: rgba(20, 184, 166, 0.35);
+    color: #2dd4bf;
+}
+
+/* --- MAM wedge toggle: revealed when a MyAnonamouse row is picked --- */
+.ix-wedge-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+}
+/* display:flex outranks the UA's [hidden] rule, so restate it. */
+.ix-wedge-row[hidden] { display: none; }
+.ix-wedge-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+}
+.ix-wedge-label input:disabled + span { color: var(--muted, #9aa0ad); }
+.ix-wedge-note {
+    color: var(--muted, #9aa0ad);
+    font-style: italic;
 }
 
 /* --- torrent results: what kind of release this actually is ---

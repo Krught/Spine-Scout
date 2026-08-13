@@ -14,7 +14,7 @@ use Doctrine\Persistence\ManagerRegistry;
  */
 final class FreeleechItemRepository extends ServiceEntityRepository
 {
-    public const BROWSE_SORTS = ['added', 'title', 'author'];
+    public const BROWSE_SORTS = ['trending', 'added', 'title', 'author'];
 
     public function __construct(ManagerRegistry $registry)
     {
@@ -182,6 +182,16 @@ final class FreeleechItemRepository extends ServiceEntityRepository
         // DQL forbids COALESCE in ORDER BY, so the sort key rides along as a HIDDEN
         // pseudo-column (the BookRepository::findRecentlyAdded precedent).
         switch ($sort) {
+            case 'trending':
+                // Hardcover popularity (users_count captured at resolve time) first;
+                // items without it — unmatched, or resolved before the column existed —
+                // sink below every scored item and keep the shelf's natural
+                // most-recently-seen order among themselves.
+                $qb->addSelect('COALESCE(f.popularity, -1) AS HIDDEN sort_key')
+                   ->orderBy('sort_key', $direction)
+                   ->addOrderBy('f.lastSeenAt', 'DESC')
+                   ->addOrderBy('f.firstSeenAt', 'DESC');
+                break;
             case 'title':
                 $qb->addSelect('LOWER(COALESCE(b.title, f.title)) AS HIDDEN sort_key')
                    ->orderBy('sort_key', $direction);

@@ -846,6 +846,8 @@ final class SettingsController extends AbstractController
             $baseUrl = rtrim(trim((string) $req->get('baseUrl', '')), '/');
             // A blank box means "leave it at the default"; anything else is clamped by the VO.
             $vipFetchLimit = trim((string) $req->get('vipFetchLimit', ''));
+            // Blank means "auto-wedge off"; zero/negative values are clamped to null by the VO.
+            $autoWedgeMinGb = trim((string) $req->get('autoWedgeMinGb', ''));
             $config = new MyAnonamouseConfig(
                 $req->getBoolean('enabled'),
                 $baseUrl !== '' ? $baseUrl : MyAnonamouseConfig::DEFAULT_BASE_URL,
@@ -858,6 +860,8 @@ final class SettingsController extends AbstractController
                 $vipFetchLimit === '' ? MyAnonamouseConfig::DEFAULT_VIP_FETCH_LIMIT : (int) $vipFetchLimit,
                 $req->getBoolean('dynamicSeedboxUpdate'),
                 self::blankToNull((string) $req->get('proxyUrl', '')),
+                $req->getBoolean('alwaysUseWedge'),
+                $autoWedgeMinGb === '' ? null : (float) $autoWedgeMinGb,
             );
 
             $integration = $integrations->saveMyAnonamouseConfig($config, $config->enabled, $em);

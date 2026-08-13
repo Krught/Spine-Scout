@@ -7,6 +7,8 @@ namespace App\Download\Client;
 use App\Entity\Integration;
 use App\Search\Source\ReleaseCandidate;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\Mime\Part\DataPart;
+use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -143,6 +145,13 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
      * must only ever run on the plain-text shape: the JSON always contains
      * "failure_count", which would otherwise reject every successful add.
      *
+     * When $options['fileContents'] carries raw .torrent bytes (a private tracker
+     * whose download URLs are session-authenticated, so qBittorrent could never
+     * fetch them itself — the MAM grab), the add is POSTed as multipart with a
+     * `torrents` file part instead of `urls`. The file carries no hash we can read
+     * up front, so this path shares the same tag-and-poll resolution as any other
+     * non-magnet add.
+     *
      * @param array<string, mixed> $options
      */
     public function addDownload(string $url, string $name, array $options = []): string
@@ -151,19 +160,40 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
         $config = $this->integrations->getTorrentClientConfig();
         $sid = $this->login($row);
 
-        // Magnets carry the hash in the link — no polling needed.
-        $hash = $this->extractInfoHash($url);
+        $fileContents = is_string($options['fileContents'] ?? null) && $options['fileContents'] !== ''
+            ? $options['fileContents']
+            : null;
+
+        // Magnets carry the hash in the link — no polling needed. A file upload
+        // always resolves via the tag, whatever the accompanying URL looks like.
+        $hash = $fileContents === null ? $this->extractInfoHash($url) : null;
         $tag = $hash === null ? self::ADD_TAG_PREFIX . bin2hex(random_bytes(8)) : null;
 
-        $payload = ['urls' => $url, 'category' => $config->category];
+        $payload = ['category' => $config->category];
         if ($tag !== null) {
             $this->createTag($row, $sid, $tag);
             $payload['tags'] = $tag;
         }
 
-        $response = $this->httpClient->request('POST', $this->baseUrl($row) . '/api/v2/torrents/add', [
-            'headers' => $this->authHeaders($row, $sid),
-            'body'    => $payload,
+        if ($fileContents !== null) {
+            $payload['torrents'] = new DataPart($fileContents, self::torrentFilename($name), 'application/x-bittorrent');
+            $form = new FormDataPart($payload);
+            $requestOptions = [
+                // The prepared multipart Content-Type (with its boundary) rides along
+                // as "Name: value" lines, which Symfony's HttpClient accepts mixed
+                // with the associative auth headers.
+                'headers' => array_merge($this->authHeaders($row, $sid), $form->getPreparedHeaders()->toArray()),
+                'body'    => $form->bodyToIterable(),
+            ];
+        } else {
+            $payload['urls'] = $url;
+            $requestOptions = [
+                'headers' => $this->authHeaders($row, $sid),
+                'body'    => $payload,
+            ];
+        }
+
+        $response = $this->httpClient->request('POST', $this->baseUrl($row) . '/api/v2/torrents/add', $requestOptions + [
             'timeout' => self::TIMEOUT_SECONDS,
         ]);
         $status = $response->getStatusCode();
@@ -607,6 +637,18 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
     private function baseUrl(Integration $row): string
     {
         return rtrim((string) $row->getBaseUrl(), '/');
+    }
+
+    /**
+     * A safe multipart filename for an uploaded .torrent, derived from the job's
+     * display name. Purely cosmetic — qBittorrent reads the metadata from the file
+     * body — but kept readable so the add is recognisable in the client's log.
+     */
+    private static function torrentFilename(string $name): string
+    {
+        $safe = trim((string) preg_replace('/[^A-Za-z0-9._ \-]+/', '_', $name));
+
+        return ($safe !== '' ? mb_substr($safe, 0, 120) : 'download') . '.torrent';
     }
 
     /** Extract the lowercase v1 info-hash (40 hex) from a magnet link, or null. */
