@@ -243,6 +243,100 @@ final class QbittorrentAddDownloadTest extends TestCase
         $this->client($http)->addDownload($this->proxyUrl(), 'Fourth Wing');
     }
 
+    public function testConflict409OnFileAddRelinksToExistingTorrent(): void
+    {
+        // Production bug: re-grabbing a MAM release whose torrent was still in the
+        // client failed with "already added or could not be added (409)" while the
+        // same situation on a magnet re-linked silently. The file's v1 info-hash is
+        // computable from its bytes, so a 409 must re-link exactly like a magnet —
+        // after confirming the client really has a torrent under that hash.
+        $infoDict = 'd4:name3:fooe';
+        $torrentBytes = 'd8:announce20:https://mam.test/ann4:info' . $infoDict . 'e';
+        $expectedHash = sha1($infoDict);
+
+        $verifiedHashes = null;
+        $deletedTag = false;
+        $http = new MockHttpClient(function (string $method, string $url) use (&$verifiedHashes, &$deletedTag, $expectedHash): MockResponse {
+            if (str_contains($url, '/torrents/add')) {
+                return new MockResponse('Conflict', ['http_code' => 409]);
+            }
+            if (str_contains($url, '/torrents/deleteTags')) {
+                $deletedTag = true;
+            }
+            if (str_contains($url, '/torrents/info')) {
+                parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+                $verifiedHashes = $query['hashes'] ?? null;
+
+                return new MockResponse(json_encode([['hash' => $expectedHash, 'state' => 'stalledUP']], JSON_THROW_ON_ERROR));
+            }
+
+            return new MockResponse('Ok.'); // createTags
+        });
+
+        $hash = $this->client($http)->addDownload(
+            'https://mam.test/tor/download.php/dl-hash-abc',
+            'Red Rising',
+            ['fileContents' => $torrentBytes],
+        );
+
+        self::assertSame($expectedHash, $hash);
+        self::assertSame($expectedHash, $verifiedHashes, 'the computed hash must be confirmed against the client');
+        self::assertTrue($deletedTag, 'the throwaway tag must be cleaned up');
+    }
+
+    public function testConflict409OnFileAddThrowsWhenComputedHashIsNotInClient(): void
+    {
+        // A 409 whose computed hash the client does not know (the add itself failed,
+        // or a v2-only torrent indexed under a different id) must stay an error —
+        // re-linking would stamp the job with a hash the poller can never find.
+        $http = new MockHttpClient(static function (string $method, string $url): MockResponse {
+            if (str_contains($url, '/torrents/add')) {
+                return new MockResponse('Conflict', ['http_code' => 409]);
+            }
+
+            return str_contains($url, '/torrents/info')
+                ? new MockResponse('[]')
+                : new MockResponse('Ok.'); // createTags / deleteTags
+        });
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already added or could not be added');
+
+        $this->client($http)->addDownload(
+            'https://mam.test/tor/download.php/dl-hash-abc',
+            'Fourth Wing',
+            ['fileContents' => 'd4:infod4:name3:fooee'],
+        );
+    }
+
+    public function testConflict409OnFileAddWithUnparseableBytesThrows(): void
+    {
+        $queriedInfo = false;
+        $http = new MockHttpClient(static function (string $method, string $url) use (&$queriedInfo): MockResponse {
+            if (str_contains($url, '/torrents/add')) {
+                return new MockResponse('Conflict', ['http_code' => 409]);
+            }
+            if (str_contains($url, '/torrents/info')) {
+                $queriedInfo = true;
+            }
+
+            return new MockResponse('Ok.'); // createTags / deleteTags
+        });
+
+        try {
+            $this->client($http)->addDownload(
+                'https://mam.test/tor/download.php/dl-hash-abc',
+                'Dune',
+                ['fileContents' => 'not a bencoded torrent'],
+            );
+            self::fail('expected the 409 to stay an error');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('already added or could not be added', $e->getMessage());
+        }
+
+        self::assertFalse($queriedInfo, 'no hash to verify — the client must not be queried');
+    }
+
     public function testFileContentsAddPostsMultipartWithTorrentsPartAndCategory(): void
     {
         $torrentBytes = 'd8:announce30:https://mam.test/announce.php4:infod4:name3:fooee';

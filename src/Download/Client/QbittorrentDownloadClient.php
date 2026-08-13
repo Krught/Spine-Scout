@@ -148,9 +148,14 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
      * When $options['fileContents'] carries raw .torrent bytes (a private tracker
      * whose download URLs are session-authenticated, so qBittorrent could never
      * fetch them itself — the MAM grab), the add is POSTed as multipart with a
-     * `torrents` file part instead of `urls`. The file carries no hash we can read
-     * up front, so this path shares the same tag-and-poll resolution as any other
-     * non-magnet add.
+     * `torrents` file part instead of `urls`. A successful upload shares the same
+     * tag-and-poll resolution as any other non-magnet add (the client's own id is
+     * authoritative), but on a 409 the v1 info-hash is computed from the file
+     * bytes so an already-present torrent re-links instead of failing the job —
+     * the same recovery a magnet gets for free. The computed hash is only trusted
+     * after the client confirms a torrent with that hash actually exists (a
+     * v2-only torrent is indexed under a different id, and a 409 can also mean
+     * the add itself failed).
      *
      * @param array<string, mixed> $options
      */
@@ -204,12 +209,21 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
                 // WebAPI 2.14+: 409 means nothing was added — the torrent is
                 // already in the client, or every URL failed. A magnet carries
                 // its hash, so re-link to the existing torrent instead of
-                // failing a job whose torrent is in fact present.
-                if ($hash !== null) {
-                    return $hash;
+                // failing a job whose torrent is in fact present. A file upload
+                // carries its hash too (inside the bencoded info dict) — compute
+                // it and re-link the same way, but only once the client confirms
+                // a torrent under that hash really exists.
+                if ($hash === null && $fileContents !== null) {
+                    $computed = self::infoHashFromTorrentFile($fileContents);
+                    if ($computed !== null && $this->torrentExists($row, $sid, $computed)) {
+                        $hash = $computed;
+                    }
                 }
                 if ($tag !== null) {
                     $this->deleteTag($row, $sid, $tag);
+                }
+                if ($hash !== null) {
+                    return $hash;
                 }
                 throw new \RuntimeException('The download client reports this torrent is already added or could not be added (409 ' . $body . ').');
             }
@@ -659,5 +673,98 @@ final class QbittorrentDownloadClient implements DownloadClientInterface
         }
 
         return null;
+    }
+
+    /** Whether the client knows a torrent under $hash (any category). */
+    private function torrentExists(Integration $row, ?string $sid, string $hash): bool
+    {
+        try {
+            $rows = $this->httpClient->request('GET', $this->baseUrl($row) . '/api/v2/torrents/info', [
+                'headers' => $this->authHeaders($row, $sid),
+                'query'   => ['hashes' => $hash],
+                'timeout' => self::TIMEOUT_SECONDS,
+            ])->toArray(false);
+        } catch (HttpExceptionInterface | \JsonException) {
+            return false;
+        }
+
+        return is_array($rows) && is_array($rows[0] ?? null);
+    }
+
+    /**
+     * The lowercase v1 info-hash of a .torrent file: the SHA-1 of the raw bencoded
+     * `info` dict, located by walking the file's top-level dict without decoding
+     * values. Null when the bytes aren't a well-formed bencoded dict carrying an
+     * `info` key.
+     */
+    private static function infoHashFromTorrentFile(string $bytes): ?string
+    {
+        if (($bytes[0] ?? '') !== 'd') {
+            return null;
+        }
+
+        try {
+            $i = 1;
+            while (($bytes[$i] ?? '') !== 'e') {
+                $key = self::bencodeString($bytes, $i);
+                $start = $i;
+                self::bencodeSkipValue($bytes, $i);
+                if ($key === 'info') {
+                    return sha1(substr($bytes, $start, $i - $start));
+                }
+            }
+        } catch (\InvalidArgumentException) {
+            return null;
+        }
+
+        return null;
+    }
+
+    /** Parse the bencoded string ("3:foo") at $i, advancing $i past it. */
+    private static function bencodeString(string $data, int &$i): string
+    {
+        $colon = strpos($data, ':', $i);
+        if ($colon === false || $colon === $i || !ctype_digit(substr($data, $i, $colon - $i))) {
+            throw new \InvalidArgumentException('malformed bencode string');
+        }
+        $length = (int) substr($data, $i, $colon - $i);
+        if ($colon + 1 + $length > \strlen($data)) {
+            throw new \InvalidArgumentException('truncated bencode string');
+        }
+        $i = $colon + 1 + $length;
+
+        return substr($data, $colon + 1, $length);
+    }
+
+    /** Advance $i past the bencoded value (int, string, list or dict) starting there. */
+    private static function bencodeSkipValue(string $data, int &$i): void
+    {
+        $c = $data[$i] ?? '';
+        if ($c === 'i') {
+            $end = strpos($data, 'e', $i);
+            if ($end === false) {
+                throw new \InvalidArgumentException('truncated bencode integer');
+            }
+            $i = $end + 1;
+
+            return;
+        }
+        if ($c === 'l' || $c === 'd') {
+            ++$i;
+            while (($data[$i] ?? '') !== 'e') {
+                if ($i >= \strlen($data)) {
+                    throw new \InvalidArgumentException('truncated bencode container');
+                }
+                if ($c === 'd') {
+                    self::bencodeString($data, $i);
+                }
+                self::bencodeSkipValue($data, $i);
+            }
+            ++$i;
+
+            return;
+        }
+
+        self::bencodeString($data, $i);
     }
 }
