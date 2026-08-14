@@ -49,22 +49,23 @@ final class FreeleechItemRepository extends ServiceEntityRepository
     /**
      * Drops every row the current sweep did not see — the freeleech set rotates, so anything
      * missing is no longer free. An empty keep-list means the sweep found nothing free at all.
+     * Returns what it dropped so the caller can purge the rows' cached MAM thumbnails.
      *
      * @param list<int> $keepMamTorrentIds
      *
-     * @return int rows deleted
+     * @return list<array{mamTorrentId: int, thumbnailUrl: ?string}> rows deleted
      */
-    public function deleteWhereMamTorrentIdNotIn(array $keepMamTorrentIds): int
+    public function deleteWhereMamTorrentIdNotIn(array $keepMamTorrentIds): array
     {
-        $qb = $this->getEntityManager()->createQueryBuilder()
-            ->delete(FreeleechItem::class, 'f');
+        $qb = $this->createQueryBuilder('f')
+            ->select('f.id', 'f.mamTorrentId', 'f.thumbnailUrl');
 
         if ($keepMamTorrentIds !== []) {
             $qb->where('f.mamTorrentId NOT IN (:ids)')
                ->setParameter('ids', array_values($keepMamTorrentIds));
         }
 
-        return (int) $qb->getQuery()->execute();
+        return $this->deleteSelected($qb->getQuery()->getArrayResult());
     }
 
     /**
@@ -74,16 +75,49 @@ final class FreeleechItemRepository extends ServiceEntityRepository
      * belongs to the regular set and is left alone; one that becomes regular later simply
      * comes back through the ordinary sweep.
      *
-     * @return int rows deleted
+     * @return list<array{mamTorrentId: int, thumbnailUrl: ?string}> rows deleted
      */
-    public function deleteVipOnly(): int
+    public function deleteVipOnly(): array
     {
-        return (int) $this->getEntityManager()->createQueryBuilder()
-            ->delete(FreeleechItem::class, 'f')
+        $rows = $this->createQueryBuilder('f')
+            ->select('f.id', 'f.mamTorrentId', 'f.thumbnailUrl')
             ->where('f.flVip = true')
             ->andWhere('f.free = false')
             ->getQuery()
+            ->getArrayResult();
+
+        return $this->deleteSelected($rows);
+    }
+
+    /**
+     * Second half of the select-then-delete the two sweep deletes share: removes exactly the
+     * rows the predicate query returned (by id, so the returned refs are authoritative for
+     * what left the table) and hands back their thumbnail refs.
+     *
+     * @param list<array{id: int, mamTorrentId: int, thumbnailUrl: ?string}> $rows
+     *
+     * @return list<array{mamTorrentId: int, thumbnailUrl: ?string}>
+     */
+    private function deleteSelected(array $rows): array
+    {
+        if ($rows === []) {
+            return [];
+        }
+
+        $this->getEntityManager()->createQueryBuilder()
+            ->delete(FreeleechItem::class, 'f')
+            ->where('f.id IN (:ids)')
+            ->setParameter('ids', array_column($rows, 'id'))
+            ->getQuery()
             ->execute();
+
+        return array_map(
+            static fn (array $row): array => [
+                'mamTorrentId' => (int) $row['mamTorrentId'],
+                'thumbnailUrl' => $row['thumbnailUrl'],
+            ],
+            $rows,
+        );
     }
 
     /**

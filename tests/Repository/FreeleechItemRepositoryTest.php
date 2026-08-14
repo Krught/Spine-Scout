@@ -62,16 +62,30 @@ final class FreeleechItemRepositoryTest extends WebTestCase
 
     public function testDeleteWhereMamTorrentIdNotInSweepsUnseenRows(): void
     {
-        $this->item(101, 'Red Rising');
+        $this->item(101, 'Red Rising')->setThumbnailUrl('https://cdn.myanonamouse.net/tor/101.jpg');
         $this->item(102, 'Golden Son');
         $this->item(103, 'Morning Star');
         $this->em->flush();
 
-        self::assertSame(2, $this->repository->deleteWhereMamTorrentIdNotIn([102]));
+        $dropped = $this->repository->deleteWhereMamTorrentIdNotIn([102]);
+        self::assertSame([101, 103], self::droppedIds($dropped));
+        self::assertSame(
+            'https://cdn.myanonamouse.net/tor/101.jpg',
+            $dropped[array_search(101, self::droppedIds($dropped), true)]['thumbnailUrl'],
+            'the refs carry the thumbnail URL so the caller can purge the cover cache',
+        );
         self::assertSame([102], array_keys($this->repository->findByMamTorrentIds([101, 102, 103])));
 
-        self::assertSame(1, $this->repository->deleteWhereMamTorrentIdNotIn([]), 'an empty keep-list clears the table');
+        self::assertSame([102], self::droppedIds($this->repository->deleteWhereMamTorrentIdNotIn([])), 'an empty keep-list clears the table');
         self::assertSame([], $this->repository->findByMamTorrentIds([102]));
+    }
+
+    /** @param list<array{mamTorrentId: int, thumbnailUrl: ?string}> $dropped */
+    private static function droppedIds(array $dropped): array
+    {
+        $ids = array_column($dropped, 'mamTorrentId');
+        sort($ids);
+        return $ids;
     }
 
     public function testDeleteVipOnlyDropsOnlyTheRowsNonVipsCannotGrab(): void
@@ -83,14 +97,14 @@ final class FreeleechItemRepositoryTest extends WebTestCase
         $this->vipItem(104, 'Iron Gold');
         $this->em->flush();
 
-        self::assertSame(2, $this->repository->deleteVipOnly());
+        self::assertSame([103, 104], self::droppedIds($this->repository->deleteVipOnly()));
         self::assertSame(
             [101, 102],
             array_keys($this->repository->findByMamTorrentIds([101, 102, 103, 104])),
             'the globally free rows survive, VIP flag or not',
         );
 
-        self::assertSame(0, $this->repository->deleteVipOnly(), 'a second pass has nothing left to drop');
+        self::assertSame([], $this->repository->deleteVipOnly(), 'a second pass has nothing left to drop');
     }
 
     public function testPendingLookupAndResolutionCounts(): void

@@ -18,6 +18,7 @@ use App\Repository\BookRepository;
 use App\Repository\FreeleechItemRepository;
 use App\Repository\IntegrationRepository;
 use App\Search\Match\MatchScorer;
+use App\Service\CoverCache;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -162,6 +163,7 @@ final class ResolveMamFreeleechHandlerTest extends WebTestCase
             $this->em,
             new NullLogger(),
             new MamAccountStateUpdater(),
+            self::getContainer()->get(CoverCache::class),
         );
 
         (new ResolveMamFreeleechHandler($refresher, $bus, new NullLogger()))(new ResolveMamFreeleech($maxResolutions));

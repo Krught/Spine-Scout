@@ -16,6 +16,7 @@ use App\Repository\IntegrationRepository;
 use App\Search\Match\MatchScorer;
 use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
+use App\Service\CoverCache;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 
@@ -67,6 +68,7 @@ final class MamFreeleechRefresher
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface $logger,
         private readonly MamAccountStateUpdater $accountStateUpdater,
+        private readonly CoverCache $covers,
     ) {
     }
 
@@ -197,8 +199,16 @@ final class MamFreeleechRefresher
         // previously-on sweep left behind are dropped outright — they are not free for this
         // account and must not linger in the shelf. This is a config decision, not a reading of
         // MAM's answer, so it stands even when the ambiguous-empty guard forbids the sweep delete.
-        $deleted = $config->fetchVipFreeleech ? 0 : $this->items->deleteVipOnly();
-        $deleted += $mayDelete ? $this->items->deleteWhereMamTorrentIdNotIn($keep) : 0;
+        $dropped = $config->fetchVipFreeleech ? [] : $this->items->deleteVipOnly();
+        if ($mayDelete) {
+            $dropped = [...$dropped, ...$this->items->deleteWhereMamTorrentIdNotIn($keep)];
+        }
+        // The rows are gone, so their disk-cached MAM thumbnails are unreachable — reclaim
+        // them now instead of letting rotated-out covers accumulate forever.
+        foreach ($dropped as $ref) {
+            $this->covers->deleteMamThumbnail($ref['mamTorrentId'], $ref['thumbnailUrl']);
+        }
+        $deleted = \count($dropped);
 
         $resolution = $this->resolvePending($maxResolutions);
         if ($resolution['error'] !== null) {

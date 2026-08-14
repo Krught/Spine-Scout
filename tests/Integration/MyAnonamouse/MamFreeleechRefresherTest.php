@@ -16,6 +16,7 @@ use App\Repository\BookRepository;
 use App\Repository\FreeleechItemRepository;
 use App\Repository\IntegrationRepository;
 use App\Search\Match\MatchScorer;
+use App\Service\CoverCache;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -40,6 +41,7 @@ final class MamFreeleechRefresherTest extends WebTestCase
     private IntegrationRepository $integrations;
     private FreeleechItemRepository $items;
     private BookRepository $books;
+    private CoverCache $covers;
     private FakeMyAnonamouseSettings $settings;
 
     protected function setUp(): void
@@ -50,6 +52,7 @@ final class MamFreeleechRefresherTest extends WebTestCase
         $this->integrations = $container->get(IntegrationRepository::class);
         $this->items = $container->get(FreeleechItemRepository::class);
         $this->books = $container->get(BookRepository::class);
+        $this->covers = $container->get(CoverCache::class);
 
         $this->em->createQuery('DELETE FROM ' . FreeleechItem::class)->execute();
         $this->em->createQuery('DELETE FROM ' . Book::class)->execute();
@@ -258,6 +261,59 @@ final class MamFreeleechRefresherTest extends WebTestCase
         self::assertSame(1, $summary['deleted']);
         self::assertNull($summary['error']);
         self::assertSame([], $this->items->findByMamTorrentIds([101]));
+    }
+
+    public function testASweepDeletePurgesTheDroppedItemsCachedThumbnail(): void
+    {
+        $rotatedOut = new FreeleechItem(101, 'Red Rising [ENG / EPUB]', false);
+        $rotatedOut->setFree(true)->setThumbnailUrl('https://cdn.example/101.jpg');
+        $rotatedOut->setResolution(FreeleechItem::RESOLUTION_UNMATCHED);
+        $stillFree = new FreeleechItem(102, 'Golden Son [ENG / EPUB]', false);
+        $stillFree->setFree(true)->setThumbnailUrl('https://cdn.example/102.jpg');
+        $stillFree->setResolution(FreeleechItem::RESOLUTION_UNMATCHED);
+        $this->em->persist($rotatedOut);
+        $this->em->persist($stillFree);
+        $this->em->flush();
+
+        $droppedFiles = $this->thumbnailCachePaths(101, 'https://cdn.example/101.jpg');
+        $keptFiles = $this->thumbnailCachePaths(102, 'https://cdn.example/102.jpg');
+        foreach ([...$droppedFiles, ...$keptFiles] as $path) {
+            @mkdir(\dirname($path), 0775, true);
+            file_put_contents($path, 'cached-bytes');
+        }
+
+        try {
+            $summary = $this->refresher($this->mam([
+                $this->searchResponse([$this->release(102, 'Golden Son [ENG / EPUB]', extra: ['free' => 1])]),
+                $this->searchResponse([]),
+            ]))->refresh(force: true);
+
+            self::assertSame(1, $summary['deleted']);
+            foreach ($droppedFiles as $path) {
+                self::assertFileDoesNotExist($path, 'the rotated-out item\'s cached thumbnail is reclaimed');
+            }
+            foreach ($keptFiles as $path) {
+                self::assertFileExists($path, 'the still-free item keeps its cached thumbnail');
+            }
+        } finally {
+            foreach ([...$droppedFiles, ...$keptFiles] as $path) {
+                @unlink($path);
+            }
+        }
+    }
+
+    /**
+     * The .webp/.meta pair CoverCache keeps for a MAM thumbnail — the hash formula and shard
+     * layout pinned here are cache keys, so they must stay stable across releases anyway.
+     *
+     * @return list<string>
+     */
+    private function thumbnailCachePaths(int $mamTorrentId, string $url): array
+    {
+        $hash = sha1('mam:' . $mamTorrentId . ':' . $url);
+        $dir = self::getContainer()->getParameter('kernel.project_dir') . '/book-covers/' . substr($hash, 0, 2);
+
+        return [$dir . '/' . $hash . '.webp', $dir . '/' . $hash . '.meta'];
     }
 
     public function testEveryCategorysRegularSweepRunsBeforeAnyVipCall(): void
@@ -953,6 +1009,7 @@ final class MamFreeleechRefresherTest extends WebTestCase
             $this->em,
             new NullLogger(),
             new MamAccountStateUpdater(),
+            $this->covers,
         );
     }
 

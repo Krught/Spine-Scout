@@ -111,6 +111,23 @@ final class CoverCache implements BookCoverProvider
     }
 
     /**
+     * Drop the cached MAM thumbnail for a freeleech item that rotated out. The entry is
+     * unreachable once its `freeleech_items` row is gone (the cover route resolves through
+     * the row), so this only reclaims the disk space; an item that rotates back in simply
+     * re-fetches. Takes the raw column values rather than the entity because callers purge
+     * after the rows have already been bulk-deleted.
+     */
+    public function deleteMamThumbnail(int $mamTorrentId, ?string $thumbnailUrl): void
+    {
+        if (!is_string($thumbnailUrl) || $thumbnailUrl === '') {
+            return;
+        }
+        $hash = $this->hashFor(self::ORIGIN_MAM, $mamTorrentId . ':' . $thumbnailUrl);
+        @unlink($this->imagePath($hash));
+        @unlink($this->metaPath($hash));
+    }
+
+    /**
      * Pre-warm a remote cover so the first user request hits the cache. Safe to call
      * for already-warm entries (no-op). Returns true if the .webp is on disk after
      * the call, false on fetch/encode failure — callers should treat failure as
