@@ -112,8 +112,8 @@ class FreeleechItem
     #[ORM\Column(options: ['default' => false])]
     private bool $personalFreeleech = false;
 
-    /** MAM download hash, kept for the future grab action. */
-    #[ORM\Column(length: 64, nullable: true)]
+    /** MAM download hash, kept for the future grab action. Length is not fixed — MAM hands out long tokens. */
+    #[ORM\Column(type: Types::TEXT, nullable: true)]
     private ?string $dlHash = null;
 
     /** Cover fallback for items the Hardcover reverse lookup cannot resolve. */
