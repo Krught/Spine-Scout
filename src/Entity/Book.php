@@ -29,7 +29,7 @@ class Book
     #[ORM\Column(length: 32)]
     private string $source;
 
-    #[ORM\Column(length: 191)]
+    #[ORM\Column(length: 500)]
     private string $externalId;
 
     #[ORM\Column(length: 500)]

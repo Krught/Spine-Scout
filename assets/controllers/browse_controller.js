@@ -11,6 +11,9 @@ const COVER_GRADIENTS = [
 
 // Remembers the Books/Audiobook toggle across refresh/navigation (1 year).
 const FORMAT_COOKIE = 'spinescout_browse_format';
+// Same idea for the Sort by select and its direction toggle.
+const SORT_COOKIE = 'spinescout_browse_sort';
+const DIR_COOKIE = 'spinescout_browse_dir';
 const FREELEECH_SHELF = 'freeleech';
 
 function writeCookie(name, value) {
@@ -90,6 +93,18 @@ export default class extends Controller {
             this.setFormat(savedFormat);
         }
 
+        // Same for the sort field and its direction. Only accept values the select actually
+        // offers, so a stale cookie from an older option list falls back to the markup default.
+        const savedSort = readCookie(SORT_COOKIE);
+        if (savedSort && this.hasSortTarget && savedSort !== this.currentSort()
+            && [...this.sortTarget.options].some((o) => o.value === savedSort)) {
+            this.sortTarget.value = savedSort;
+        }
+        const savedDir = readCookie(DIR_COOKIE);
+        if ((savedDir === 'asc' || savedDir === 'desc') && this.hasDirTarget && savedDir !== this.currentDir()) {
+            this.setDir(savedDir);
+        }
+
         this.loadMore();
     }
 
@@ -122,13 +137,26 @@ export default class extends Controller {
         this.loadMore();
     }
 
+    // Sort select changed: remember the choice, then reload the grid with it.
+    selectSort() {
+        writeCookie(SORT_COOKIE, this.currentSort());
+        this.refresh();
+    }
+
     toggleDir() {
-        const next = this.currentDir() === 'desc' ? 'asc' : 'desc';
+        this.setDir(this.currentDir() === 'desc' ? 'asc' : 'desc');
+        this.refresh();
+    }
+
+    // Paint the direction toggle and remember it. Used both by the user toggle and by the
+    // silent restore on connect (which reloads once afterwards anyway).
+    setDir(next) {
+        if (!this.hasDirTarget) return;
         this.dirTarget.dataset.direction = next;
         this.dirTarget.title = next === 'desc' ? 'Descending' : 'Ascending';
         if (this.hasDirTextTarget) this.dirTextTarget.textContent = next === 'desc' ? 'Desc' : 'Asc';
         this.dirTarget.classList.toggle('browse-dir-asc', next === 'asc');
-        this.refresh();
+        writeCookie(DIR_COOKIE, next);
     }
 
     selectFormat(event) {

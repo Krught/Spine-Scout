@@ -724,8 +724,10 @@ final class BrowseController extends AbstractController
             return null;
         }
         $path = parse_url($externalUrl, PHP_URL_PATH) ?: '';
+        // `books.external_id` holds 500 chars; a longer slug would abort the whole batch's
+        // flush, so treat it like a missing slug and skip that entry instead.
         if ($source === Book::SOURCE_HARDCOVER && preg_match('~/books/([^/?#]+)~', $path, $m)) {
-            return $m[1];
+            return \strlen($m[1]) > 500 ? null : $m[1];
         }
         if ($source === Book::SOURCE_OPENLIBRARY && preg_match('~/works/(OL[A-Z0-9]+W)~', $path, $m)) {
             return $m[1];

@@ -182,7 +182,7 @@ final class RefreshHardcoverTrendingHandler
     {
         $rank = 1;
         foreach ($popular as $p) {
-            if ($p->slug === null || $p->slug === '') {
+            if ($p->slug === null || $p->slug === '' || \strlen($p->slug) > 500) {
                 continue;
             }
             $author = $this->authors->findOneBySourceAndSlug(Author::SOURCE_HARDCOVER, $p->slug);
@@ -216,8 +216,10 @@ final class RefreshHardcoverTrendingHandler
             return null;
         }
         $path = parse_url($externalUrl, PHP_URL_PATH) ?: '';
+        // `books.external_id` holds 500 chars; a longer slug would abort the whole batch's
+        // flush, so treat it like a missing slug and skip that entry instead.
         if ($source === Book::SOURCE_HARDCOVER && preg_match('~/books/([^/?#]+)~', $path, $m)) {
-            return $m[1];
+            return \strlen($m[1]) > 500 ? null : $m[1];
         }
         if ($source === Book::SOURCE_OPENLIBRARY && preg_match('~/works/(OL[A-Z0-9]+W)~', $path, $m)) {
             return $m[1];
