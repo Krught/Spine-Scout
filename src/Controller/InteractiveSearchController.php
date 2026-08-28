@@ -554,9 +554,9 @@ final class InteractiveSearchController extends AbstractController
     /**
      * The MAM half of grab(): the same book/request/job scaffolding as the torrent
      * path, but the job is stamped source=mam and the release goes through
-     * MamFulfillment — which optionally spends a personal-freeleech wedge, fetches
-     * the .torrent bytes off the row's dl hash, and hands them to the torrent
-     * client. The posted wedge choice is re-validated server-side: never spend on
+     * MamFulfillment — which fetches the .torrent bytes off the row's dl hash
+     * (optionally with MAM's `fl` flag, spending a freeleech wedge) and hands
+     * them to the torrent client. The posted wedge choice is re-validated server-side: never spend on
      * a release that is already free for this account, always spend when the
      * operator switched "always use wedge" on.
      *

@@ -701,36 +701,38 @@ final class MyAnonamouseClientTest extends TestCase
         self::assertSame([], $requests);
     }
 
-    public function testSpendWedgeHitsBonusBuyAndReportsSuccess(): void
+    public function testDownloadTorrentFileSpendsAWedgeWithTheFlFlag(): void
     {
+        $torrent = 'd8:announce40:https://t.myanonamouse.net/tracker.php4:infod4:name5:book1ee';
         $requests = [];
-        $http = $this->mockClient([$this->json($this->fixture('bonus_buy_success.json'))], $requests);
+        $http = $this->mockClient([
+            new MockResponse($torrent, ['response_headers' => ['content-type' => 'application/x-bittorrent']]),
+            new MockResponse($torrent, ['response_headers' => ['content-type' => 'application/x-bittorrent']]),
+        ], $requests);
+        $client = new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger());
 
-        $ok = (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
-            ->spendWedge(555003);
+        // A wedge is not a bonus-store purchase: MAM spends one when the snatch
+        // itself carries `fl`. A bare hash takes '?', a live one already has a
+        // '?tid=' query and takes '&'.
+        $client->downloadTorrentFile('aa11bb22cc33', true);
+        self::assertSame('https://www.myanonamouse.net/tor/download.php/aa11bb22cc33?fl', $requests[0]['url']);
 
-        self::assertTrue($ok);
-        self::assertCount(1, $requests, 'a wedge spend is a single request, never retried');
-        self::assertSame('GET', $requests[0]['method']);
-        self::assertSame('https://www.myanonamouse.net/json/bonusBuy.php/?spendtype=personalFL&torrentid=555003', $requests[0]['url']);
+        $client->downloadTorrentFile('aa11bb22cc33?tid=555003', true);
+        self::assertSame('https://www.myanonamouse.net/tor/download.php/aa11bb22cc33?tid=555003&fl', $requests[1]['url']);
     }
 
-    public function testSpendWedgeRefusalIsLoggedAndFalseNeverThrown(): void
+    public function testDownloadTorrentFileOmitsTheFlagUnlessAWedgeIsAsked(): void
     {
         $requests = [];
         $http = $this->mockClient([
-            $this->json($this->fixture('bonus_buy_refused.json')),
-            new MockResponse('', ['http_code' => 403]),
+            new MockResponse('d4:infod4:name1:xee', ['response_headers' => ['content-type' => 'application/x-bittorrent']]),
         ], $requests);
-        $logger = new RecordingLogger();
-        $client = new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), $logger);
 
-        self::assertFalse($client->spendWedge(555003), 'a lowercase success:false is a refusal too');
-        self::assertStringContainsString('Not enough seedbonus', implode("\n", array_map('json_encode', $logger->contexts)));
-        self::assertContains('warning', $logger->levels);
+        (new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger()))
+            ->downloadTorrentFile('aa11bb22cc33?tid=555003');
 
-        self::assertFalse($client->spendWedge(555003), 'an auth failure degrades to false');
-        self::assertCount(2, $requests);
+        self::assertStringNotContainsString('fl', substr($requests[0]['url'], -3), 'a plain grab must never spend a wedge');
+        self::assertSame('https://www.myanonamouse.net/tor/download.php/aa11bb22cc33?tid=555003', $requests[0]['url']);
     }
 
     public function testDownloadTorrentFileReturnsTheRawBytes(): void
@@ -839,8 +841,8 @@ final class MyAnonamouseClientTest extends TestCase
         self::assertNull($client->fetchUserInfo());
         self::assertFalse($client->updateDynamicSeedboxIp());
         self::assertSame([], $client->searchReleases($this->plan(), ProwlarrConfig::METHOD_CATEGORIES));
-        self::assertFalse($client->spendWedge(1));
         self::assertNull($client->downloadTorrentFile('deadbeef'));
+        self::assertNull($client->downloadTorrentFile('deadbeef', true));
     }
 
     /**

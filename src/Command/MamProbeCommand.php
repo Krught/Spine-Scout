@@ -31,10 +31,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  * --user-info dumps every field the extended account summary parses (the live
  * proof of whether MAM's snatch_summary carries a wedge count or VIP expiry);
  * --fetch-torrent pulls the .torrent bytes behind a dl hash (the empirical check
- * of the /tor/download.php/{dlHash} URL shape); --spend-wedge spends one REAL
- * personal-freeleech wedge and is gated behind --confirm-spend.
+ * of the /tor/download.php/{dlHash} URL shape), and with --wedge appends MAM's
+ * `fl` flag to spend one REAL freeleech wedge, gated behind --confirm-spend.
  */
-#[AsCommand(name: 'spinescout:mam:probe', description: 'Run one MyAnonamouse freeleech refresh — or probe the MAM API directly (search, user info, torrent fetch, wedge spend).')]
+#[AsCommand(name: 'spinescout:mam:probe', description: 'Run one MyAnonamouse freeleech refresh — or probe the MAM API directly (search, user info, torrent fetch with or without a wedge).')]
 final class MamProbeCommand extends Command
 {
     public function __construct(
@@ -56,8 +56,8 @@ final class MamProbeCommand extends Command
         $this->addOption('user-info', null, InputOption::VALUE_NONE, 'Skip the refresh and print every field of the extended account summary (proves which extras MAM reports).');
         $this->addOption('user-info-raw', null, InputOption::VALUE_NONE, 'Like --user-info but print MAM\'s payload verbatim — field discovery for extras we do not parse yet.');
         $this->addOption('fetch-torrent', null, InputOption::VALUE_REQUIRED, 'Skip the refresh and fetch the .torrent file behind this dl hash, sanity-checking the bytes.');
-        $this->addOption('spend-wedge', null, InputOption::VALUE_REQUIRED, 'Skip the refresh and spend one personal-freeleech wedge (REAL bonus points) on this torrent id; requires --confirm-spend.');
-        $this->addOption('confirm-spend', null, InputOption::VALUE_NONE, 'Actually perform the --spend-wedge purchase instead of describing what it would do.');
+        $this->addOption('wedge', null, InputOption::VALUE_NONE, 'Fetch the --fetch-torrent hash with MAM\'s `fl` flag, spending one REAL freeleech wedge; requires --confirm-spend.');
+        $this->addOption('confirm-spend', null, InputOption::VALUE_NONE, 'Actually spend the wedge on a --wedge fetch instead of describing what it would do.');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -67,7 +67,6 @@ final class MamProbeCommand extends Command
             '--user-info'     => (bool) $input->getOption('user-info'),
             '--user-info-raw' => (bool) $input->getOption('user-info-raw'),
             '--fetch-torrent' => $input->getOption('fetch-torrent') !== null,
-            '--spend-wedge'   => $input->getOption('spend-wedge') !== null,
         ]));
         if (\count($modes) > 1) {
             $output->writeln(sprintf('<error>%s are mutually exclusive — pick one probe mode per run.</error>', implode(' and ', $modes)));
@@ -84,8 +83,13 @@ final class MamProbeCommand extends Command
 
             return Command::FAILURE;
         }
-        if ($input->getOption('confirm-spend') && $input->getOption('spend-wedge') === null) {
-            $output->writeln('<error>--confirm-spend only makes sense with --spend-wedge.</error>');
+        if (($input->getOption('wedge') || $input->getOption('confirm-spend')) && $input->getOption('fetch-torrent') === null) {
+            $output->writeln('<error>--wedge/--confirm-spend only make sense with --fetch-torrent.</error>');
+
+            return Command::FAILURE;
+        }
+        if ($input->getOption('confirm-spend') && !$input->getOption('wedge')) {
+            $output->writeln('<error>--confirm-spend only makes sense with --wedge.</error>');
 
             return Command::FAILURE;
         }
@@ -101,8 +105,12 @@ final class MamProbeCommand extends Command
                 '--search'        => $this->runSearch($input, $output),
                 '--user-info'     => $this->runUserInfo($output),
                 '--user-info-raw' => $this->runUserInfoRaw($output),
-                '--fetch-torrent' => $this->runFetchTorrent((string) $input->getOption('fetch-torrent'), $output),
-                default           => $this->runSpendWedge((string) $input->getOption('spend-wedge'), (bool) $input->getOption('confirm-spend'), $output),
+                default           => $this->runFetchTorrent(
+                    (string) $input->getOption('fetch-torrent'),
+                    (bool) $input->getOption('wedge'),
+                    (bool) $input->getOption('confirm-spend'),
+                    $output,
+                ),
             };
         }
 
@@ -237,14 +245,31 @@ final class MamProbeCommand extends Command
      * Fetch the .torrent bytes behind a search row's dl hash — the empirical check
      * that /tor/download.php/{dlHash} is the URL shape MAM answers, and that the
      * body is bencode rather than the HTML login page.
+     *
+     * With $wedge the fetch carries MAM's `fl` flag, which is how a freeleech
+     * wedge is actually spent: the snatch itself consumes it. That costs a REAL
+     * wedge, so it only happens once $confirmed is set.
      */
-    private function runFetchTorrent(string $dlHash, OutputInterface $output): int
+    private function runFetchTorrent(string $dlHash, bool $wedge, bool $confirmed, OutputInterface $output): int
     {
-        $bytes = $this->client->downloadTorrentFile($dlHash);
-        if ($bytes === null) {
-            $output->writeln('<error>Download failed</error> — MAM refused the hash, served its HTML login page, or the request errored (check the log).');
+        if ($wedge && !$confirmed) {
+            $output->writeln(sprintf('<comment>Dry run</comment> — this would GET /tor/download.php/%s with the `fl` flag appended, spending one REAL freeleech wedge on that torrent.', $dlHash));
+            $output->writeln('Pass <info>--confirm-spend</info> to actually spend the wedge.');
 
             return Command::FAILURE;
+        }
+
+        $bytes = $this->client->downloadTorrentFile($dlHash, $wedge);
+        if ($bytes === null) {
+            $output->writeln($wedge
+                ? '<error>Wedged download failed</error> — MAM refused the `fl` fetch: out of wedges, an already-free release, a bad hash, or an expired cookie (check the log).'
+                : '<error>Download failed</error> — MAM refused the hash, served its HTML login page, or the request errored (check the log).');
+
+            return Command::FAILURE;
+        }
+
+        if ($wedge) {
+            $output->writeln('<info>Wedge spent</info> — MAM served the .torrent with the `fl` flag.');
         }
 
         $output->writeln(sprintf('<info>Fetched:</info> %d byte(s).', \strlen($bytes)));
@@ -261,38 +286,6 @@ final class MamProbeCommand extends Command
         }
 
         $output->writeln(sprintf('<error>Not bencode</error> — first bytes: "%s".', $head));
-
-        return Command::FAILURE;
-    }
-
-    /**
-     * Spend one personal-freeleech wedge on a torrent. This buys with the
-     * operator's REAL bonus points, so without --confirm-spend it only describes
-     * the request it would make and exits non-zero.
-     */
-    private function runSpendWedge(string $rawId, bool $confirmed, OutputInterface $output): int
-    {
-        $torrentId = (int) $rawId;
-        if ($torrentId <= 0 || (string) $torrentId !== trim($rawId)) {
-            $output->writeln(sprintf('<error>--spend-wedge wants a positive torrent id, got "%s".</error>', $rawId));
-
-            return Command::FAILURE;
-        }
-
-        if (!$confirmed) {
-            $output->writeln(sprintf('<comment>Dry run</comment> — this would call /json/bonusBuy.php/?spendtype=personalFL&torrentid=%d, spending REAL bonus points on a personal-freeleech wedge for torrent %d.', $torrentId, $torrentId));
-            $output->writeln('Pass <info>--confirm-spend</info> to actually spend the wedge.');
-
-            return Command::FAILURE;
-        }
-
-        if ($this->client->spendWedge($torrentId)) {
-            $output->writeln(sprintf('<info>Wedge spent</info> — torrent %d is now personal freeleech for this account.', $torrentId));
-
-            return Command::SUCCESS;
-        }
-
-        $output->writeln('<error>MAM refused the wedge spend</error> — not enough points, already free, or an unknown id (the refusal message is in the log).');
 
         return Command::FAILURE;
     }

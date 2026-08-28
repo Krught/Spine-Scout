@@ -920,9 +920,9 @@ final class InteractiveSearchControllerTest extends WebTestCase
     }
 
     /**
-     * A MAM grab creates a source='mam' torrent-protocol job, spends the wedge
-     * (useWedge=true, not free) BEFORE fetching the .torrent, and stamps the
-     * client hash — the async poller takes it from there.
+     * A MAM grab creates a source='mam' torrent-protocol job, fetches the
+     * .torrent with the `fl` flag that spends the wedge (useWedge=true, not
+     * free), and stamps the client hash — the async poller takes it from there.
      */
     public function testGrabMamCreatesMamJobAndSpendsWedge(): void
     {
@@ -947,10 +947,8 @@ final class InteractiveSearchControllerTest extends WebTestCase
         self::assertSame('added-hash', $jobs[0]->getClientRef());
         self::assertSame(DownloadJob::STATUS_DOWNLOADING, $jobs[0]->getStatus());
 
-        $joined = implode("\n", $this->mamRequests);
-        self::assertStringContainsString('bonusBuy.php', $joined);
-        self::assertStringContainsString('spendtype=personalFL&torrentid=123456', $joined);
-        self::assertStringContainsString('/tor/download.php/dl-hash-abc', $joined);
+        // The wedge is spent by the .torrent fetch itself, via MAM's `fl` flag.
+        self::assertStringContainsString('/tor/download.php/dl-hash-abc?fl', implode("\n", $this->mamRequests));
     }
 
     /**
@@ -971,7 +969,7 @@ final class InteractiveSearchControllerTest extends WebTestCase
 
         self::assertResponseIsSuccessful();
         self::assertTrue($this->json()['queued']);
-        self::assertStringNotContainsString('bonusBuy.php', implode("\n", $this->mamRequests), 'never wedge an already-free release');
+        self::assertStringContainsString('/tor/download.php/dl-hash-abc|', implode("\n", $this->mamRequests), 'never wedge an already-free release');
     }
 
     /** "Always use wedge" wins over an unchecked toggle on a not-free release. */
@@ -988,7 +986,7 @@ final class InteractiveSearchControllerTest extends WebTestCase
 
         self::assertResponseIsSuccessful();
         self::assertTrue($this->json()['queued']);
-        self::assertStringContainsString('bonusBuy.php', implode("\n", $this->mamRequests), 'alwaysUseWedge overrides the posted choice');
+        self::assertStringContainsString('/tor/download.php/dl-hash-abc?fl', implode("\n", $this->mamRequests), 'alwaysUseWedge overrides the posted choice');
     }
 
     public function testGrabMamWithoutConfigReturns409(): void
@@ -1075,9 +1073,6 @@ final class InteractiveSearchControllerTest extends WebTestCase
             $this->mamRequests[] = $url . '|' . $body;
             if (str_contains($url, 'loadSearchJSONbasic.php')) {
                 return new MockResponse(json_encode(['data' => $searchRows, 'found' => \count($searchRows)], JSON_THROW_ON_ERROR));
-            }
-            if (str_contains($url, 'bonusBuy.php')) {
-                return new MockResponse(json_encode(['success' => true], JSON_THROW_ON_ERROR));
             }
             if (str_contains($url, '/tor/download.php/')) {
                 return new MockResponse(

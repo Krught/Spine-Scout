@@ -23,7 +23,7 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 /**
  * MyAnonamouse search-and-add step, the MAM twin of TorrentFulfillment: search
  * MAM directly (no Prowlarr), rank by the weighted policy, optionally spend a
- * personal-freeleech wedge, then hand the fetched .torrent bytes to the torrent
+ * freeleech wedge on the fetch, then hand the fetched .torrent bytes to the torrent
  * download client — stamping the job and flipping it to DOWNLOADING. The job is
  * then async; the torrent poller (PollTorrentJobs) finalizes it off protocol +
  * clientRef, so MAM jobs ride the existing pipeline unchanged.
@@ -104,9 +104,10 @@ final class MamFulfillment
      * so the interactive search UI can send a user-picked candidate (and wedge
      * choice) down the same path.
      *
-     * When $useWedge is set and the release is not already free for the user, a
-     * personal-freeleech wedge is spent first; a refused spend is non-fatal — the
-     * grab proceeds at normal ratio cost with a warning in the fulfillment log.
+     * When $useWedge is set and the release is not already free for the user, the
+     * .torrent is fetched with MAM's `fl` flag, which is what spends the wedge.
+     * MAM answers that with the file or with nothing, so an unspendable wedge
+     * fails the grab rather than quietly costing ratio.
      *
      * Returns false when no torrent download client is configured; throws when MAM
      * won't serve the .torrent file or the client rejects the add. Does NOT flush —
@@ -124,22 +125,30 @@ final class MamFulfillment
         $mamExtra = is_array($candidate->extra['mam'] ?? null) ? $candidate->extra['mam'] : [];
         $torrentId = is_numeric($mamExtra['torrentId'] ?? null) ? (int) $mamExtra['torrentId'] : 0;
 
-        if ($useWedge && !$this->alreadyFreeForUser($candidate)) {
-            if ($torrentId > 0 && $this->mam->spendWedge($torrentId)) {
-                $this->log->info(sprintf('Spent a freeleech wedge on MyAnonamouse torrent %d', $torrentId), $subject);
-            } else {
-                // Non-fatal by design: the grab still happens, it just costs ratio.
-                $this->log->warn('Freeleech wedge spend was refused — grabbing at normal ratio cost', $subject);
-                $this->logger->warning('MyAnonamouse wedge spend failed; continuing with the grab', [
+        // A wedge is spent by the snatch itself (the `fl` flag on the download
+        // URL), never on an already-free release — that would burn a wedge for
+        // nothing.
+        $withWedge = $useWedge && !$this->alreadyFreeForUser($candidate);
+
+        $bytes = $this->mam->downloadTorrentFile((string) ($mamExtra['dlHash'] ?? ''), $withWedge);
+        if ($bytes === null) {
+            // MAM refuses the whole download rather than serving it at full cost
+            // when the wedge cannot be applied, so a wedged grab has one extra
+            // way to fail and the operator has to hear about it.
+            if ($withWedge) {
+                $this->logger->warning('MyAnonamouse refused the wedged .torrent download', [
                     'torrentId' => $torrentId,
                     'subject'   => $subject,
                 ]);
+
+                throw new \RuntimeException('MyAnonamouse did not serve the .torrent file with a freeleech wedge — you may be out of wedges, or the session cookie is expired. Retry without the wedge to grab at normal ratio cost.');
             }
+
+            throw new \RuntimeException('MyAnonamouse did not serve the .torrent file — the session cookie may be expired or the release withdrawn.');
         }
 
-        $bytes = $this->mam->downloadTorrentFile((string) ($mamExtra['dlHash'] ?? ''));
-        if ($bytes === null) {
-            throw new \RuntimeException('MyAnonamouse did not serve the .torrent file — the session cookie may be expired or the release withdrawn.');
+        if ($withWedge) {
+            $this->log->info(sprintf('Spent a freeleech wedge on MyAnonamouse torrent %d', $torrentId), $subject);
         }
 
         $url = (string) $candidate->downloadUrl;

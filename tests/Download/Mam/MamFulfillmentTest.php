@@ -27,8 +27,9 @@ use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
 /**
- * Unit tests for the MAM grab pipeline: the wedge-spend decision and ordering
- * (spend before add, never on already-free releases, refusal is non-fatal), the
+ * Unit tests for the MAM grab pipeline: the wedge decision (a wedge is spent by
+ * fetching the .torrent with MAM's `fl` flag, never on an already-free release,
+ * and a refused wedge fails the grab instead of silently costing ratio), the
  * .torrent fetch guard, the job stamping contract (source=mam + clientRef +
  * DOWNLOADING), and tryFulfill's blocklist filter. The MAM transport is the real
  * MyAnonamouseClient over a mocked HTTP layer, so cookie/JSON handling is
@@ -39,10 +40,10 @@ final class MamFulfillmentTest extends TestCase
     private const BASE_URL = 'https://mam.test';
     private const TORRENT_BYTES = 'd8:announce26:https://mam.test/announce4:infod4:name3:fooee';
 
-    /** Ordered record of what the pipeline touched: 'search', 'wedge', 'torrent-file', 'add'. */
+    /** Ordered record of what the pipeline touched: 'search', 'torrent-file', 'torrent-file-fl', 'add'. */
     private array $events = [];
 
-    /** Requested MAM URLs, for asserting on wedge parameters. */
+    /** Requested MAM URLs, for asserting on the `fl` wedge flag. */
     private array $mamUrls = [];
 
     protected function setUp(): void
@@ -51,7 +52,7 @@ final class MamFulfillmentTest extends TestCase
         $this->mamUrls = [];
     }
 
-    public function testGrabSpendsWedgeBeforeAddWhenRequestedAndNotFree(): void
+    public function testGrabFetchesWithTheFreeleechFlagWhenRequestedAndNotFree(): void
     {
         $settings = $this->settings();
         $client = $this->downloadClient();
@@ -60,8 +61,8 @@ final class MamFulfillmentTest extends TestCase
         $ok = $this->fulfillment($settings, $client)->grab($job, $this->candidate(), 'Red Rising', true);
 
         self::assertTrue($ok);
-        self::assertSame(['wedge', 'torrent-file', 'add'], $this->events, 'the wedge must be spent before the torrent is fetched and added');
-        self::assertStringContainsString('spendtype=personalFL&torrentid=123456', implode("\n", $this->mamUrls));
+        self::assertSame(['torrent-file-fl', 'add'], $this->events, 'the wedge is spent by the .torrent fetch itself');
+        self::assertContains(self::BASE_URL . '/tor/download.php/dl-hash-abc?fl', $this->mamUrls);
 
         self::assertSame('mam', $job->getSource());
         self::assertSame('123456', $job->getSourceId());
@@ -108,7 +109,17 @@ final class MamFulfillmentTest extends TestCase
             ->grab($this->job(), $this->candidate(flVip: true), 'Red Rising', true);
 
         self::assertTrue($ok);
-        self::assertSame(['wedge', 'torrent-file', 'add'], $this->events);
+        self::assertSame(['torrent-file-fl', 'add'], $this->events);
+    }
+
+    public function testGrabAppendsTheFlagToADlHashThatAlreadyHasAQuery(): void
+    {
+        // Live dl hashes carry their own `?tid=` query, so the flag joins with '&'.
+        $ok = $this->fulfillment($this->settings(), $this->downloadClient())
+            ->grab($this->job(), $this->candidate(dlHash: 'dl-hash-abc?tid=123456'), 'Red Rising', true);
+
+        self::assertTrue($ok);
+        self::assertContains(self::BASE_URL . '/tor/download.php/dl-hash-abc?tid=123456&fl', $this->mamUrls);
     }
 
     public function testGrabSkipsWedgeWhenNotRequested(): void
@@ -120,16 +131,22 @@ final class MamFulfillmentTest extends TestCase
         self::assertSame(['torrent-file', 'add'], $this->events);
     }
 
-    public function testRefusedWedgeSpendStillGrabs(): void
+    public function testRefusedWedgeFailsTheGrabInsteadOfCostingRatio(): void
     {
         $job = $this->job();
+        $fulfillment = $this->fulfillment($this->settings(), $this->downloadClient(), wedgeSucceeds: false);
 
-        $ok = $this->fulfillment($this->settings(), $this->downloadClient(), wedgeSucceeds: false)
-            ->grab($job, $this->candidate(), 'Red Rising', true);
+        try {
+            $fulfillment->grab($job, $this->candidate(), 'Red Rising', true);
+            self::fail('expected a refused wedge to throw');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('freeleech wedge', $e->getMessage());
+        }
 
-        self::assertTrue($ok);
-        self::assertSame(['wedge', 'torrent-file', 'add'], $this->events, 'a refused wedge is non-fatal — the grab proceeds at ratio cost');
-        self::assertSame(DownloadJob::STATUS_DOWNLOADING, $job->getStatus());
+        // MAM serves nothing rather than the file at full cost, so nothing is added.
+        self::assertNotContains('add', $this->events);
+        self::assertNull($job->getClientRef());
+        self::assertNotSame(DownloadJob::STATUS_DOWNLOADING, $job->getStatus());
     }
 
     public function testGrabThrowsWhenMamServesNoTorrentFile(): void
@@ -158,7 +175,7 @@ final class MamFulfillmentTest extends TestCase
             ->grab($job, $this->candidate(), 'Red Rising', true);
 
         self::assertFalse($ok);
-        self::assertSame([], $this->events, 'an unconfigured client must not spend a wedge');
+        self::assertSame([], $this->events, 'an unconfigured client must never reach MAM, let alone spend a wedge');
         self::assertSame('seed', $job->getSource());
     }
 
@@ -196,7 +213,7 @@ final class MamFulfillmentTest extends TestCase
         self::assertNotContains('add', $this->events);
     }
 
-    public function testTryFulfillSpendsWedgePerConfigDecision(): void
+    public function testTryFulfillWedgesPerConfigDecision(): void
     {
         // alwaysUseWedge + a not-free release → the auto pipeline spends a wedge.
         $settings = $this->settings(new MyAnonamouseConfig(enabled: true, baseUrl: self::BASE_URL, alwaysUseWedge: true));
@@ -206,8 +223,8 @@ final class MamFulfillmentTest extends TestCase
         ])->tryFulfill($this->job(), $this->plan(), 'Red Rising');
 
         self::assertTrue($ok);
-        self::assertSame(['search', 'wedge', 'torrent-file', 'add'], $this->events);
-        self::assertStringContainsString('torrentid=333', implode("\n", $this->mamUrls));
+        self::assertSame(['search', 'torrent-file-fl', 'add'], $this->events);
+        self::assertContains(self::BASE_URL . '/tor/download.php/dl-hash-333?fl', $this->mamUrls);
     }
 
     public function testTryFulfillNeverWedgesAFreeleechReleaseEvenWhenAlwaysUseIsOn(): void
@@ -251,15 +268,13 @@ final class MamFulfillmentTest extends TestCase
 
                 return new MockResponse(json_encode(['data' => $searchRows, 'found' => \count($searchRows)], JSON_THROW_ON_ERROR));
             }
-            if (str_contains($url, 'bonusBuy.php')) {
-                $this->events[] = 'wedge';
-
-                return new MockResponse(json_encode(['success' => $wedgeSucceeds], JSON_THROW_ON_ERROR));
-            }
             if (str_contains($url, '/tor/download.php/')) {
-                $this->events[] = 'torrent-file';
+                // MAM spends a wedge on the snatch itself, flagged with `fl`.
+                $wedged = str_ends_with($url, 'fl');
+                $this->events[] = $wedged ? 'torrent-file-fl' : 'torrent-file';
 
-                return $torrentFileOk
+                // A wedge MAM won't grant means no file at all, not a plain grab.
+                return $torrentFileOk && (!$wedged || $wedgeSucceeds)
                     ? new MockResponse(self::TORRENT_BYTES, ['response_headers' => ['content-type' => 'application/x-bittorrent']])
                     : new MockResponse('<html>Login required</html>', ['response_headers' => ['content-type' => 'text/html']]);
             }
@@ -323,6 +338,7 @@ final class MamFulfillmentTest extends TestCase
         bool $free = false,
         bool $flVip = false,
         bool $personalFreeleech = false,
+        string $dlHash = 'dl-hash-abc',
     ): ReleaseCandidate {
         return new ReleaseCandidate(
             source: 'mam',
@@ -340,7 +356,7 @@ final class MamFulfillmentTest extends TestCase
             extra: [
                 'mam' => [
                     'torrentId'         => 123456,
-                    'dlHash'            => 'dl-hash-abc',
+                    'dlHash'            => $dlHash,
                     'free'              => $free,
                     'flVip'             => $flVip,
                     'personalFreeleech' => $personalFreeleech,

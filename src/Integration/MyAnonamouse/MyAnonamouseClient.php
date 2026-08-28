@@ -25,7 +25,6 @@ final class MyAnonamouseClient
 {
     private const SEARCH_PATH = '/tor/js/loadSearchJSONbasic.php';
     private const USER_INFO_PATH = '/jsonLoad.php?snatch_summary';
-    private const BONUS_BUY_PATH = '/json/bonusBuy.php/';
     private const TORRENT_DOWNLOAD_PATH = '/tor/download.php/';
     /** The IP keepalive lives on the tracker subdomain, not the configured base URL. */
     private const DYNAMIC_SEEDBOX_URL = 'https://t.myanonamouse.net/json/dynamicSeedbox.php';
@@ -389,47 +388,30 @@ final class MyAnonamouseClient
     }
 
     /**
-     * Spend one personal-freeleech wedge (bought from the operator's bonus points)
-     * on a torrent, so the grab that follows costs no download quota. A refusal —
-     * not enough points, torrent already free, unknown id — is logged and reported
-     * as false; like every MAM call this never throws and never retries.
-     */
-    public function spendWedge(int $torrentId): bool
-    {
-        $data = $this->requestJson(
-            'GET',
-            $this->baseUrl() . self::BONUS_BUY_PATH . '?spendtype=personalFL&torrentid=' . $torrentId,
-        );
-        if ($data === null) {
-            return false;
-        }
-
-        if (!self::toBool($data['success'] ?? $data['Success'] ?? false)) {
-            $this->logger->warning('MyAnonamouse refused the wedge spend', [
-                'torrentId' => $torrentId,
-                'message'   => self::firstString($data, ['error', 'msg', 'message']) ?? '',
-            ]);
-
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
      * Fetch the .torrent file behind a search row's `dl` hash. Returns the raw
      * bytes, or null when MAM refused the download or served its HTML login page
      * instead — a dead cookie's login page must never reach the download client
      * as a .torrent file.
+     *
+     * A freeleech wedge is not a bonus-store purchase: MAM applies one by taking
+     * the bare `fl` flag on this very download URL, so the wedge is spent by the
+     * snatch itself. With no wedges left MAM refuses the download outright rather
+     * than serving it at full ratio cost, which surfaces here as a null.
      */
-    public function downloadTorrentFile(string $dlHash): ?string
+    public function downloadTorrentFile(string $dlHash, bool $freeleech = false): ?string
     {
         $dlHash = trim($dlHash);
         if ($dlHash === '') {
             return null;
         }
 
-        return $this->requestRaw('GET', $this->baseUrl() . self::TORRENT_DOWNLOAD_PATH . $dlHash);
+        $url = $this->baseUrl() . self::TORRENT_DOWNLOAD_PATH . $dlHash;
+        if ($freeleech) {
+            // The dl hash usually carries its own `?tid=` query already.
+            $url .= (str_contains($url, '?') ? '&' : '?') . 'fl';
+        }
+
+        return $this->requestRaw('GET', $url);
     }
 
     /**
