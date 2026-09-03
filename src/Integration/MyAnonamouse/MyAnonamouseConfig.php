@@ -61,6 +61,14 @@ final class MyAnonamouseConfig
      * @param float|null  $autoWedgeMinGb          Spend a wedge automatically when a not-already-free release is at
      *                                             least this many GB. Null (or any value ≤ 0, clamped on
      *                                             construction) = off.
+     * @param bool        $pauseSweep              Park the 15-minute freeleech sweep: the handler (and the settings
+     *                                             page's force button) returns before a single MAM request, and the
+     *                                             existing freeleech_items rows — delete guard included — are left
+     *                                             exactly as they are. Independent of $pauseMatching.
+     * @param bool        $pauseMatching           Park the 5-minute Hardcover reverse lookup: unresolved rows stay
+     *                                             pending and are picked up where they left off once it is off.
+     *                                             Independent of $pauseSweep. Both exist so an operator being
+     *                                             rate-limited by one side can stop just that side.
      */
     public function __construct(
         public readonly bool $enabled = false,
@@ -76,6 +84,8 @@ final class MyAnonamouseConfig
         public readonly ?string $proxyUrl = null,
         public readonly bool $alwaysUseWedge = false,
         ?float $autoWedgeMinGb = null,
+        public readonly bool $pauseSweep = false,
+        public readonly bool $pauseMatching = false,
     ) {
         $this->vipFetchLimit = self::clampVipFetchLimit($vipFetchLimit);
         $this->autoWedgeMinGb = ($autoWedgeMinGb !== null && $autoWedgeMinGb > 0) ? $autoWedgeMinGb : null;
@@ -132,6 +142,10 @@ final class MyAnonamouseConfig
             $proxyUrl !== '' ? $proxyUrl : null,
             (bool) ($config['alwaysUseWedge'] ?? false),
             $autoWedgeMinGb,
+            // Absent in blobs written before the pause switches existed: a config that predates
+            // them must read back as "running", never as "paused".
+            (bool) ($config['pauseSweep'] ?? false),
+            (bool) ($config['pauseMatching'] ?? false),
         );
     }
 
@@ -151,6 +165,8 @@ final class MyAnonamouseConfig
             'proxyUrl'               => $this->proxyUrl,
             'alwaysUseWedge'         => $this->alwaysUseWedge,
             'autoWedgeMinGb'         => $this->autoWedgeMinGb,
+            'pauseSweep'             => $this->pauseSweep,
+            'pauseMatching'          => $this->pauseMatching,
         ];
     }
 

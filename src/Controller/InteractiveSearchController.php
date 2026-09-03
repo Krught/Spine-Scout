@@ -15,24 +15,15 @@ use App\Entity\BookRequest;
 use App\Entity\DownloadJob;
 use App\Download\Torrent\TorrentFulfillmentInterface;
 use App\Entity\User;
-use App\Integration\MyAnonamouse\MyAnonamouseClient;
-use App\Integration\MyAnonamouse\MyAnonamouseConfig;
 use App\Integration\MyAnonamouse\MyAnonamouseSettingsProvider;
-use App\Integration\Prowlarr\ProwlarrClient;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
 use App\Repository\DownloadJobRepository;
-use App\Repository\IntegrationRepository;
 use App\Search\DirectDownload\DirectDownloadProbe;
 use App\Search\DirectDownload\DirectDownloadSource;
-use App\Search\DirectDownload\ScoredCandidate;
+use App\Search\Interactive\InteractiveSearchRunner;
 use App\Search\Mam\MamCandidateMapper;
 use App\Search\Source\ReleaseCandidate;
-use App\Search\Source\ReleaseSearchPlan;
-use App\Search\Torrent\ProwlarrConfig;
-use App\Search\Torrent\ScoredRelease;
-use App\Search\Torrent\TorrentMatchPolicy;
-use App\Search\Torrent\TorrentMatchScorer;
 use App\Service\BookMetadataService;
 use App\Support\AudioFormat;
 use Doctrine\ORM\EntityManagerInterface;
@@ -64,12 +55,6 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
 #[IsGranted('ROLE_INTERACTIVE_SEARCH')]
 final class InteractiveSearchController extends AbstractController
 {
-    /** Server-side cap on returned rows — scoring fetches a detail page per row. */
-    private const MAX_RESULTS = 25;
-
-    /** Cap on the category labels echoed per torrent row — the panel shows chips. */
-    private const MAX_CATEGORIES = 4;
-
     private const CSRF_ID = 'interactive_search';
 
     /**
@@ -86,13 +71,10 @@ final class InteractiveSearchController extends AbstractController
         private readonly BookRepository $books,
         private readonly BookRequestRepository $requests,
         private readonly DownloadJobRepository $jobs,
-        private readonly IntegrationRepository $integrations,
-        private readonly ProwlarrClient $prowlarr,
-        private readonly TorrentMatchScorer $scorer,
         private readonly TorrentFulfillmentInterface $torrents,
         private readonly MamFulfillment $mamFulfillment,
-        private readonly MyAnonamouseClient $mam,
         private readonly MyAnonamouseSettingsProvider $mamSettings,
+        private readonly InteractiveSearchRunner $runner,
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface $logger,
     ) {
@@ -100,8 +82,9 @@ final class InteractiveSearchController extends AbstractController
 
     /**
      * The operator-enabled sources with their configured mirror URLs, so the panel
-     * can render the source buttons and the mirror toggle. URLs are never shipped
-     * in code — they come entirely from the saved config.
+     * can render the source buttons and the mirror toggle. The list itself is built
+     * by the shared InteractiveSearchRunner — Manual Search offers exactly the same
+     * sources in exactly the same order, and one implementation cannot drift.
      */
     #[Route('/interactive-search/sources', name: 'interactive_search_sources', methods: ['POST'])]
     public function sources(Request $request): JsonResponse
@@ -110,70 +93,18 @@ final class InteractiveSearchController extends AbstractController
             return $error;
         }
 
-        $config = $this->probe->config();
-
-        // Walk the operator's priority list in order, so the panel's first entry —
-        // the one it preselects — is their highest-priority source. A source the
-        // operator switched off is omitted entirely: the same
-        // DirectDownloadConfig::isIndexerEnabled() predicate the automatic cascade
-        // gates on (ProcessDownloadJobHandler, DirectDownloadEvaluator, the source
-        // adapters), so the panel offers exactly what the pipeline would try.
-        // Sources absent from the saved priority list are off by that predicate and
-        // therefore also absent here. Torrent rides along with the mirror sources:
-        // it has no mirror URLs, but is a pickable source backed by the indexer stack.
-        $sources = [];
-        $seen = [];
-        foreach ($config->indexerPriority as $row) {
-            $id = $row['id'] ?? null;
-            $source = is_string($id) ? DirectDownloadSource::tryFromId($id) : null;
-            if ($source === null || isset($seen[$source->value]) || !$config->isIndexerEnabled($source->value)) {
-                continue;
-            }
-            $seen[$source->value] = true;
-
-            // `enabled` is "usable right now", not "switched on": a source the
-            // operator enabled but never finished configuring (no mirrors / no
-            // torrent stack) still shows, greyed out, so they can see why.
-            $isTorrent = $source === DirectDownloadSource::Torrent;
-            $isMam = $source === DirectDownloadSource::Mam;
-            $mirrors = ($isTorrent || $isMam) ? [] : $config->mirrorsFor($source->value)->toArray();
-            $entry = [
-                'id'      => $source->value,
-                'label'   => $source->label(),
-                'enabled' => match (true) {
-                    $isTorrent => $this->torrents->isAvailable(),
-                    $isMam     => $this->mamFulfillment->isAvailable(),
-                    default    => $mirrors !== [],
-                },
-                'mirrors' => $mirrors,
-            ];
-            if ($isTorrent || $isMam) {
-                // The operator's saved default; the panel's method toggle starts
-                // here. MAM deliberately shares the Prowlarr default: the three
-                // method ids are identical and it is the only persisted
-                // search-method preference.
-                $entry['searchMethod'] = $this->integrations->getProwlarrConfig()->searchMethod;
-            }
-            if ($isMam) {
-                // Everything the panel's wedge toggle needs to pick its default
-                // and explain a forced state, without another round-trip.
-                $mamConfig = $this->mamSettings->getMyAnonamouseConfig();
-                $entry['wedge'] = [
-                    'userIsVip' => (bool) ($this->mamSettings->getMamAccountState()['isVip'] ?? false),
-                    'alwaysUse' => $mamConfig->alwaysUseWedge,
-                    'autoMinGb' => $mamConfig->autoWedgeMinGb,
-                ];
-            }
-            $sources[] = $entry;
-        }
-
-        return $this->json(['sources' => $sources]);
+        return $this->json(['sources' => $this->runner->sources()]);
     }
 
     /**
      * Run ONE source against ONE mirror with the user-edited title/author/ISBN,
      * scored. Returns every result with its match % and the concrete download
      * links the Manual Download step will use.
+     *
+     * The search itself lives in the shared runner; the only thing this controller
+     * still decides is whether the run targets the audiobook edition — the panel's
+     * toggle when it sent one, otherwise the resolved book's own format (the book
+     * is resolved lazily, so a payload that says outright never pays for it).
      */
     #[Route('/interactive-search/run', name: 'interactive_search_run', methods: ['POST'])]
     public function run(Request $request): JsonResponse
@@ -183,264 +114,12 @@ final class InteractiveSearchController extends AbstractController
         }
         $payload = $this->payload($request);
 
-        $sourceId = trim((string) ($payload['source'] ?? ''));
-        if (DirectDownloadSource::tryFromId($sourceId) === null) {
-            return $this->json(['error' => 'Unknown source.'], 400);
-        }
-        if ($sourceId === DirectDownloadSource::Torrent->value) {
-            return $this->runTorrent($payload);
-        }
-        if ($sourceId === DirectDownloadSource::Mam->value) {
-            return $this->runMam($payload);
-        }
-        $config = $this->probe->config();
-
-        $mirror = trim((string) ($payload['mirror'] ?? ''));
-        if ($mirror === '') {
-            $mirror = $config->mirrorsFor($sourceId)->toArray()[0] ?? '';
-        }
-        if ($mirror === '') {
-            return $this->json(['error' => 'No mirror configured for this source.'], 400);
-        }
-
-        $plan = $this->probe->buildPlan(
-            trim((string) ($payload['isbn'] ?? '')),
-            trim((string) ($payload['author'] ?? '')),
-            trim((string) ($payload['title'] ?? '')),
-            trim((string) ($payload['publisher'] ?? '')),
-            trim((string) ($payload['year'] ?? '')),
-            trim((string) ($payload['language'] ?? '')),
-        );
-        if (self::resolveAudiobook($payload, fn (): ?Book => $this->resolveBook($payload))) {
-            $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
-        }
-
-        $scored = $this->probe->searchScoredVia($sourceId, $mirror, $plan, $config);
-        $rows = array_map(
-            static fn (ScoredCandidate $sc): array => self::row($sc),
-            array_slice($scored, 0, self::MAX_RESULTS),
+        $outcome = $this->runner->run(
+            $payload,
+            self::resolveAudiobook($payload, fn (): ?Book => $this->resolveBook($payload)),
         );
 
-        return $this->json([
-            'source'    => $sourceId,
-            'mirror'    => $mirror,
-            'searchUrl' => $this->probe->searchUrlVia($sourceId, $mirror, $plan),
-            'threshold' => $this->probe->matchThreshold(),
-            'truncated' => \count($scored) > self::MAX_RESULTS,
-            'acceptedFormats' => $this->acceptedFormats(),
-            'results'   => $rows,
-        ]);
-    }
-
-    /**
-     * The torrent half of run(): search the configured indexers for the (possibly
-     * user-edited) metadata and rank the releases with the same weighted policy the
-     * automatic audiobook pipeline uses. No mirror is involved — the indexer manager
-     * is the single search surface — so `mirror`/`searchUrl` come back null.
-     *
-     * @param array<string, mixed> $payload
-     */
-    private function runTorrent(array $payload): JsonResponse
-    {
-        if (!$this->torrents->isAvailable()) {
-            return $this->json(['error' => 'Torrent search is not configured.'], 409);
-        }
-
-        // The query is always what the user typed into the panel's title/author/
-        // ISBN fields — never the stored book metadata, so their edits actually
-        // drive the search. The audiobook toggle only stamps the plan's content
-        // type (indexer categories key off it), it never swaps the query.
-        $book = $this->resolveBook($payload);
-        $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
-        $plan = $this->probe->buildPlan(
-            trim((string) ($payload['isbn'] ?? '')),
-            trim((string) ($payload['author'] ?? '')),
-            trim((string) ($payload['title'] ?? '')),
-            trim((string) ($payload['publisher'] ?? '')),
-            trim((string) ($payload['year'] ?? '')),
-            trim((string) ($payload['language'] ?? '')),
-        );
-        if ($audiobook && $plan->contentType !== ReleaseCandidate::CONTENT_AUDIOBOOK) {
-            $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
-        }
-
-        // Per-search override of the operator's default search method (the panel's
-        // Categories / Raw / Filtered toggle); anything unrecognized falls back to
-        // the saved default inside search().
-        $searchMethod = $this->blankToNull($payload['searchMethod'] ?? null);
-
-        $scored = $this->scorer->scored(
-            $this->prowlarr->search($plan, is_string($searchMethod) ? $searchMethod : null),
-            $plan,
-            $this->integrations->getProwlarrConfig()->matchPolicy(),
-        );
-
-        $threshold = $this->probe->matchThreshold();
-        $rows = array_map(
-            static fn (ScoredRelease $sr): array => self::torrentRow($sr, $threshold, $plan->contentType),
-            array_slice($scored, 0, self::MAX_RESULTS),
-        );
-
-        return $this->json([
-            'source'    => DirectDownloadSource::Torrent->value,
-            'mirror'    => null,
-            'searchUrl' => null,
-            'threshold' => $threshold,
-            'truncated' => \count($scored) > self::MAX_RESULTS,
-            'acceptedFormats' => $this->acceptedFormats(),
-            'results'   => $rows,
-        ]);
-    }
-
-    /**
-     * The MAM half of run(), mirroring runTorrent(): search MyAnonamouse directly
-     * (no Prowlarr, no mirror) with the user-edited metadata and rank with the same
-     * weighted policy the MAM auto pipeline uses. Rows reuse the torrent row shape
-     * (the panel's torrent table renders them unchanged) plus a `mam` block with
-     * the freeleech facts the wedge toggle needs.
-     *
-     * @param array<string, mixed> $payload
-     */
-    private function runMam(array $payload): JsonResponse
-    {
-        if (!$this->mamFulfillment->isAvailable()) {
-            return $this->json(['error' => 'MyAnonamouse search is not configured.'], 409);
-        }
-
-        // Same contract as runTorrent(): the query is what the user typed, the
-        // audiobook toggle only stamps the plan's content type (MAM's main
-        // category keys off it), it never swaps the query.
-        $book = $this->resolveBook($payload);
-        $audiobook = self::resolveAudiobook($payload, static fn (): ?Book => $book);
-        $plan = $this->probe->buildPlan(
-            trim((string) ($payload['isbn'] ?? '')),
-            trim((string) ($payload['author'] ?? '')),
-            trim((string) ($payload['title'] ?? '')),
-            trim((string) ($payload['publisher'] ?? '')),
-            trim((string) ($payload['year'] ?? '')),
-            trim((string) ($payload['language'] ?? '')),
-        );
-        if ($audiobook && $plan->contentType !== ReleaseCandidate::CONTENT_AUDIOBOOK) {
-            $plan = $plan->withContentType(ReleaseCandidate::CONTENT_AUDIOBOOK);
-        }
-
-        // The panel's Categories / Raw / Filtered toggle — the same three ids the
-        // torrent method toggle uses. Anything unrecognized falls back to the
-        // categories default rather than failing the search.
-        $method = $payload['searchMethod'] ?? null;
-        if (!is_string($method) || !in_array($method, ProwlarrConfig::METHODS, true)) {
-            $method = ProwlarrConfig::METHOD_CATEGORIES;
-        }
-
-        $mamConfig = $this->mamSettings->getMyAnonamouseConfig();
-        $scored = $this->scorer->scored(
-            MamCandidateMapper::mapAll(
-                $this->mam->searchReleases($plan, $method, self::MAX_RESULTS),
-                $mamConfig->baseUrl,
-            ),
-            $plan,
-            $this->mamMatchPolicy($plan),
-        );
-
-        $threshold = $this->probe->matchThreshold();
-        $userIsVip = (bool) ($this->mamSettings->getMamAccountState()['isVip'] ?? false);
-        $rows = array_map(
-            static fn (ScoredRelease $sr): array => self::mamRow($sr, $threshold, $plan->contentType, $userIsVip, $mamConfig),
-            array_slice($scored, 0, self::MAX_RESULTS),
-        );
-
-        return $this->json([
-            'source'    => DirectDownloadSource::Mam->value,
-            'mirror'    => null,
-            'searchUrl' => self::mamSearchUrl($plan, $mamConfig->baseUrl),
-            'threshold' => $threshold,
-            'truncated' => \count($scored) > self::MAX_RESULTS,
-            'acceptedFormats' => $this->acceptedFormats(),
-            'results'   => $rows,
-        ]);
-    }
-
-    /**
-     * One ranked MAM release: the torrent row shape (the indexer column reads
-     * 'MyAnonamouse') plus a `mam` block. `alreadyFree` applies Prowlarr's
-     * "already free for this user" rule (MamRelease::isFreeForUser — sitewide
-     * freeleech, personal freeleech, or VIP freeleech for a VIP account), and
-     * `wedgeDefault` is the same MyAnonamouseConfig::wedgeDecision() the auto
-     * pipeline uses — the panel's wedge checkbox starts there.
-     *
-     * @return array<string, mixed>
-     */
-    private static function mamRow(ScoredRelease $sr, int $threshold, string $planContentType, bool $userIsVip, MyAnonamouseConfig $config): array
-    {
-        $row = self::torrentRow($sr, $threshold, $planContentType);
-
-        $mam = is_array($sr->candidate->extra['mam'] ?? null) ? $sr->candidate->extra['mam'] : [];
-        $free = (bool) ($mam['free'] ?? false);
-        $flVip = (bool) ($mam['flVip'] ?? false);
-        $personal = (bool) ($mam['personalFreeleech'] ?? false);
-        $alreadyFree = $free || $personal || ($userIsVip && $flVip);
-
-        $row['mam'] = [
-            'torrentId'         => is_numeric($mam['torrentId'] ?? null) ? (int) $mam['torrentId'] : 0,
-            'dlHash'            => (string) ($mam['dlHash'] ?? ''),
-            'free'              => $free,
-            'flVip'             => $flVip,
-            'personalFreeleech' => $personal,
-            'alreadyFree'       => $alreadyFree,
-            'wedgeDefault'      => $config->wedgeDecision($sr->candidate->sizeBytes, $alreadyFree),
-        ];
-
-        return $row;
-    }
-
-    /**
-     * The ranking criteria for a MAM search — replicates the (private)
-     * MamFulfillment::policyFor() so the interactive panel ranks exactly like the
-     * auto pipeline: MAM's own seed floor, the shared Prowlarr size cap and axis
-     * weights, and a format rank matching the plan's content type.
-     */
-    private function mamMatchPolicy(ReleaseSearchPlan $plan): TorrentMatchPolicy
-    {
-        $shared = $this->integrations->getProwlarrConfig()->matchPolicy();
-
-        return new TorrentMatchPolicy(
-            minSeeders: $this->mamSettings->getMyAnonamouseConfig()->minSeeders,
-            maxSizeBytes: $shared->maxSizeBytes,
-            weights: $shared->weights,
-            formatRank: $plan->contentType === ReleaseCandidate::CONTENT_AUDIOBOOK
-                ? TorrentMatchPolicy::FORMAT_RANK
-                : TorrentMatchPolicy::EBOOK_FORMAT_RANK,
-        );
-    }
-
-    /**
-     * Best-effort human-facing MAM browse URL for the query the panel just ran —
-     * the on-site equivalent of the JSON search, mirroring the mirror sources'
-     * `searchUrl`. Null when there is nothing to search for (then the panel simply
-     * shows no query link, like the torrent source).
-     */
-    private static function mamSearchUrl(ReleaseSearchPlan $plan, string $baseUrl): ?string
-    {
-        $text = $plan->primaryQuery();
-        if ($text === '' && $plan->hasIsbn()) {
-            $text = $plan->isbnCandidates[0];
-        }
-        if ($text === '') {
-            return null;
-        }
-
-        return rtrim($baseUrl, '/') . '/tor/browse.php?' . http_build_query(['tor' => ['text' => $text]]);
-    }
-
-    /**
-     * The Best Match policy's format allow-list, so the panel can flag results
-     * whose format the automatic pipeline would reject. Empty = allow all.
-     *
-     * @return list<string>
-     */
-    private function acceptedFormats(): array
-    {
-        return $this->integrations->getBestMatchPolicy()->formatPriority;
+        return $this->json($outcome->body, $outcome->status);
     }
 
     /**
@@ -887,96 +566,6 @@ final class InteractiveSearchController extends AbstractController
         return null;
     }
 
-    /** @return array<string, string|int|float|bool|list<string>|null> */
-    private static function row(ScoredCandidate $sc): array
-    {
-        $c = $sc->candidate;
-        $size = $c->extra['size'] ?? null;
-
-        return [
-            'id'        => $c->sourceId,
-            'title'     => $c->title,
-            'author'    => $c->author,
-            'format'    => $c->format,
-            'language'  => $c->language,
-            'publisher' => $c->publisher,
-            'year'      => $c->year,
-            'size'      => is_string($size) ? $size : null,
-            'infoUrl'   => $c->infoUrl,
-            'isbns'     => $c->isbns,
-            'matchPct'  => $sc->score->total,
-            'qualifies' => $sc->qualifies,
-            'links'     => $sc->detailLinks,
-            // What this row actually is (classified from its file extension by the
-            // source), mirroring the torrent rows' `torrent.type` label.
-            'type'      => $c->contentType,
-        ];
-    }
-
-    /**
-     * One ranked torrent release in the same row shape the mirror sources emit,
-     * plus a `torrent` block with the swarm facts the panel shows. `$planContentType`
-     * is what we actually searched for, and stands in whenever a row's own categories
-     * don't say — the panel always gets an audiobook/ebook label to render.
-     *
-     * @return array<string, mixed>
-     */
-    private static function torrentRow(ScoredRelease $sr, int $threshold, string $planContentType): array
-    {
-        $c = $sr->candidate;
-        $leechers = $c->extra['leechers'] ?? null;
-        $flags = $c->extra['flags'] ?? [];
-        $type = $c->extra['type'] ?? null;
-        $categories = $c->extra['categories'] ?? [];
-        $published = $c->extra['publishDate'] ?? null;
-        $matchPct = self::matchPct($sr);
-        $link = trim((string) ($c->downloadUrl ?? ''));
-
-        return [
-            'id'        => $c->sourceId,
-            'title'     => $c->title,
-            'author'    => $c->author,
-            'format'    => $c->format,
-            'language'  => $c->language,
-            'publisher' => $c->publisher,
-            'year'      => $c->year,
-            'size'      => self::humanBytes($c->sizeBytes),
-            'sizeBytes' => $c->sizeBytes,
-            'infoUrl'   => $c->infoUrl,
-            'isbns'     => $c->isbns,
-            'matchPct'  => $matchPct,
-            'qualifies' => $matchPct >= $threshold,
-            'links'     => $link !== '' ? [$link] : [],
-            'torrent'   => [
-                'indexer'  => $c->indexer,
-                'seeders'  => $c->seeders,
-                'leechers' => is_numeric($leechers) ? (int) $leechers : null,
-                'grabs'    => $c->downloads,
-                'flags'    => is_array($flags) ? array_values(array_filter($flags, 'is_string')) : [],
-                'score'    => (int) round($sr->score * 100),
-                'type'     => is_string($type) && $type !== '' ? $type : $planContentType,
-                // Capped: indexers can tag a release with a whole category tree and
-                // the panel only has room for a couple of chips.
-                'categories' => is_array($categories)
-                    ? array_slice(array_values(array_filter($categories, 'is_string')), 0, self::MAX_CATEGORIES)
-                    : [],
-                'published' => is_string($published) && $published !== '' ? $published : null,
-            ],
-        ];
-    }
-
-    /**
-     * The title-match axis as a 0-100 percentage, so a torrent row is directly
-     * comparable to the direct-download match threshold. Tolerant of the component
-     * being expressed either as a 0..1 fraction or as an already-scaled percentage.
-     */
-    private static function matchPct(ScoredRelease $sr): int
-    {
-        $match = (float) ($sr->components['match'] ?? 0.0);
-
-        return (int) round($match <= 1.0 ? $match * 100 : $match);
-    }
-
     /**
      * True when this book is the audiobook edition rather than the ebook — the same
      * distinction RequestsController routes on (audiobooks go to the torrent
@@ -1012,25 +601,6 @@ final class InteractiveSearchController extends AbstractController
         $resolved = $book();
 
         return $resolved !== null && self::isAudiobook($resolved);
-    }
-
-    /** Indexer sizes are raw byte counts; the mirror sources already ship a string. */
-    private static function humanBytes(?int $bytes): ?string
-    {
-        if ($bytes === null || $bytes < 0) {
-            return null;
-        }
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $value = (float) $bytes;
-        $i = 0;
-        while ($value >= 1024 && $i < \count($units) - 1) {
-            $value /= 1024;
-            ++$i;
-        }
-
-        return $i === 0
-            ? sprintf('%d %s', (int) $value, $units[$i])
-            : sprintf('%.1f %s', $value, $units[$i]);
     }
 
     private function guardCsrf(Request $request): ?JsonResponse

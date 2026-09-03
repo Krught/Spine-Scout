@@ -86,6 +86,16 @@ final class MamFreeleechRefresher
             return self::summary(skipped: true);
         }
 
+        // The operator's pause on the MAM half. Deliberately ahead of everything else — the row
+        // lookup included — so a paused sweep spends zero HTTP, never touches lastSyncAt or
+        // lastError, and above all never reaches the delete guard: a paused integration must
+        // leave freeleech_items exactly as it found them rather than purging the shelf. It
+        // beats $force too, so the settings page's "Refresh now" cannot sneak a run past it.
+        if ($config->pauseSweep) {
+            $this->logger->info('MyAnonamouse freeleech sweep skipped — paused by the operator');
+            return self::summary(skipped: true);
+        }
+
         $integration = $this->integrations->getOrCreate(Integration::KIND_MYANONAMOUSE);
         // getOrCreate() hands back an unmanaged row; persisting it now (rather than at the
         // closing flush) keeps saveMamAccountState()'s own getOrCreate from creating a second
@@ -263,7 +273,17 @@ final class MamFreeleechRefresher
      */
     public function resolvePending(?int $maxResolutions = null): array
     {
-        if (!$this->settings->getMyAnonamouseConfig()->enabled) {
+        $config = $this->settings->getMyAnonamouseConfig();
+        if (!$config->enabled) {
+            return self::resolution(skipped: true);
+        }
+
+        // The operator's pause on the Hardcover half, independent of the sweep's. Pending rows
+        // are simply left pending — no backoff tick, no error recorded — so un-pausing resumes
+        // the normal cadence from where it stopped. refresh() routes its own resolution phase
+        // through here, so a paused match also stays paused inside an un-paused sweep.
+        if ($config->pauseMatching) {
+            $this->logger->info('MyAnonamouse freeleech matching skipped — paused by the operator');
             return self::resolution(skipped: true);
         }
 

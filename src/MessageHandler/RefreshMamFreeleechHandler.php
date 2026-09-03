@@ -20,6 +20,10 @@ final class RefreshMamFreeleechHandler
 
     public function __invoke(RefreshMamFreeleech $message): void
     {
+        // A disabled integration, an un-due interval or the operator's "pause freeleech sweep"
+        // switch all come back as skipped — the refresher owns those gates so the scheduled run,
+        // the settings force button and `spinescout:mam:probe` cannot diverge — and a skip has
+        // nothing worth an info line (the refresher already logs the paused case itself).
         $summary = $this->refresher->refresh($message->force);
         if ($summary['skipped']) {
             return;

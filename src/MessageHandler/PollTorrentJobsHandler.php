@@ -67,7 +67,9 @@ final class PollTorrentJobsHandler
             }
 
             $status = $client->getStatus($hash);
-            $subject = $job->getBookRequest()?->getBook()->getTitle() ?? $job->getSourceId();
+            // A Manual Search job has no book; the operator's approved name is what
+            // the activity log should say, not the raw guid/torrent id.
+            $subject = $job->getBookRequest()?->getBook()->getTitle() ?? $job->getManualName() ?? $job->getSourceId();
 
             if ($status->state === DownloadStatus::STATE_ERROR) {
                 $this->finalizer->fail($job, 'Download client error: ' . ($status->message ?? 'unknown'));

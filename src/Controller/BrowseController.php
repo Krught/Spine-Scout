@@ -6,58 +6,30 @@ namespace App\Controller;
 
 use App\Entity\Book;
 use App\Entity\Integration;
-use App\Integration\Hardcover\HardcoverClient;
-use App\Integration\Hardcover\HardcoverException;
-use App\Integration\Hardcover\Dto\TrendingBook;
-use App\Integration\OpenLibrary\OpenLibraryClient;
-use App\Integration\OpenLibrary\OpenLibraryException;
-use App\Message\TouchBooksSeen;
 use App\Entity\User;
 use App\Repository\BookRepository;
 use App\Repository\BookRequestRepository;
 use App\Repository\FreeleechItemRepository;
-use App\Repository\IntegrationRepository;
 use App\Service\BookRecommendationService;
+use App\Service\BrowsePoolCache;
 use App\Service\CoverCache;
 use App\Service\ShelfCatalog;
-use Doctrine\ORM\EntityManagerInterface;
-use Psr\Cache\CacheItemPoolInterface;
-use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
-use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 
 final class BrowseController extends AbstractController
 {
     private const MAX_LIMIT = 240;
-    /** Hardcover's `books_trending` caps server-side at 100 per request — must match this. */
-    private const UPSTREAM_PAGE_SIZE = 100;
-    /** Hard ceiling on how deep we paginate trending upstream. Matches roughly Hardcover's own UI. */
-    private const UPSTREAM_MAX_ITEMS = 2000;
-    private const CACHE_TTL = 300;
-    // v3/v4: pool entries now carry an `audiobook` (Hardcover availability) flag.
-    private const CACHE_KEY = 'browse.trending.v3';
-    private const SEARCH_CACHE_PREFIX = 'browse.search.v4.';
-    /** Hardcover's `search` caps per_page at 25 — must match this or the "short page = exhausted" signal misfires. */
-    private const SEARCH_PAGE_SIZE = 25;
-    /** Hard ceiling on how deep we paginate search upstream. */
-    private const SEARCH_MAX_ITEMS = 1000;
     private const SEARCH_TYPES = ['title', 'author', 'genre', 'series', 'publisher'];
     /** Freeleech-only owned chip: All / In library / Missing. */
     private const OWNED_FILTERS = ['all', 'library', 'missing'];
 
     public function __construct(
         private readonly CoverCache $covers,
-        private readonly HardcoverClient $hardcover,
-        private readonly OpenLibraryClient $openLibrary,
-        private readonly CacheItemPoolInterface $cache,
-        private readonly LoggerInterface $logger,
-        private readonly BookRepository $bookRepo,
-        private readonly EntityManagerInterface $em,
-        private readonly MessageBusInterface $bus,
+        private readonly BrowsePoolCache $pools,
         private readonly ShelfCatalog $shelves,
     ) {
     }
@@ -97,7 +69,7 @@ final class BrowseController extends AbstractController
     }
 
     #[Route('/browse/items', name: 'browse_items', methods: ['GET'])]
-    public function items(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests, ShelfCatalog $shelves, FreeleechItemRepository $freeleech): JsonResponse
+    public function items(Request $request, BookRepository $books, BookRequestRepository $requests, ShelfCatalog $shelves, FreeleechItemRepository $freeleech): JsonResponse
     {
         $offset = max(0, $request->query->getInt('offset', 0));
         $limit  = min(self::MAX_LIMIT, max(1, $request->query->getInt('limit', 100)));
@@ -146,9 +118,9 @@ final class BrowseController extends AbstractController
         // For non-trending sorts (title/author): fetch *everything* up to the cap so the
         // sort is over the full pool — otherwise sort order would shift as the user scrolls.
         [$cards, $pool] = $this->loadFilteredCards(
-            fn (int $n) => $this->ensureUpstream($integrations, $n),
-            $sort === 'trending' ? ($offset + $limit) : self::UPSTREAM_MAX_ITEMS,
-            self::UPSTREAM_MAX_ITEMS,
+            fn (int $n) => $this->pools->serveTrending($n),
+            $sort === 'trending' ? ($offset + $limit) : BrowsePoolCache::UPSTREAM_MAX_ITEMS,
+            BrowsePoolCache::UPSTREAM_MAX_ITEMS,
             $offset + $limit,
             $audiobookOnly,
             $libraryIsbns,
@@ -167,6 +139,12 @@ final class BrowseController extends AbstractController
         return new JsonResponse([
             'items' => $slice,
             'next_offset' => $offset + count($slice),
+            // Additive: rows we couldn't revalidate this request. The grid keeps them and
+            // labels them saved rather than pretending they're fresh. `refreshing` splits the
+            // two reasons: a worker rebuild is under way (normal, past the operator's
+            // threshold) versus upstream actually failed on us.
+            'stale' => (bool) ($pool['stale'] ?? false),
+            'refreshing' => (bool) ($pool['stale'] ?? false) && !($pool['errored'] ?? false),
             // For trending: there may be more upstream pages even if we've returned what's loaded.
             // For sorted: we already loaded the full pool, so end-of-pool is end-of-list.
             'has_more' => $errored
@@ -178,7 +156,7 @@ final class BrowseController extends AbstractController
     }
 
     #[Route('/browse/search', name: 'browse_search', methods: ['GET'])]
-    public function search(Request $request, BookRepository $books, IntegrationRepository $integrations, BookRequestRepository $requests): JsonResponse
+    public function search(Request $request, BookRepository $books, BookRequestRepository $requests): JsonResponse
     {
         $q      = trim((string) $request->query->get('q', ''));
         $offset = max(0, $request->query->getInt('offset', 0));
@@ -202,9 +180,9 @@ final class BrowseController extends AbstractController
         // For non-trending sorts we need the full pool to sort over it; trending/relevance
         // only needs enough rows to satisfy the current slice.
         [$cards, $pool] = $this->loadFilteredCards(
-            fn (int $n) => $this->ensureSearchPool($integrations, $q, $type, $n),
-            $sort === 'trending' ? ($offset + $limit) : self::SEARCH_MAX_ITEMS,
-            self::SEARCH_MAX_ITEMS,
+            fn (int $n) => $this->pools->serveSearch($q, $type, $n),
+            $sort === 'trending' ? ($offset + $limit) : BrowsePoolCache::SEARCH_MAX_ITEMS,
+            BrowsePoolCache::SEARCH_MAX_ITEMS,
             $offset + $limit,
             $audiobookOnly,
             $libraryIsbns,
@@ -231,6 +209,8 @@ final class BrowseController extends AbstractController
         return new JsonResponse([
             'items' => $slice,
             'next_offset' => $offset + count($slice),
+            'stale' => (bool) ($pool['stale'] ?? false),
+            'refreshing' => (bool) ($pool['stale'] ?? false) && !$errored,
             'has_more' => $errored
                 ? false
                 : ($sort === 'trending'
@@ -282,107 +262,6 @@ final class BrowseController extends AbstractController
     }
 
     /**
-     * Loads (and caches) at least $needed search results, paginating upstream incrementally.
-     *
-     * @return array{source: string, books: list<array<string, mixed>>, exhausted: bool, errored?: bool}
-     */
-    private function ensureSearchPool(IntegrationRepository $integrations, string $query, string $type, int $needed): array
-    {
-        $key = self::SEARCH_CACHE_PREFIX . sha1($type . '|' . strtolower($query));
-        $item = $this->cache->getItem($key);
-        /** @var array{source: string, books: list<array<string, mixed>>, exhausted: bool}|null $pool */
-        $pool = $item->isHit() ? $item->get() : null;
-        if (!is_array($pool) || !isset($pool['books'])) {
-            $pool = ['source' => '', 'books' => [], 'exhausted' => false];
-        }
-
-        $needed = min($needed, self::SEARCH_MAX_ITEMS);
-        $errored = false;
-
-        $hardcover = $integrations->findByKind(Integration::KIND_HARDCOVER);
-        $hardcoverAvailable = $hardcover !== null && $hardcover->isEnabled() && $hardcover->hasCredentials();
-
-        if ($hardcoverAvailable && $pool['source'] === '') {
-            $pool['source'] = Integration::KIND_HARDCOVER;
-        }
-
-        while (
-            $pool['source'] === Integration::KIND_HARDCOVER
-            && !$pool['exhausted']
-            && count($pool['books']) < $needed
-            && count($pool['books']) < self::SEARCH_MAX_ITEMS
-            && $hardcoverAvailable
-        ) {
-            $page = intdiv(count($pool['books']), self::SEARCH_PAGE_SIZE) + 1;
-            try {
-                $books = $this->hardcover->searchBooks($hardcover, $query, self::SEARCH_PAGE_SIZE, $page, $type);
-            } catch (HardcoverException $e) {
-                $this->logger->warning('Browse: Hardcover search failed', ['q' => $query, 'page' => $page, 'error' => $e->getMessage()]);
-                $errored = true;
-                break;
-            }
-            foreach ($books as $b) {
-                $pool['books'][] = $b->toArray();
-            }
-            $this->writeThrough(Book::SOURCE_HARDCOVER, $books);
-            if (count($books) < self::SEARCH_PAGE_SIZE) {
-                $pool['exhausted'] = true;
-                break;
-            }
-            if (count($pool['books']) >= self::SEARCH_MAX_ITEMS) {
-                $pool['exhausted'] = true;
-                break;
-            }
-        }
-
-        // OpenLibrary fallback only when Hardcover isn't available and the pool is still empty.
-        if ($pool['source'] === '' && $pool['books'] === []) {
-            $openLibrary = $integrations->findByKind(Integration::KIND_OPENLIBRARY);
-            if ($openLibrary !== null && $openLibrary->isEnabled()) {
-                $pool['source'] = Integration::KIND_OPENLIBRARY;
-                while (
-                    !$pool['exhausted']
-                    && count($pool['books']) < $needed
-                    && count($pool['books']) < self::SEARCH_MAX_ITEMS
-                ) {
-                    $page = intdiv(count($pool['books']), self::SEARCH_PAGE_SIZE) + 1;
-                    try {
-                        $books = $this->openLibrary->searchBooks($query, self::SEARCH_PAGE_SIZE, $page, $type);
-                    } catch (OpenLibraryException $e) {
-                        $this->logger->warning('Browse: OpenLibrary search failed', ['q' => $query, 'page' => $page, 'error' => $e->getMessage()]);
-                        $errored = true;
-                        break;
-                    }
-                    foreach ($books as $b) {
-                        $pool['books'][] = $b->toArray();
-                    }
-                    $this->writeThrough(Book::SOURCE_OPENLIBRARY, $books);
-                    if (count($books) < self::SEARCH_PAGE_SIZE) {
-                        $pool['exhausted'] = true;
-                        break;
-                    }
-                    if (count($pool['books']) >= self::SEARCH_MAX_ITEMS) {
-                        $pool['exhausted'] = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Don't cache a pool left empty purely by an upstream error — a later retry (after
-        // the rate-limit clears) should fetch fresh rather than serve nothing for the full TTL.
-        if (!($errored && $pool['books'] === [])) {
-            $item->set($pool);
-            $item->expiresAfter(self::CACHE_TTL);
-            $this->cache->save($item);
-        }
-
-        $pool['errored'] = $errored;
-
-        return $pool;
-    }
-
-    /**
      * Fetch a pool and shape it into cards, growing the pool until it yields enough *filtered*
      * cards or the upstream is exhausted. The filter (audiobook-only) is applied at the card
      * layer, so each upstream page can return fewer cards than rows; in audiobook mode we keep
@@ -416,96 +295,8 @@ final class BrowseController extends AbstractController
             ) {
                 return [$cards, $pool];
             }
-            $needed = min($maxItems, $needed + self::UPSTREAM_PAGE_SIZE);
+            $needed = min($maxItems, $needed + BrowsePoolCache::UPSTREAM_PAGE_SIZE);
         }
-    }
-
-    /**
-     * Loads (and caches) at least $needed items from the upstream trending feed.
-     * Appends pages incrementally so we never re-fetch what's already in the pool.
-     *
-     * @return array{source: string, books: list<array<string, mixed>>, exhausted: bool, errored?: bool}
-     */
-    private function ensureUpstream(IntegrationRepository $integrations, int $needed): array
-    {
-        $item = $this->cache->getItem(self::CACHE_KEY);
-        /** @var array{source: string, books: list<array<string, mixed>>, exhausted: bool}|null $pool */
-        $pool = $item->isHit() ? $item->get() : null;
-        if (!is_array($pool) || !isset($pool['books'])) {
-            $pool = ['source' => '', 'books' => [], 'exhausted' => false];
-        }
-
-        $needed = min($needed, self::UPSTREAM_MAX_ITEMS);
-        $errored = false;
-
-        $hardcover = $integrations->findByKind(Integration::KIND_HARDCOVER);
-        $hardcoverAvailable = $hardcover !== null && $hardcover->isEnabled() && $hardcover->hasCredentials();
-
-        if ($hardcoverAvailable && $pool['source'] === '') {
-            $pool['source'] = Integration::KIND_HARDCOVER;
-        }
-
-        // Incremental upstream pagination: keep asking for the next 100-book page
-        // until the pool covers $needed, the upstream returns short, or we hit the cap.
-        while (
-            $pool['source'] === Integration::KIND_HARDCOVER
-            && !$pool['exhausted']
-            && count($pool['books']) < $needed
-            && count($pool['books']) < self::UPSTREAM_MAX_ITEMS
-            && $hardcoverAvailable
-        ) {
-            $offset = count($pool['books']);
-            try {
-                $books = $this->hardcover->fetchTrending($hardcover, self::UPSTREAM_PAGE_SIZE, $offset);
-            } catch (HardcoverException $e) {
-                $this->logger->warning('Browse: Hardcover trending fetch failed', ['offset' => $offset, 'error' => $e->getMessage()]);
-                $errored = true;
-                break;
-            }
-            foreach ($books as $b) {
-                $pool['books'][] = $b->toArray();
-            }
-            $this->writeThrough(Book::SOURCE_HARDCOVER, $books);
-            if (count($books) < self::UPSTREAM_PAGE_SIZE) {
-                $pool['exhausted'] = true;
-                break;
-            }
-            if (count($pool['books']) >= self::UPSTREAM_MAX_ITEMS) {
-                $pool['exhausted'] = true;
-                break;
-            }
-        }
-
-        // OpenLibrary fallback only kicks in when there's no Hardcover at all and
-        // the pool is still empty — OpenLibrary trending is single-shot, no offset.
-        if ($pool['source'] === '' && $pool['books'] === []) {
-            $openLibrary = $integrations->findByKind(Integration::KIND_OPENLIBRARY);
-            if ($openLibrary !== null && $openLibrary->isEnabled()) {
-                try {
-                    $books = $this->openLibrary->fetchTrending(self::UPSTREAM_MAX_ITEMS);
-                    foreach ($books as $b) {
-                        $pool['books'][] = $b->toArray();
-                    }
-                    $this->writeThrough(Book::SOURCE_OPENLIBRARY, $books);
-                    $pool['source'] = Integration::KIND_OPENLIBRARY;
-                    $pool['exhausted'] = true;
-                } catch (OpenLibraryException $e) {
-                    $this->logger->warning('Browse: OpenLibrary trending fetch failed', ['error' => $e->getMessage()]);
-                    $errored = true;
-                }
-            }
-        }
-
-        // Don't cache a pool left empty purely by an upstream error (see ensureSearchPool).
-        if (!($errored && $pool['books'] === [])) {
-            $item->set($pool);
-            $item->expiresAfter(self::CACHE_TTL);
-            $this->cache->save($item);
-        }
-
-        $pool['errored'] = $errored;
-
-        return $pool;
     }
 
     /**
@@ -674,65 +465,6 @@ final class BrowseController extends AbstractController
             $kb = strtolower((string) ($b[$field] ?? ''));
             return $factor * strcmp($ka, $kb);
         });
-    }
-
-    /**
-     * Upsert every upstream book result into the local `books` table (with `downloaded=false`
-     * if it isn't there yet) and bump `last_seen_at`. The home page and request flow then see
-     * trending/search results as first-class rows. Entries without a stable slug are skipped —
-     * the upstream feed can't always emit one and we don't want duplicate metadata-only rows.
-     *
-     * @param list<TrendingBook> $books
-     */
-    private function writeThrough(string $source, array $books): void
-    {
-        if ($books === []) {
-            return;
-        }
-        $now = new \DateTimeImmutable();
-        $ids = [];
-        foreach ($books as $b) {
-            $slug = $this->slugFromExternalUrl($source, $b->externalUrl);
-            if ($slug === null) {
-                continue;
-            }
-            $book = $this->bookRepo->upsertMetadataBook(
-                source: $source,
-                externalId: $slug,
-                title: $b->title,
-                author: $b->author,
-                externalUrl: $b->externalUrl,
-                coverUrl: $b->coverUrl,
-                rawIsbns: $b->isbns,
-                now: $now,
-                audiobookAvailable: $b->audiobook,
-            );
-            if ($book->getId() === null) {
-                $this->em->flush();
-            }
-            $ids[] = (int) $book->getId();
-        }
-        $this->em->flush();
-        if ($ids !== []) {
-            $this->bus->dispatch(new TouchBooksSeen($ids));
-        }
-    }
-
-    private function slugFromExternalUrl(string $source, ?string $externalUrl): ?string
-    {
-        if ($externalUrl === null || $externalUrl === '') {
-            return null;
-        }
-        $path = parse_url($externalUrl, PHP_URL_PATH) ?: '';
-        // `books.external_id` holds 500 chars; a longer slug would abort the whole batch's
-        // flush, so treat it like a missing slug and skip that entry instead.
-        if ($source === Book::SOURCE_HARDCOVER && preg_match('~/books/([^/?#]+)~', $path, $m)) {
-            return \strlen($m[1]) > 500 ? null : $m[1];
-        }
-        if ($source === Book::SOURCE_OPENLIBRARY && preg_match('~/works/(OL[A-Z0-9]+W)~', $path, $m)) {
-            return $m[1];
-        }
-        return null;
     }
 
     /**

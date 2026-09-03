@@ -167,6 +167,9 @@ final class UsersController extends AbstractController
         if ($request->request->getBoolean('interactive_search')) {
             $roles[] = User::ROLE_INTERACTIVE_SEARCH;
         }
+        if ($request->request->getBoolean('manual_search')) {
+            $roles[] = User::ROLE_MANUAL_SEARCH;
+        }
         if ($request->request->getBoolean('reimport')) {
             $roles[] = User::ROLE_REIMPORT;
         }

@@ -113,6 +113,129 @@ final class SettingsMyanonamouseControllerTest extends WebTestCase
         self::assertNull($this->integrations->getMyAnonamouseConfig()->autoWedgeMinGb);
     }
 
+    public function testGetRendersBothPauseSwitchesOffByDefault(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $this->client->request('GET', '/settings/myanonamouse');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('body', 'Scheduled jobs');
+        self::assertSelectorExists('input[name="pauseSweep"][type="checkbox"]');
+        self::assertSelectorExists('input[name="pauseMatching"][type="checkbox"]');
+        self::assertSelectorNotExists('input[name="pauseSweep"][checked]');
+        self::assertSelectorNotExists('input[name="pauseMatching"][checked]');
+    }
+
+    public function testPausingTheSweepShowsAPillAndDisablesRefreshNow(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/myanonamouse');
+
+        $this->client->request('POST', '/settings/myanonamouse', [
+            '_token'     => $token,
+            'enabled'    => '1',
+            'pauseSweep' => '1',
+        ]);
+        self::assertResponseRedirects('/settings/myanonamouse');
+
+        $crawler = $this->client->followRedirect();
+        self::assertSelectorExists('input[name="pauseSweep"][checked]');
+        // The pause is its own pill; the integration itself is still Enabled.
+        self::assertSelectorTextContains('body', 'Paused · freeleech sweep');
+        self::assertSelectorTextContains('body', 'un-pause it and save before refreshing');
+        self::assertSame(
+            1,
+            $crawler->filter('button[data-mam-refresh-target="button"][disabled]')->count(),
+            'the force button is disabled while the sweep is paused',
+        );
+
+        // And matching is genuinely untouched: no second pill, no second checkbox ticked.
+        self::assertSelectorNotExists('input[name="pauseMatching"][checked]');
+        self::assertStringNotContainsString(
+            'Paused · metadata matching',
+            (string) $this->client->getResponse()->getContent(),
+        );
+    }
+
+    public function testPausingMatchingLeavesTheSweepAndItsRefreshButtonAlone(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/myanonamouse');
+
+        $this->client->request('POST', '/settings/myanonamouse', [
+            '_token'        => $token,
+            'enabled'       => '1',
+            'pauseMatching' => '1',
+        ]);
+        self::assertResponseRedirects('/settings/myanonamouse');
+
+        $crawler = $this->client->followRedirect();
+        self::assertSelectorExists('input[name="pauseMatching"][checked]');
+        self::assertSelectorNotExists('input[name="pauseSweep"][checked]');
+        self::assertSelectorTextContains('body', 'Paused · metadata matching');
+        self::assertSame(
+            0,
+            $crawler->filter('button[data-mam-refresh-target="button"][disabled]')->count(),
+            'the sweep still runs, so Refresh now stays available',
+        );
+
+        $this->em->clear();
+        $config = $this->integrations->getMyAnonamouseConfig();
+        self::assertTrue($config->pauseMatching);
+        self::assertFalse($config->pauseSweep);
+    }
+
+    public function testAPausedSweepRefusesTheForceRefreshEndpoint(): void
+    {
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/myanonamouse');
+        $this->client->request('POST', '/settings/myanonamouse', [
+            '_token'     => $token,
+            'enabled'    => '1',
+            'pauseSweep' => '1',
+        ]);
+        self::assertResponseRedirects('/settings/myanonamouse');
+        // The refresh endpoint's token is minted into the page the Stimulus controller reads.
+        $token = $this->client->followRedirect()
+            ->filter('[data-mam-refresh-token-value]')
+            ->attr('data-mam-refresh-token-value');
+
+        $this->client->request('POST', '/settings/myanonamouse/refresh', ['_token' => $token]);
+
+        self::assertResponseIsSuccessful();
+        $payload = json_decode((string) $this->client->getResponse()->getContent(), true);
+        self::assertFalse($payload['ok']);
+        self::assertStringContainsString('paused', $payload['message']);
+    }
+
+    public function testPauseSwitchesSurviveTheBaseUrlPositionalRebuild(): void
+    {
+        // getMyAnonamouseConfig() rebuilds the value object positionally when the row's baseUrl
+        // column diverges from the copy in the options blob — a field missed there silently resets
+        // to its default on every read, so both pauses have to be asserted through that path.
+        $this->client->loginUser($this->loadAdmin());
+        $token = $this->fetchCsrfToken('/settings/myanonamouse');
+        $this->client->request('POST', '/settings/myanonamouse', [
+            '_token'        => $token,
+            'enabled'       => '1',
+            'pauseSweep'    => '1',
+            'pauseMatching' => '1',
+        ]);
+        self::assertResponseRedirects('/settings/myanonamouse');
+
+        $row = $this->integrations->findByKind(Integration::KIND_MYANONAMOUSE);
+        self::assertNotNull($row);
+        $row->setBaseUrl('https://mirror.myanonamouse.example');
+        $this->em->flush();
+        $this->em->clear();
+        $this->integrations->clearSettingsCache();
+
+        $config = $this->integrations->getMyAnonamouseConfig();
+        self::assertSame('https://mirror.myanonamouse.example', $config->baseUrl, 'the rebuild really ran');
+        self::assertTrue($config->pauseSweep);
+        self::assertTrue($config->pauseMatching);
+    }
+
     public function testStatusPillShowsAccountStatsWhenASnapshotExists(): void
     {
         $this->client->loginUser($this->loadAdmin());

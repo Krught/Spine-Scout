@@ -1,0 +1,145 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Manual Search - Spine Scout{% endblock %}
+
+{#
+   Standalone Manual Search: the interactive-search experience with no book
+   behind it, so any release can be grabbed even when the metadata provider has
+   nothing that matches. Deliberately reuses the `ix-*` classes for the search
+   surface (sources / mirrors / method / query / results / wedge) — the markup is
+   the same widget, so it should keep looking identical; only the page shell, the
+   format toggle and the "Save as" row are new (`ms-*`).
+#}
+{# The medium rides in the query string so a reload keeps what the user picked.
+   Read straight from the request rather than a controller variable so the page
+   behaves the same however it was rendered. #}
+{% set ms_audiobook = audiobook is defined ? audiobook : app.request.query.get('format') == 'audiobook' %}
+
+{% block body %}
+    <section class="ms-page"
+             data-controller="manual-search"
+             data-manual-search-sources-url-value="{{ path('manual_search_sources') }}"
+             data-manual-search-run-url-value="{{ path('manual_search_run') }}"
+             data-manual-search-download-url-value="{{ path('manual_search_download') }}"
+             data-manual-search-grab-url-value="{{ path('manual_search_grab') }}"
+             data-manual-search-token-value="{{ csrf_token('manual_search') }}"
+             data-manual-search-audiobook-value="{{ ms_audiobook ? 'true' : 'false' }}">
+
+        <header class="ms-header">
+            <h1 class="ms-title">Manual Search</h1>
+            <p class="ms-subtitle">
+                Query any configured source directly and send a hand-picked release to the library —
+                no book record required.
+            </p>
+        </header>
+
+        <div class="ms-panel">
+            {# Ebook / audiobook decides both what is searched for and where the
+               result lands, so it leads the form and is sent with every call. #}
+            <div class="ms-format-row">
+                <span class="ix-mirror-label" id="ms-format-label">Format</span>
+                <div class="ms-format" role="group" aria-labelledby="ms-format-label"
+                     data-manual-search-target="format">
+                    <button type="button" class="ms-format__option{% if not ms_audiobook %} is-active{% endif %}"
+                            data-format="ebook" data-action="click->manual-search#selectFormat"
+                            aria-pressed="{{ ms_audiobook ? 'false' : 'true' }}">📖 Ebook</button>
+                    <button type="button" class="ms-format__option{% if ms_audiobook %} is-active{% endif %}"
+                            data-format="audiobook" data-action="click->manual-search#selectFormat"
+                            aria-pressed="{{ ms_audiobook ? 'true' : 'false' }}">🎧 Audiobook</button>
+                </div>
+            </div>
+
+            {# Every source the operator has, in the API's own (priority) order.
+               Sources that aren't fully configured render disabled with a reason. #}
+            <div class="ix-sources" data-manual-search-target="sources" role="group" aria-label="Search source"></div>
+
+            <div class="ix-mirror-row" data-manual-search-target="mirrorRow" hidden>
+                <span class="ix-mirror-label">Mirror</span>
+                <div class="ix-mirrors" data-manual-search-target="mirrors"></div>
+            </div>
+
+            {# Torrent/MAM-only: how the indexer query is scoped (categories / raw /
+               post-search filtered). Starts on the operator's saved default. #}
+            <div class="ix-mirror-row" data-manual-search-target="methodRow" hidden>
+                <span class="ix-mirror-label">Method</span>
+                <div class="ix-mirrors" data-manual-search-target="methods"></div>
+            </div>
+
+            <div class="ix-query">
+                <label class="field">
+                    <span>Title</span>
+                    <input type="text" data-manual-search-target="title"
+                           data-action="keydown->manual-search#onQueryKeydown" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>Author</span>
+                    <input type="text" data-manual-search-target="author"
+                           data-action="keydown->manual-search#onQueryKeydown" autocomplete="off">
+                </label>
+                <label class="field">
+                    <span>ISBN</span>
+                    <input type="text" data-manual-search-target="isbn"
+                           data-action="keydown->manual-search#onQueryKeydown" autocomplete="off">
+                </label>
+            </div>
+
+            {# MyAnonamouse only: a pasted torrent link is not a query, it names one
+               exact release. The controller spots it in any query field and resolves
+               it to a single row through the same run endpoint. #}
+            <p class="form-note">
+                Searching MyAnonamouse? Paste a torrent link (<code>https://…/t/182137</code>) or just its id
+                into Title to pull up that one release instead of searching.
+            </p>
+
+            <div class="ix-query-actions">
+                <button type="button" class="btn btn-primary ix-search-btn"
+                        data-manual-search-target="searchButton"
+                        data-action="manual-search#rerun"
+                        title="Search the selected source for the current title / author / ISBN">Search</button>
+            </div>
+
+            {# The spinner sits next to (never replaces) the status text while a search runs. #}
+            <div class="ix-status-row">
+                <span class="ix-spinner" data-manual-search-target="spinner" aria-hidden="true" hidden></span>
+                <p class="ix-status" data-manual-search-target="status" aria-live="polite" role="status">Pick a source, fill in what you know, then press Search.</p>
+            </div>
+            <p class="ix-search-url" data-manual-search-target="searchUrl"></p>
+
+            <div class="ix-results" data-manual-search-target="results"></div>
+
+            {# Action area for the picked release. Unlike the in-modal panel the
+               button lives in the template (not inside the results markup), because
+               the "Save as" field has to survive re-renders of the table. #}
+            <div class="ms-action" data-manual-search-target="action" hidden>
+                <label class="field ms-saveas">
+                    <span>Save as</span>
+                    <input type="text" data-manual-search-target="saveAs"
+                           data-action="input->manual-search#onSaveAsInput" autocomplete="off" spellcheck="false">
+                </label>
+                <p class="form-note ms-saveas-note">
+                    Best-effort guess from the release name — edit it if it is wrong. It decides the
+                    file (or album folder) name written into the library.
+                </p>
+
+                {# MyAnonamouse-only: whether to spend a personal-freeleech wedge on the
+                   picked release. The controller defaults the checkbox from the server's
+                   wedge decision and disables it (with a note) when the release is already
+                   free or "always use wedge" is switched on. #}
+                <div class="ix-wedge-row" data-manual-search-target="wedgeRow" hidden>
+                    <label class="ix-wedge-label">
+                        <input type="checkbox" data-manual-search-target="wedgeToggle">
+                        <span>Spend a freeleech wedge on this grab</span>
+                    </label>
+                    <span class="ix-wedge-note" data-manual-search-target="wedgeNote" hidden></span>
+                </div>
+
+                <div class="ix-actions">
+                    <button type="button" class="btn btn-primary"
+                            data-manual-search-target="actionButton"
+                            data-action="manual-search#download" disabled>Download</button>
+                    <div class="ix-download-result" data-manual-search-target="actionResult" aria-live="polite"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+{% endblock %}

@@ -19,7 +19,7 @@ export default class extends Controller {
     static targets = [
         'modal', 'form', 'token', 'title', 'submit',
         'username', 'password', 'passwordConfirm', 'passwordHelp',
-        'manageSettings', 'manageUsers', 'interactiveSearch', 'reimport', 'viewFreeleech', 'autoApprove', 'masterNote',
+        'manageSettings', 'manageUsers', 'interactiveSearch', 'manualSearch', 'reimport', 'viewFreeleech', 'autoApprove', 'masterNote',
     ];
 
     openCreate(event) {
@@ -35,7 +35,7 @@ export default class extends Controller {
         this.passwordConfirmTarget.required = true;
         this.passwordHelpTarget.textContent = 'At least 8 characters.';
 
-        this.setCapabilities(false, false, false, false, false, false);
+        this.setCapabilities(false, false, false, false, false, false, false);
         this.setMasterLocked(false);
         this.open();
     }
@@ -57,6 +57,7 @@ export default class extends Controller {
             flag(p.manageSettings),
             flag(p.manageUsers),
             flag(p.interactiveSearch),
+            flag(p.manualSearch),
             flag(p.reimport),
             flag(p.viewFreeleech),
             flag(p.autoApprove),
@@ -70,10 +71,11 @@ export default class extends Controller {
         this.passwordConfirmTarget.value = '';
     }
 
-    setCapabilities(settings, users, interactiveSearch, reimport, viewFreeleech, autoApprove) {
+    setCapabilities(settings, users, interactiveSearch, manualSearch, reimport, viewFreeleech, autoApprove) {
         this.manageSettingsTarget.checked = settings;
         this.manageUsersTarget.checked = users;
         this.interactiveSearchTarget.checked = interactiveSearch;
+        this.manualSearchTarget.checked = manualSearch;
         this.reimportTarget.checked = reimport;
         this.viewFreeleechTarget.checked = viewFreeleech;
         this.autoApproveTarget.checked = autoApprove;
@@ -85,12 +87,14 @@ export default class extends Controller {
             this.manageSettingsTarget.checked = true;
             this.manageUsersTarget.checked = true;
             this.interactiveSearchTarget.checked = true;
+            this.manualSearchTarget.checked = true;
             this.reimportTarget.checked = true;
             this.viewFreeleechTarget.checked = true;
         }
         this.manageSettingsTarget.disabled = locked;
         this.manageUsersTarget.disabled = locked;
         this.interactiveSearchTarget.disabled = locked;
+        this.manualSearchTarget.disabled = locked;
         this.reimportTarget.disabled = locked;
         this.viewFreeleechTarget.disabled = locked;
         this.masterNoteTarget.hidden = !locked;

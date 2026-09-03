@@ -51,6 +51,38 @@ final readonly class MamRelease
     }
 
     /**
+     * The same row with a different `dl` hash. Exists for exactly one caller:
+     * resolving a pasted /t/{id} link scrapes the hash off the detail page and
+     * then prefers the structured JSON search row for everything else, so the two
+     * halves have to be merged when that row came back without a hash of its own
+     * (MAM omits `dl` unless the request carried top-level `dlLink=1`).
+     */
+    public function withDlHash(?string $dlHash): self
+    {
+        return new self(
+            $this->mamTorrentId,
+            $this->title,
+            $this->authors,
+            $this->narrators,
+            $this->audiobook,
+            $this->catName,
+            $this->langCode,
+            $this->filetypes,
+            $this->sizeBytes,
+            $this->seeders,
+            $this->leechers,
+            $this->timesCompleted,
+            $this->vip,
+            $this->flVip,
+            $this->free,
+            $this->personalFreeleech,
+            $dlHash,
+            $this->thumbnailUrl,
+            $this->addedAt,
+        );
+    }
+
+    /**
      * The authenticated .torrent download URL for this row, built from the row's
      * `dl` hash. Null when MAM served no hash — the row cannot be grabbed.
      */

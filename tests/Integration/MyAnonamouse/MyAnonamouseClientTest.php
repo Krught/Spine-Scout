@@ -6,6 +6,7 @@ namespace App\Tests\Integration\MyAnonamouse;
 
 use App\Entity\Book;
 use App\Integration\MyAnonamouse\MamRelease;
+use App\Integration\MyAnonamouse\MamTorrentLookup;
 use App\Integration\MyAnonamouse\MyAnonamouseClient;
 use App\Integration\MyAnonamouse\MyAnonamouseConfig;
 use App\Search\Source\ReleaseCandidate;
@@ -843,6 +844,179 @@ final class MyAnonamouseClientTest extends TestCase
         self::assertSame([], $client->searchReleases($this->plan(), ProwlarrConfig::METHOD_CATEGORIES));
         self::assertNull($client->downloadTorrentFile('deadbeef'));
         self::assertNull($client->downloadTorrentFile('deadbeef', true));
+    }
+
+    // --- resolving one torrent by id (a pasted /t/{id} link) -----------------
+
+    /**
+     * The happy path: the detail page yields the download hash, and the follow-up
+     * JSON search — the only place structured freeleech flags and swarm counts come
+     * from — is matched back to the row by id, not by title.
+     */
+    public function testFetchTorrentByIdScrapesTheHashAndPrefersTheStructuredRow(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            $this->html($this->detailPage(182137, 'dl-hash-182137')),
+            $this->json((string) json_encode(['data' => [
+                // A near-miss row first: only the id may select the right one.
+                ['id' => 999, 'title' => 'Red Rising (Illustrated)', 'main_cat' => 14, 'dl' => 'wrong-hash'],
+                [
+                    'id' => 182137, 'title' => 'Pierce Brown - Red Rising [ENG / EPUB]', 'main_cat' => 14,
+                    'author_info' => '{"1":"Pierce Brown"}', 'size' => '12 MiB', 'seeders' => 42,
+                    'free' => 1, 'fl_vip' => 1, 'dl' => 'dl-hash-182137', 'filetypes' => 'epub',
+                ],
+            ], 'found' => 2], JSON_THROW_ON_ERROR)),
+        ], $requests);
+
+        $lookup = $this->clientFor($http)->fetchTorrentById(182137);
+
+        self::assertTrue($lookup->ok());
+        self::assertSame('https://www.myanonamouse.net/t/182137', $requests[0]['url']);
+        self::assertStringEndsWith('/tor/js/loadSearchJSONbasic.php', $requests[1]['url']);
+        self::assertStringContainsString(
+            'dlLink=1',
+            urldecode($requests[1]['body']),
+            'without the dlLink opt-in the enrichment row would come back with no dl hash at all',
+        );
+
+        $release = $lookup->release;
+        self::assertNotNull($release);
+        self::assertSame(182137, $release->mamTorrentId);
+        self::assertSame('dl-hash-182137', $release->dlHash);
+        self::assertSame(['Pierce Brown'], $release->authors, 'the structured row wins over the scrape');
+        self::assertSame(42, $release->seeders);
+        self::assertTrue($release->free);
+    }
+
+    /**
+     * The enrichment search is best effort: a title MAM cannot find still resolves
+     * off the scraped page alone, because the download hash is all a grab needs.
+     */
+    public function testFetchTorrentByIdFallsBackToTheScrapedPageWhenTheSearchFindsNothing(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            $this->html($this->detailPage(182137, 'dl-hash-182137')),
+            $this->json((string) json_encode(['data' => [], 'found' => 0], JSON_THROW_ON_ERROR)),
+        ], $requests);
+
+        $lookup = $this->clientFor($http)->fetchTorrentById(182137);
+
+        self::assertTrue($lookup->ok());
+        self::assertSame('dl-hash-182137', $lookup->release?->dlHash);
+        self::assertSame('Pierce Brown - Red Rising', $lookup->release?->title);
+    }
+
+    /** An id MAM does not serve is a clean "not found", never an exception. */
+    public function testFetchTorrentByIdReportsAnUnknownId(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([new MockResponse('Not found', ['http_code' => 404])], $requests);
+
+        $lookup = $this->clientFor($http)->fetchTorrentById(999999);
+
+        self::assertFalse($lookup->ok());
+        self::assertSame(MamTorrentLookup::NOT_FOUND, $lookup->status);
+        self::assertSame(404, $lookup->httpStatus());
+        self::assertCount(1, $requests, 'a missing torrent must not trigger the enrichment search');
+    }
+
+    /**
+     * A dead cookie makes MAM serve its login page with a 200. Reporting that as
+     * "no such torrent" would send the operator hunting for a torrent that exists.
+     */
+    public function testFetchTorrentByIdTellsADeadSessionApartFromAMissingTorrent(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            $this->html('<html><body><form action="/takelogin.php"><input type="password" name="password"></form></body></html>'),
+        ], $requests);
+
+        $lookup = $this->clientFor($http)->fetchTorrentById(182137);
+
+        self::assertFalse($lookup->ok());
+        self::assertSame(MamTorrentLookup::SESSION_EXPIRED, $lookup->status);
+        self::assertStringContainsString('session cookie', $lookup->message);
+    }
+
+    /** A visible torrent whose page carries no download anchor cannot be grabbed. */
+    public function testFetchTorrentByIdReportsAMissingDownloadHash(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            $this->html('<html><body><h1>Pierce Brown - Red Rising</h1><p>Size: 12 MiB</p></body></html>'),
+            $this->json((string) json_encode(['data' => [], 'found' => 0], JSON_THROW_ON_ERROR)),
+        ], $requests);
+
+        $lookup = $this->clientFor($http)->fetchTorrentById(182137);
+
+        self::assertFalse($lookup->ok());
+        self::assertSame(MamTorrentLookup::NO_DOWNLOAD_HASH, $lookup->status);
+        self::assertSame(409, $lookup->httpStatus());
+    }
+
+    /** A disabled integration never touches the network. */
+    public function testFetchTorrentByIdDoesNothingWhenNotConfigured(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([], $requests);
+        $client = new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config(enabled: false)), new NullLogger(), 0);
+
+        $lookup = $client->fetchTorrentById(182137);
+
+        self::assertSame(MamTorrentLookup::NOT_CONFIGURED, $lookup->status);
+        self::assertSame([], $requests);
+    }
+
+    /**
+     * The page's own "download with a wedge" variant must not smuggle `fl` into the
+     * hash: spending a wedge is decided by MyAnonamouseConfig::wedgeDecision() and
+     * re-validated at grab time, never by whichever anchor came first in the markup.
+     */
+    public function testFetchTorrentByIdStripsAFreeleechParameterFromTheScrapedHash(): void
+    {
+        $requests = [];
+        $http = $this->mockClient([
+            $this->html('<html><body><h1>Red Rising</h1>'
+                . '<a href="/tor/download.php/dl-hash?fl&tid=182137">Download</a></body></html>'),
+            $this->json((string) json_encode(['data' => [], 'found' => 0], JSON_THROW_ON_ERROR)),
+        ], $requests);
+
+        $lookup = $this->clientFor($http)->fetchTorrentById(182137);
+
+        self::assertSame('dl-hash?tid=182137', $lookup->release?->dlHash);
+    }
+
+    private function clientFor(MockHttpClient $http): MyAnonamouseClient
+    {
+        // pageDelay 0: the resolve paces its two requests like any other walk.
+        return new MyAnonamouseClient($http, new FakeMyAnonamouseSettings($this->config()), new NullLogger(), 0);
+    }
+
+    /**
+     * A stand-in for MAM's /t/{id} page. Deliberately minimal and generic — the
+     * real markup could not be checked against a live session (expired cookie), so
+     * this pins the contract the parser actually relies on: a download anchor
+     * matched by href, a heading, and label/value text.
+     */
+    private function detailPage(int $id, string $dlHash): string
+    {
+        return '<html><head><title>Pierce Brown - Red Rising | MyAnonamouse</title></head><body>'
+            . '<div id="torDetMainCon"><h1>Pierce Brown - Red Rising</h1></div>'
+            . '<table><tr><td>Category:</td><td>Ebooks - Sci-Fi</td></tr>'
+            . '<tr><td>File Type:</td><td>epub</td></tr>'
+            . '<tr><td>Language:</td><td>English</td></tr>'
+            . '<tr><td>Size:</td><td>12.0 MiB</td></tr>'
+            . '<tr><td>Seeders:</td><td>7</td></tr><tr><td>Leechers:</td><td>2</td></tr>'
+            . '<tr><td>Snatched:</td><td>31</td></tr></table>'
+            . '<a href="/tor/download.php/' . $dlHash . '">Download</a>'
+            . '<!-- id ' . $id . ' --></body></html>';
+    }
+
+    private function html(string $body): MockResponse
+    {
+        return new MockResponse($body, ['response_headers' => ['content-type' => 'text/html; charset=utf-8']]);
     }
 
     /**

@@ -8,6 +8,7 @@ use App\Search\Source\ReleaseCandidate;
 use App\Search\Source\ReleaseSearchPlan;
 use App\Search\Torrent\ProwlarrConfig;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -26,6 +27,8 @@ final class MyAnonamouseClient
     private const SEARCH_PATH = '/tor/js/loadSearchJSONbasic.php';
     private const USER_INFO_PATH = '/jsonLoad.php?snatch_summary';
     private const TORRENT_DOWNLOAD_PATH = '/tor/download.php/';
+    /** The human torrent detail page — the only id-addressable surface MAM offers (see fetchTorrentById()). */
+    private const TORRENT_PAGE_PATH = '/t/';
     /** The IP keepalive lives on the tracker subdomain, not the configured base URL. */
     private const DYNAMIC_SEEDBOX_URL = 'https://t.myanonamouse.net/json/dynamicSeedbox.php';
 
@@ -842,6 +845,392 @@ final class MyAnonamouseClient
         }
 
         return null;
+    }
+
+    /**
+     * Resolve ONE torrent id — the id an operator pasted into Manual Search as a
+     * `https://www.myanonamouse.net/t/182137` link — to a grabbable row.
+     *
+     * WHY THIS SCRAPES. A search row is only grabbable because it carries a `dl`
+     * hash, and MAM only ships that hash when the request body carries top-level
+     * `dlLink=1`. But `dl` is a per-row field, not an addressable one: the JSON
+     * search endpoint (/tor/js/loadSearchJSONbasic.php) takes free text, category,
+     * date and flag filters — there is no documented "give me torrent #182137"
+     * parameter, and inventing one would silently return the wrong torrent (MAM
+     * ignores unknown keys rather than erroring). The torrent detail page, on the
+     * other hand, definitionally carries this torrent's own download anchor. So:
+     *
+     *   1. GET /t/{id} with the session cookie and read the `/tor/download.php/…`
+     *      anchor plus whatever facts the page shows. This alone is enough to grab.
+     *   2. Then run the ordinary JSON search for the scraped title and, if a row
+     *      with this exact id comes back, prefer it wholesale — it is the same row
+     *      shape MamCandidateMapper already maps, so the freeleech flags, size,
+     *      swarm counts and author list are authoritative and structured instead of
+     *      regex-scraped. Step 1's hash is kept if that row somehow has none.
+     *
+     * Step 2 is an enrichment, never a requirement: a title MAM's own search cannot
+     * find (odd punctuation, a category the account cannot search) still resolves.
+     *
+     * UNVERIFIED — the operator's `mam_id` was expired while this was written, so
+     * the /t/{id} markup could not be confirmed live. Everything markup-specific is
+     * in ONE place, {@see parseTorrentPage()}: if MAM's detail page does not parse,
+     * that method (and only that method) is what needs adjusting. The download
+     * anchor is matched by href substring rather than by any class or id, which is
+     * the part least likely to have been guessed wrong.
+     */
+    public function fetchTorrentById(int $torrentId): MamTorrentLookup
+    {
+        if ($torrentId <= 0) {
+            return MamTorrentLookup::error(MamTorrentLookup::NOT_FOUND, 'That is not a MyAnonamouse torrent id.');
+        }
+        if (!$this->isConfigured()) {
+            return MamTorrentLookup::error(
+                MamTorrentLookup::NOT_CONFIGURED,
+                'MyAnonamouse is not configured — set the site URL and session cookie in Settings.',
+            );
+        }
+
+        $url = $this->baseUrl() . self::TORRENT_PAGE_PATH . $torrentId;
+        [$status, $body, $expired] = $this->fetchPage($url);
+
+        if ($expired) {
+            return MamTorrentLookup::error(
+                MamTorrentLookup::SESSION_EXPIRED,
+                'MyAnonamouse rejected the request — the session cookie is expired or IP-locked elsewhere. Re-check it in Settings → MyAnonamouse.',
+            );
+        }
+        if ($status === 404) {
+            return MamTorrentLookup::error(
+                MamTorrentLookup::NOT_FOUND,
+                sprintf('MyAnonamouse has no torrent %d — it may have been deleted, or your account cannot see it.', $torrentId),
+            );
+        }
+        if ($status !== 200 || $body === null) {
+            return MamTorrentLookup::error(
+                MamTorrentLookup::FAILED,
+                sprintf('MyAnonamouse did not answer for torrent %d (HTTP %d).', $torrentId, $status),
+            );
+        }
+
+        $scraped = self::parseTorrentPage($body, $torrentId);
+        if ($scraped === null) {
+            // A 200 that carries neither a title nor a download anchor is MAM's
+            // "no such torrent" page, not a transport problem.
+            return MamTorrentLookup::error(
+                MamTorrentLookup::NOT_FOUND,
+                sprintf('MyAnonamouse has no torrent %d — it may have been deleted, or your account cannot see it.', $torrentId),
+            );
+        }
+
+        $release = $this->searchRowForTorrentId($scraped->title, $torrentId) ?? $scraped;
+        if (self::blank($release->dlHash)) {
+            $release = $release->withDlHash($scraped->dlHash);
+        }
+        if (self::blank($release->dlHash)) {
+            return MamTorrentLookup::error(
+                MamTorrentLookup::NO_DOWNLOAD_HASH,
+                sprintf('MyAnonamouse torrent %d has no download link for this account.', $torrentId),
+            );
+        }
+
+        return MamTorrentLookup::found($release);
+    }
+
+    /**
+     * The ordinary JSON search, run purely to recover the structured row for one
+     * known torrent id. The title is the query because MAM has no id filter; the id
+     * is what actually selects the row, so a title that returns fifty near-matches
+     * is harmless — anything but an exact id match is discarded.
+     *
+     * Null on any failure at all: this is enrichment on top of a page we already
+     * parsed, and a failed enrichment must never fail the resolve.
+     */
+    private function searchRowForTorrentId(string $title, int $torrentId): ?MamRelease
+    {
+        $title = trim($title);
+        if ($title === '') {
+            return null;
+        }
+        // Pacing: this is the second request of the resolve, same as any page walk.
+        usleep($this->pageDelayMicroseconds);
+
+        $data = $this->requestJson('POST', $this->baseUrl() . self::SEARCH_PATH, [
+            'body' => self::lookupPayload($title),
+        ]);
+        $rows = is_array($data) ? ($data['data'] ?? null) : null;
+        if (!is_array($rows)) {
+            return null;
+        }
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $release = self::mapRelease($row);
+            if ($release->mamTorrentId === $torrentId) {
+                return $release;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The enrichment search's payload: queryPayload() minus the plan and minus any
+     * category filter (the torrent is already known, so narrowing could only hide
+     * it), with `dlLink=1` — without which MAM omits the `dl` hash that is the
+     * entire point of the call.
+     *
+     * @return array<string, mixed>
+     */
+    private static function lookupPayload(string $text): array
+    {
+        return [
+            'tor' => [
+                'text'        => mb_substr($text, 0, 200),
+                'srchIn'      => ['title' => 'true', 'author' => 'true', 'narrator' => 'true'],
+                'searchType'  => 'all',
+                'sortType'    => 'default',
+                'perpage'     => (string) self::PER_PAGE,
+                'startNumber' => '0',
+            ],
+            'thumbnails' => '1',
+            'dlLink'     => '1',
+        ];
+    }
+
+    /**
+     * One authenticated HTML page fetch: requestJson()'s cookie/proxy/rotation
+     * handling for a body that is meant to be a page. Returns
+     * [status, body|null, sessionExpired] — a 403, or MAM's login page served in
+     * place of the page we asked for, sets the expired flag so the caller can say
+     * so instead of "not found".
+     *
+     * @return array{0: int, 1: ?string, 2: bool}
+     */
+    private function fetchPage(string $url): array
+    {
+        $cookie = $this->settings->getMamSessionCookie();
+        if ($cookie === null || trim($cookie) === '') {
+            return [0, null, true];
+        }
+        $cookie = trim($cookie);
+
+        $config = $this->settings->getMyAnonamouseConfig();
+        $options = [
+            'headers' => [
+                'Cookie'     => 'mam_id=' . $cookie,
+                'User-Agent' => self::USER_AGENT,
+                'Accept'     => 'text/html,application/xhtml+xml',
+            ],
+            'timeout' => self::TIMEOUT_SECONDS,
+        ];
+        if ($config->proxyUrl !== null && trim($config->proxyUrl) !== '') {
+            $options['proxy'] = trim($config->proxyUrl);
+        }
+
+        try {
+            $response = $this->httpClient->request('GET', $url, $options);
+            $status   = $response->getStatusCode();
+            $body     = $response->getContent(false);
+            $this->syncRotatedCookie($response, $cookie);
+
+            if ($status === 403) {
+                $this->logger->warning('MyAnonamouse refused a page request', ['url' => $url, 'status' => $status]);
+
+                return [$status, null, true];
+            }
+            if ($status === 200 && self::looksLikeLoginPage($response, $body)) {
+                $this->logger->warning('MyAnonamouse served its login page — the session cookie is likely expired', ['url' => $url]);
+
+                return [$status, null, true];
+            }
+            if ($status !== 200) {
+                $this->logger->warning('MyAnonamouse page request failed', ['url' => $url, 'status' => $status]);
+
+                return [$status, null, false];
+            }
+
+            return [$status, $body, false];
+        } catch (HttpExceptionInterface $e) {
+            $this->logger->warning('MyAnonamouse page request failed', ['url' => $url, 'error' => $e->getMessage()]);
+
+            return [0, null, false];
+        }
+    }
+
+    /**
+     * MAM's login page where a torrent page was asked for. Three independent tells,
+     * because a dead session must never be reported as "no such torrent": the
+     * client followed a redirect to a login URL, the body carries a password field,
+     * or it posts to MAM's own login handler.
+     */
+    private static function looksLikeLoginPage(ResponseInterface $response, string $body): bool
+    {
+        $finalUrl = $response->getInfo('url');
+        if (is_string($finalUrl) && preg_match('#/(?:login|takelogin)\b#i', $finalUrl) === 1) {
+            return true;
+        }
+        if (str_contains(strtolower($body), 'takelogin.php')) {
+            return true;
+        }
+
+        return preg_match('/<input[^>]+type=["\']?password/i', $body) === 1;
+    }
+
+    /**
+     * THE one markup-dependent method in the MAM client, and the single place to
+     * adjust when the detail page can finally be checked against a live session
+     * (see fetchTorrentById()'s note).
+     *
+     * Only the download anchor is load-bearing — it is matched on the
+     * `/tor/download.php/` href substring, which is the same URL the grab path has
+     * always used, so it cannot drift independently of the rest of the client.
+     * Everything else is a best-effort read of the page's visible label/value text
+     * and is normally replaced wholesale by the structured JSON row; a scrape-only
+     * resolve therefore reports what it could not read as absent (no authors, no
+     * VIP flag) rather than guessing, because a fabricated freeleech flag decides
+     * whether a wedge gets spent.
+     *
+     * Null means "this is not a torrent page" — no title AND no download anchor.
+     */
+    private static function parseTorrentPage(string $html, int $torrentId): ?MamRelease
+    {
+        $crawler = new Crawler($html);
+
+        $dlHash = null;
+        $anchors = $crawler->filter('a[href*="' . self::TORRENT_DOWNLOAD_PATH . '"]');
+        if ($anchors->count() > 0) {
+            $href = (string) $anchors->first()->attr('href', '');
+            $at = strpos($href, self::TORRENT_DOWNLOAD_PATH);
+            if ($at !== false) {
+                $hash = trim(substr($href, $at + \strlen(self::TORRENT_DOWNLOAD_PATH)));
+                // The page may offer a "download using a wedge" variant of the same
+                // link. Spending a wedge is OUR decision (MyAnonamouseConfig::
+                // wedgeDecision(), re-validated server-side at grab time), so a bare
+                // `fl` picked up from the markup is stripped here — downloadTorrentFile()
+                // re-adds it when, and only when, that decision says so.
+                $hash = self::stripFreeleechParam($hash);
+                $dlHash = $hash !== '' ? $hash : null;
+            }
+        }
+
+        $title = self::pageTitle($crawler);
+        if ($title === '' && $dlHash === null) {
+            return null;
+        }
+
+        $text = self::visibleText($crawler, $html);
+        $catName = self::labelledValue($text, 'Category', '[A-Za-z0-9][A-Za-z0-9 &\'\\/\\-]{1,60}');
+        $filetypes = self::labelledValue($text, 'File\\s*Type', '[A-Za-z0-9][A-Za-z0-9 ,\\/+]{0,40}');
+        $language = self::labelledValue($text, 'Language', '[A-Za-z][A-Za-z \\-]{1,30}');
+        $size = self::labelledValue($text, 'Size', '[\\d.,]+\\s*[KMGTP]?i?B');
+
+        // Both the category name and MAM's bracketed title suffix say audiobook;
+        // either is enough, and neither being present means "ebook", which is the
+        // safe default (it only ever labels the row — Manual Search's own
+        // Ebook/Audiobook toggle, not this flag, decides where a grab is delivered).
+        $audiobook = ($catName !== null && preg_match('/audiobook/i', $catName) === 1)
+            || preg_match('/\\b(?:m4b|audiobook)\\b/i', $title) === 1;
+
+        // Personal freeleech is a strict sub-case of the word "freeleech" appearing
+        // on the page, so it is decided first and its phrase removed before the
+        // plain-freeleech test — otherwise every personal-FL torrent would also read
+        // as sitewide free. `fl_vip`/`vip` are deliberately NOT scraped: MAM stamps
+        // fl_vip on effectively the whole tracker, and the strongest-reason chip
+        // logic in MamCandidateMapper::flags() would then mislabel real freeleech.
+        $personal = preg_match('/personal\\s*freeleech/i', $text) === 1;
+        $withoutPersonal = (string) preg_replace('/personal\\s*freeleech/i', '', $text);
+        $free = preg_match('/\\bfree\\s*leech\\b/i', $withoutPersonal) === 1;
+
+        return new MamRelease(
+            mamTorrentId: $torrentId,
+            title: $title,
+            authors: [],
+            narrators: [],
+            audiobook: $audiobook,
+            catName: $catName,
+            langCode: $language,
+            filetypes: $filetypes,
+            sizeBytes: self::parseSize($size),
+            seeders: (int) (self::labelledValue($text, 'Seeders?', '\\d+') ?? 0),
+            leechers: (int) (self::labelledValue($text, 'Leechers?', '\\d+') ?? 0),
+            timesCompleted: (int) (self::labelledValue($text, '(?:Snatched|Times\\s*Completed|Completed)', '\\d+') ?? 0),
+            vip: false,
+            flVip: false,
+            free: $free,
+            personalFreeleech: $personal,
+            dlHash: $dlHash,
+            thumbnailUrl: null,
+            addedAt: null,
+        );
+    }
+
+    /**
+     * A `Label: value` / `Label [value]` pair out of the page's flattened text.
+     * $valuePattern is a raw sub-pattern, so each caller states exactly what shape
+     * its value has and a mis-scrape yields null rather than a neighbouring field.
+     */
+    private static function labelledValue(string $text, string $label, string $valuePattern): ?string
+    {
+        $pattern = '/' . $label . '\\s*:?\\s*\\[?\\s*(' . $valuePattern . ')/i';
+        if (preg_match($pattern, $text, $m) !== 1) {
+            return null;
+        }
+        $value = trim($m[1]);
+
+        return $value !== '' ? $value : null;
+    }
+
+    /** The torrent's name: MAM's detail heading, falling back to the document title. */
+    private static function pageTitle(Crawler $crawler): string
+    {
+        foreach (['#torDetMainCon h1', 'h1', 'title'] as $selector) {
+            $node = $crawler->filter($selector);
+            if ($node->count() === 0) {
+                continue;
+            }
+            // The <title> carries a " | MyAnonamouse" site suffix the heading does not.
+            $text = trim((string) preg_replace('/\\s*[|\\-–]\\s*MyAnonamouse.*$/i', '', $node->first()->text('')));
+            if ($text !== '') {
+                return $text;
+            }
+        }
+
+        return '';
+    }
+
+    /** The page as one whitespace-collapsed string, for the label/value reads. */
+    private static function visibleText(Crawler $crawler, string $html): string
+    {
+        try {
+            $body = $crawler->filter('body');
+            $text = $body->count() > 0 ? $body->first()->text('') : $crawler->text('');
+        } catch (\Throwable) {
+            $text = strip_tags($html);
+        }
+
+        return trim((string) preg_replace('/\\s+/u', ' ', $text));
+    }
+
+    /**
+     * Drop a bare `fl` parameter from a download hash while keeping the `?tid=`
+     * query MAM's own hashes routinely carry — re-promoting the first surviving
+     * parameter to the `?` position when `fl` was the one holding it.
+     */
+    private static function stripFreeleechParam(string $hash): string
+    {
+        $stripped = (string) preg_replace('/(?:\\?|&)fl(?:=[^&]*)?(?=$|&)/i', '', $hash);
+        if (!str_contains($stripped, '?') && ($at = strpos($stripped, '&')) !== false) {
+            $stripped = substr_replace($stripped, '?', $at, 1);
+        }
+
+        return trim($stripped);
+    }
+
+    private static function blank(?string $value): bool
+    {
+        return $value === null || trim($value) === '';
     }
 
     private function baseUrl(): string

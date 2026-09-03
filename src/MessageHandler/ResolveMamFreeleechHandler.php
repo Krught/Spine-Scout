@@ -28,6 +28,10 @@ final class ResolveMamFreeleechHandler
 
     public function __invoke(ResolveMamFreeleech $message): void
     {
+        // Skipped covers a disabled integration, an active Hardcover backoff, an empty backlog and
+        // the operator's "pause metadata matching" switch (enforced inside resolvePending, which
+        // logs it). Either way the run stops here without chaining, so a paused matcher costs zero
+        // Hardcover requests and leaves the pending rows for whenever it is switched back on.
         $summary = $this->refresher->resolvePending($message->maxResolutions ?? MamFreeleechRefresher::RESOLVE_CRON_BATCH);
         if ($summary['skipped']) {
             return;

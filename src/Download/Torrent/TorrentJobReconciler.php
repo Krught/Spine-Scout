@@ -55,7 +55,9 @@ final class TorrentJobReconciler
 
         foreach ($jobs as $job) {
             $hash = (string) $job->getClientRef();
-            $title = $job->getBookRequest()?->getBook()->getTitle() ?? $job->getSourceId();
+            // A Manual Search job has no book, but the operator named it — far more
+            // recognizable in the log than a raw guid/torrent id.
+            $title = $job->getBookRequest()?->getBook()->getTitle() ?? $job->getManualName() ?? $job->getSourceId();
             $status = $client->getStatus($hash);
 
             if ($status->state === DownloadStatus::STATE_MISSING || $status->state === DownloadStatus::STATE_ERROR) {

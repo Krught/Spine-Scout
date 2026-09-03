@@ -92,6 +92,26 @@
                 <button type="submit" class="btn btn-primary">Save Hardcover</button>
             </div>
         {{ form_end(hardcover_form) }}
+
+        {# Separate form on purpose: this paces the browse cache, not the Hardcover sync, and
+           must not be reset as a side effect of saving the token above. #}
+        <form method="post" action="{{ path('settings_metadata') }}" class="settings-form">
+            <input type="hidden" name="_token" value="{{ csrf_token('metadata_browse_refresh') }}">
+            <div class="field">
+                <label for="browse_refresh_minutes">Refresh browse data after (minutes)</label>
+                <input type="number" id="browse_refresh_minutes" name="browse_refresh_minutes"
+                       min="{{ browse_refresh_min }}" max="{{ browse_refresh_max }}" value="{{ browse_refresh_minutes }}">
+                <p class="panel-sub">
+                    Browse keeps showing its saved results forever — they are never thrown away. Once they are
+                    older than this, the next visit still renders instantly and a background refresh is queued,
+                    so the following visit sees the new rows. Independent of the sync interval above: you can pull
+                    trending once a day and still refresh browse every couple of hours.
+                </p>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save browse refresh</button>
+            </div>
+        </form>
     </section>
 
     {# ─── Open Library ────────────────────────────────────────────── #}

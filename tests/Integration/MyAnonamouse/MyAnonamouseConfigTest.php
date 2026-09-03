@@ -17,6 +17,36 @@ final class MyAnonamouseConfigTest extends TestCase
         self::assertNull($config->autoWedgeMinGb);
     }
 
+    public function testDefaultsLeaveBothScheduledJobsRunning(): void
+    {
+        $config = MyAnonamouseConfig::default();
+
+        self::assertFalse($config->pauseSweep);
+        self::assertFalse($config->pauseMatching);
+    }
+
+    public function testPauseSwitchesSurviveAToArrayFromArrayRoundTrip(): void
+    {
+        // Independently, so a blob that stores one of them cannot flip the other.
+        $sweepOnly = MyAnonamouseConfig::fromArray((new MyAnonamouseConfig(pauseSweep: true))->toArray());
+        self::assertTrue($sweepOnly->pauseSweep);
+        self::assertFalse($sweepOnly->pauseMatching);
+
+        $matchingOnly = MyAnonamouseConfig::fromArray((new MyAnonamouseConfig(pauseMatching: true))->toArray());
+        self::assertFalse($matchingOnly->pauseSweep);
+        self::assertTrue($matchingOnly->pauseMatching);
+    }
+
+    public function testABlobPredatingThePauseSwitchesReadsBackAsRunning(): void
+    {
+        // Every options['config'] blob written before this feature lacks both keys; missing must
+        // mean "running", never "paused", or an upgrade would silently stop both jobs.
+        $config = MyAnonamouseConfig::fromArray(['baseUrl' => 'https://www.myanonamouse.net'], true);
+
+        self::assertFalse($config->pauseSweep);
+        self::assertFalse($config->pauseMatching);
+    }
+
     public function testWedgeDecisionNeverSpendsOnAnAlreadyFreeRelease(): void
     {
         // alreadyFree beats both "always" and a met threshold.

@@ -17,6 +17,7 @@ use App\Entity\DownloadJob;
 use App\Message\TriggerGrimmorySidecarImport;
 use App\Repository\BlockedReleaseRepository;
 use App\Repository\IntegrationRepository;
+use App\Search\Manual\ReleaseNameParser;
 use App\Support\EbookFormat;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -78,7 +79,12 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
             return;
         }
 
-        if ($job->getBookRequest()?->isAudiobook()) {
+        // A Manual Search job has no request to ask, so the operator's own
+        // ebook/audiobook toggle (stamped on the job at grab time) decides. The
+        // request still wins whenever there is one — never let a stale manual flag
+        // shadow a real request.
+        $audiobook = $job->getBookRequest()?->isAudiobook() ?? ($job->isManualAudiobook() ?? false);
+        if ($audiobook) {
             $this->finalizeAudiobook($job, $sourcePath, $subject, $client);
         } else {
             $this->finalizeEbook($job, $sourcePath, $subject, $client);
@@ -195,8 +201,12 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
             return;
         }
 
-        $folderName = $this->filenames->render($config->filenameTemplate, $this->tokens($job), null);
         $book = $job->getBookRequest()?->getBook();
+        // A manual name is what the operator typed into (and approved in) the panel's
+        // editable field, so it is used verbatim rather than re-rendered through the
+        // template — re-rendering would silently undo their correction.
+        $folderName = $this->manualName($job)
+            ?? $this->filenames->render($config->filenameTemplate, $this->tokens($job), null);
 
         // Fill missing embedded tags and embed the requested cover on the STAGED
         // copy, before the album becomes visible in the library. Cover embedding is
@@ -312,7 +322,11 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
 
         $ext = strtolower((string) pathinfo($best, PATHINFO_EXTENSION));
         $job->setFormat($ext !== '' ? mb_substr($ext, 0, 16) : null);
-        $filename = $this->filenames->render($ddConfig->filenameTemplate, $this->tokens($job) + ['format' => $ext], $ext);
+        // As in finalizeAudiobook(): the operator already approved the exact name.
+        $manual = $this->manualName($job);
+        $filename = $manual !== null
+            ? ReleaseNameParser::sanitize($manual, $ext)
+            : $this->filenames->render($ddConfig->filenameTemplate, $this->tokens($job) + ['format' => $ext], $ext);
 
         // Copy out of the (seeding) torrent folder into a staging file, rewrite
         // embedded metadata, then move it into the library.
@@ -378,6 +392,21 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
         }
     }
 
+    /**
+     * The operator-approved Manual Search name for this job, sanitized, or null
+     * when this job belongs to a book request (whose book names the file) or
+     * carries no manual name at all.
+     */
+    private function manualName(DownloadJob $job): ?string
+    {
+        $name = $job->getManualName();
+        if ($name === null || trim($name) === '' || $job->getBookRequest() !== null) {
+            return null;
+        }
+
+        return ReleaseNameParser::sanitize($name);
+    }
+
     /** Copy a file into a temp staging path so the original keeps seeding. */
     private function stageCopy(string $source): ?string
     {
@@ -413,7 +442,9 @@ final class TorrentFinalizer implements TorrentFinalizerInterface
 
         return [
             'author' => $book?->getAuthor(),
-            'title'  => $book?->getTitle() ?? $job->getSourceId(),
+            // The sourceId is a guid/torrent id — a garbage filename, and only ever
+            // reached when there is neither a book nor an operator-supplied name.
+            'title'  => $book?->getTitle() ?? $job->getManualName() ?? $job->getSourceId(),
             'year'   => $year,
             'isbn'   => $book?->getIsbn() ?? ($book?->getIsbns()[0] ?? null),
         ];

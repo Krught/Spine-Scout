@@ -26,6 +26,20 @@
                 · <span class="status-error">Last error: {{ integration.lastError }}</span>
             {% endif %}
         </div>
+        {# The two scheduled halves park independently, so each gets its own pill: a paused
+           integration is still "Enabled", and only these say which half is actually running. #}
+        {% if config.pauseSweep %}
+            <div class="status-pill status-pill-off">
+                <span class="dot"></span>
+                Paused · freeleech sweep
+            </div>
+        {% endif %}
+        {% if config.pauseMatching %}
+            <div class="status-pill status-pill-off">
+                <span class="dot"></span>
+                Paused · metadata matching
+            </div>
+        {% endif %}
         {% if account.checkedAt is defined %}
             <div class="mam-account-stats">
                 <div class="mam-account-stat">
@@ -124,19 +138,55 @@
                  data-mam-refresh-url-value="{{ path('settings_myanonamouse_refresh') }}"
                  data-mam-refresh-token-value="{{ csrf_token('settings_myanonamouse_refresh') }}">
                 <button type="button" class="btn" data-mam-refresh-target="button" data-action="mam-refresh#run"
-                        {{ config.enabled ? '' : 'disabled' }}>Refresh now</button>
+                        {{ config.enabled and not config.pauseSweep ? '' : 'disabled' }}>Refresh now</button>
                 <p class="form-note" data-mam-refresh-target="result" hidden></p>
                 <p class="form-note">
-                    {% if config.enabled %}
+                    {% if not config.enabled %}
+                        Enable the integration and save before refreshing.
+                    {% elseif config.pauseSweep %}
+                        The freeleech sweep is paused — un-pause it and save before refreshing. A
+                        forced run is refused server-side too, so pausing really does mean no
+                        MyAnonamouse traffic at all.
+                    {% else %}
                         Runs one sweep immediately and restarts the interval clock, so the next
                         scheduled refresh is a full interval away. Only the first
                         {{ mam_refresh_resolution_budget }} unmatched items are looked up against
                         Hardcover here — the rest are picked up by the scheduled sweep.
-                    {% else %}
-                        Enable the integration and save before refreshing.
+                        {% if config.pauseMatching %}
+                            Metadata matching is paused, so this fetches without resolving anything.
+                        {% endif %}
                     {% endif %}
                 </p>
             </div>
+        </fieldset>
+
+        <fieldset class="settings-fieldset">
+            <legend>Scheduled jobs</legend>
+            <p class="form-note">
+                Two independent switches for the two background jobs. Pausing one never stops the
+                other, and neither touches the freeleech items already stored — nothing is deleted
+                or reset while a job is paused, so un-pausing simply resumes the normal cadence.
+                Use them when a provider is rate-limiting you.
+            </p>
+            <label class="field-checkbox">
+                <input type="checkbox" name="pauseSweep" value="1" {{ config.pauseSweep ? 'checked' : '' }}>
+                <span>Pause freeleech sweep (MyAnonamouse fetch)</span>
+            </label>
+            <p class="form-note">
+                Stops the 15-minute sweep dead: no MyAnonamouse requests, and the rows already on
+                the shelf are left untouched — rotated-out items are not purged while paused. The
+                <strong>Refresh now</strong> button above is disabled and a forced run is refused
+                server-side, so un-pause and save when you want a run.
+            </p>
+            <label class="field-checkbox">
+                <input type="checkbox" name="pauseMatching" value="1" {{ config.pauseMatching ? 'checked' : '' }}>
+                <span>Pause metadata matching (Hardcover resolve)</span>
+            </label>
+            <p class="form-note">
+                Stops the 5-minute reverse lookup: no Hardcover requests, from the scheduled job or
+                from a manual sweep. Unmatched items stay pending and are picked up where they left
+                off once this is off again. The sweep keeps fetching meanwhile.
+            </p>
         </fieldset>
 
         <fieldset class="settings-fieldset">

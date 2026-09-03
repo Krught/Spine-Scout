@@ -84,6 +84,18 @@ final class RefreshHardcoverTrendingHandler
                 $books = $fetch();
                 $bookIds = $this->upsertBooks(Book::SOURCE_HARDCOVER, $books, $syncStartedAt, $coverUrls);
                 $this->em->flush();
+                // replaceSection() deletes the section's rows before inserting, so an empty
+                // list wipes the shelf. Upstream can return 200-with-nothing (a rate-limited
+                // or degraded response, an empty result window, or every entry skipped for a
+                // missing slug) — that is never a reason to blank a shelf we already have.
+                // Keep the previous rows and let the next sync replace them.
+                if ($bookIds === []) {
+                    $this->logger->warning('Hardcover shelf refresh returned no usable books; keeping the previous shelf', [
+                        'shelf' => $section,
+                        'fetched' => count($books),
+                    ]);
+                    continue;
+                }
                 $this->sectionEntries->replaceSection(Book::SOURCE_HARDCOVER, $section, $bookIds, $syncStartedAt);
             } catch (HardcoverException $e) {
                 $errors[] = $section . ': ' . $e->getMessage();
@@ -94,16 +106,23 @@ final class RefreshHardcoverTrendingHandler
         try {
             /** @var list<PopularAuthor> $popular */
             $popular = $this->client->fetchPopularAuthors($integration, self::POPULAR_AUTHORS_LIMIT);
-            $this->upsertPopularAuthors($popular, $syncStartedAt, $coverUrls);
-            // Flush the fresh ranks FIRST so the stale-clear UPDATE can see the new
-            // popular_fetched_at values. Otherwise the raw SQL sees only the pre-sync
-            // timestamps and briefly nulls every rank — including the ones we just set —
-            // leaving the home page's Popular Authors row empty until the final flush below.
-            $this->em->flush();
-            $this->em->getConnection()->executeStatement(
-                'UPDATE authors SET popular_rank = NULL WHERE source = :s AND (popular_fetched_at IS NULL OR popular_fetched_at < :cut)',
-                ['s' => Author::SOURCE_HARDCOVER, 'cut' => $syncStartedAt->format('Y-m-d H:i:s')],
-            );
+            // An empty response must not reach the stale-clear UPDATE below: with no fresh
+            // popular_fetched_at stamps it would null *every* rank and leave the home page's
+            // Popular Authors row empty. Keep the ranks we already have instead.
+            if ($popular === []) {
+                $this->logger->warning('Hardcover popular authors refresh returned nothing; keeping the previous ranks');
+            } else {
+                $this->upsertPopularAuthors($popular, $syncStartedAt, $coverUrls);
+                // Flush the fresh ranks FIRST so the stale-clear UPDATE can see the new
+                // popular_fetched_at values. Otherwise the raw SQL sees only the pre-sync
+                // timestamps and briefly nulls every rank — including the ones we just set —
+                // leaving the home page's Popular Authors row empty until the final flush below.
+                $this->em->flush();
+                $this->em->getConnection()->executeStatement(
+                    'UPDATE authors SET popular_rank = NULL WHERE source = :s AND (popular_fetched_at IS NULL OR popular_fetched_at < :cut)',
+                    ['s' => Author::SOURCE_HARDCOVER, 'cut' => $syncStartedAt->format('Y-m-d H:i:s')],
+                );
+            }
         } catch (HardcoverException $e) {
             $errors[] = 'popular_authors: ' . $e->getMessage();
             $this->logger->warning('Hardcover popular authors refresh failed', ['error' => $e->getMessage()]);

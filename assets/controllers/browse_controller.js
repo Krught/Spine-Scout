@@ -458,8 +458,22 @@ export default class extends Controller {
             // doesn't advance the offset — left unchecked that recurses with no backoff and
             // hammers the upstream API. An empty, non-advancing page means stop.
             this.hasMore = !!data.has_more && !(batch.length === 0 && this.offset === prevOffset);
+            // `stale: true` means the server served rows it could not revalidate upstream
+            // (typically a Hardcover 429). Cards already on screen stay — appendItems() only
+            // ever appends, nothing here clears the grid — we just stop claiming the list is
+            // current. An errored pool also reports has_more:false, so we land in a terminal
+            // branch rather than tight-looping the rate-limited API.
+            const stale = !!data.stale;
+            // `refreshing` (additive) separates the two reasons rows can be stale: a background
+            // rebuild is already queued (normal, once the pool passes the admin threshold) vs
+            // the upstream refused us. Older servers omit it, which reads as the error copy.
+            const refreshing = !!data.refreshing;
             if (this.hasMore) {
                 this.statusTarget.textContent = '';
+            } else if (stale && this.totalRendered > 0) {
+                this.statusTarget.textContent = refreshing
+                    ? 'Showing saved results - refreshing in the background.'
+                    : 'Showing saved results - could not reach the metadata service.';
             } else if (this.totalRendered === 0) {
                 this.statusTarget.textContent = isSimilar
                     ? 'No similar books found.'

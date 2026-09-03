@@ -111,6 +111,22 @@ class DownloadJob
     #[ORM\Column(type: Types::TEXT, nullable: true)]
     private ?string $filePath = null;
 
+    /**
+     * Manual Search delivery: the exact name the operator approved in the panel's
+     * editable field, and which medium they picked. Both are null for every job
+     * that came from a BookRequest — the request/book is then the single source of
+     * truth for the name and the ebook/audiobook split, and these must not shadow
+     * it (TorrentFinalizer only consults them when there is no request).
+     *
+     * Nullable rather than defaulted so "the operator said nothing" stays
+     * distinguishable from "the operator said ebook" on every historical row.
+     */
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $manualName = null;
+
+    #[ORM\Column(nullable: true)]
+    private ?bool $manualAudiobook = null;
+
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
 
@@ -201,6 +217,16 @@ class DownloadJob
 
     public function getFilePath(): ?string { return $this->filePath; }
     public function setFilePath(?string $path): self { $this->filePath = $path; return $this; }
+
+    public function getManualName(): ?string { return $this->manualName; }
+    public function setManualName(?string $name): self
+    {
+        $this->manualName = $name === null ? null : mb_substr($name, 0, 255);
+        return $this;
+    }
+
+    public function isManualAudiobook(): ?bool { return $this->manualAudiobook; }
+    public function setManualAudiobook(?bool $audiobook): self { $this->manualAudiobook = $audiobook; return $this; }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
     public function getUpdatedAt(): \DateTimeImmutable { return $this->updatedAt; }

@@ -23,6 +23,8 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public const ROLE_MANAGE_SETTINGS    = 'ROLE_MANAGE_SETTINGS';
     public const ROLE_MANAGE_USERS       = 'ROLE_MANAGE_USERS';
     public const ROLE_INTERACTIVE_SEARCH = 'ROLE_INTERACTIVE_SEARCH';
+    /** Book-less free-text search across every enabled source (ManualSearchController). */
+    public const ROLE_MANUAL_SEARCH      = 'ROLE_MANUAL_SEARCH';
     public const ROLE_REIMPORT           = 'ROLE_REIMPORT';
     public const ROLE_VIEW_FREELEECH     = 'ROLE_VIEW_FREELEECH';
 
@@ -135,6 +137,11 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function canUseInteractiveSearch(): bool
     {
         return $this->isAdmin() || in_array(self::ROLE_INTERACTIVE_SEARCH, $this->roles, true);
+    }
+
+    public function canUseManualSearch(): bool
+    {
+        return $this->isAdmin() || in_array(self::ROLE_MANUAL_SEARCH, $this->roles, true);
     }
 
     public function canReimport(): bool

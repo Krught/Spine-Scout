@@ -25,6 +25,7 @@ framework:
             App\Message\SyncGrimmoryLibrary: async
             App\Message\RefreshHardcoverTrending: async
             App\Message\RefreshOpenLibraryTrending: async
+            App\Message\RefreshBrowsePool: async
             App\Message\PurgeExpiredSessions: async
             App\Message\DispatchReleaseSearch: async
             App\Message\ProcessDownloadJob: async

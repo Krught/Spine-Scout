@@ -32,6 +32,12 @@ class Integration
     public const AUTH_BASIC   = 'basic';
     public const AUTH_NONE    = 'none';
 
+    /** Browse pools revalidate in the background once they are this old (see getBrowseRefreshAfterMinutes()). */
+    public const DEFAULT_BROWSE_REFRESH_MINUTES = 120;
+    /** Below ~5 min every scroll would queue a rebuild; above a week the pool is effectively frozen. */
+    public const MIN_BROWSE_REFRESH_MINUTES = 5;
+    public const MAX_BROWSE_REFRESH_MINUTES = 10080;
+
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
@@ -212,6 +218,35 @@ class Integration
         $options['book_purge_threshold_days'] = max(1, min(365, $days));
         $this->options = $options;
         return $this;
+    }
+
+    /**
+     * How stale the /browse row pools may get before they are refreshed in the background,
+     * in minutes. Lives on the Hardcover row because that's the upstream being paced, but it is
+     * deliberately NOT `syncIntervalMinutes`: an operator may pull trending once a day and still
+     * want browse to revalidate on its own (default 2h) cadence.
+     */
+    public function getBrowseRefreshAfterMinutes(): int
+    {
+        $v = $this->options['browse_refresh_after_minutes'] ?? null;
+        $n = is_int($v) ? $v : (is_numeric($v) ? (int) $v : self::DEFAULT_BROWSE_REFRESH_MINUTES);
+
+        return self::clampBrowseRefreshMinutes($n);
+    }
+
+    public function setBrowseRefreshAfterMinutes(int $minutes): self
+    {
+        $options = $this->options;
+        $options['browse_refresh_after_minutes'] = self::clampBrowseRefreshMinutes($minutes);
+        $this->options = $options;
+
+        return $this;
+    }
+
+    /** The only place this setting's bounds are enforced; every entry point routes through it. */
+    public static function clampBrowseRefreshMinutes(int $minutes): int
+    {
+        return max(self::MIN_BROWSE_REFRESH_MINUTES, min(self::MAX_BROWSE_REFRESH_MINUTES, $minutes));
     }
 
     public function getHardcoverGenreCount(): ?int

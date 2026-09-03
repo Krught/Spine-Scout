@@ -239,6 +239,24 @@ final class SettingsController extends AbstractController
         $hardcoverTrendingCount = $this->countSection($em, Book::SOURCE_HARDCOVER, BookSectionEntry::SECTION_TRENDING);
         $openLibraryTrendingCount = $this->countSection($em, Book::SOURCE_OPENLIBRARY, BookSectionEntry::SECTION_TRENDING);
         $purgeThresholdDays = $hardcover->getBookPurgeThresholdDays();
+        $browseRefreshMinutes = $hardcover->getBrowseRefreshAfterMinutes();
+
+        // Browse pool freshness. Deliberately not part of HardcoverIntegrationType: it is not a
+        // Hardcover credential/cadence setting, it paces the *browse cache*, and pairing it with
+        // the token form would make saving the token silently reset it.
+        if ($request->isMethod('POST') && $request->request->has('browse_refresh_minutes')) {
+            if (!$this->isCsrfTokenValid('metadata_browse_refresh', (string) $request->request->get('_token'))) {
+                $this->addFlash('error', 'Invalid CSRF token.');
+            } else {
+                // Clamped by the entity (Integration::clampBrowseRefreshMinutes) — the one place
+                // the bounds live, so the form, the API and a hand-edited row all agree.
+                $hardcover->setBrowseRefreshAfterMinutes((int) $request->request->get('browse_refresh_minutes'));
+                $this->persistOrTouch($em, $hardcover);
+                $em->flush();
+                $this->addFlash('success', 'Browse refresh interval saved.');
+                return $this->redirectToRoute('settings_metadata');
+            }
+        }
 
         if ($request->isMethod('POST') && $request->request->has('purge_threshold')) {
             if (!$this->isCsrfTokenValid('metadata_purge_threshold', (string) $request->request->get('_token'))) {
@@ -247,6 +265,10 @@ final class SettingsController extends AbstractController
                 $days = (int) $request->request->get('purge_threshold');
                 $hardcover->setBookPurgeThresholdDays($days);
                 $openLibrary->setBookPurgeThresholdDays($days);
+                // getOrCreate() hands back an *unmanaged* row on a fresh install, so without
+                // this the flush silently saved nothing and the threshold reverted on reload.
+                $this->persistOrTouch($em, $hardcover);
+                $this->persistOrTouch($em, $openLibrary);
                 $em->flush();
                 $this->addFlash('success', 'Purge threshold saved.');
                 return $this->redirectToRoute('settings_metadata');
@@ -293,6 +315,9 @@ final class SettingsController extends AbstractController
             'hardcover_trending_count' => $hardcoverTrendingCount,
             'openlibrary_trending_count' => $openLibraryTrendingCount,
             'purge_threshold_days' => $purgeThresholdDays,
+            'browse_refresh_minutes' => $browseRefreshMinutes,
+            'browse_refresh_min' => Integration::MIN_BROWSE_REFRESH_MINUTES,
+            'browse_refresh_max' => Integration::MAX_BROWSE_REFRESH_MINUTES,
         ]);
     }
 
@@ -862,6 +887,10 @@ final class SettingsController extends AbstractController
                 self::blankToNull((string) $req->get('proxyUrl', '')),
                 $req->getBoolean('alwaysUseWedge'),
                 $autoWedgeMinGb === '' ? null : (float) $autoWedgeMinGb,
+                // The two scheduled halves park independently: pauseSweep stops the MAM fetch,
+                // pauseMatching stops the Hardcover reverse lookup. Neither implies the other.
+                $req->getBoolean('pauseSweep'),
+                $req->getBoolean('pauseMatching'),
             );
 
             $integration = $integrations->saveMyAnonamouseConfig($config, $config->enabled, $em);
@@ -908,9 +937,21 @@ final class SettingsController extends AbstractController
     public function refreshMyAnonamouse(
         Request $request,
         \App\Integration\MyAnonamouse\MamFreeleechRefresher $refresher,
+        IntegrationRepository $integrations,
     ): Response {
         if (!$this->isCsrfTokenValid('settings_myanonamouse_refresh', (string) $request->request->get('_token'))) {
             return $this->json(['ok' => false, 'message' => 'Invalid CSRF token.'], 403);
+        }
+
+        // The pause switches beat force inside the refresher, so a paused sweep would come back
+        // as a bare "skipped" the operator cannot explain. Read the config first and answer with
+        // the real reason instead — un-pausing is the deliberate way to get a run.
+        $config = $integrations->getMyAnonamouseConfig();
+        if ($config->pauseSweep) {
+            return $this->json([
+                'ok'      => false,
+                'message' => 'The freeleech sweep is paused — un-pause it and save before refreshing.',
+            ]);
         }
 
         set_time_limit(120);
@@ -932,6 +973,11 @@ final class SettingsController extends AbstractController
             $summary['unmatched'],
             $summary['pendingLeft'],
         );
+        // A sweep still runs with matching paused — it just fetches without resolving anything —
+        // so spell that out rather than leaving the operator to wonder about the zero.
+        if ($config->pauseMatching) {
+            $message .= ' Metadata matching is paused, so nothing was looked up against Hardcover.';
+        }
 
         return $this->json([
             'ok'      => $summary['error'] === null,

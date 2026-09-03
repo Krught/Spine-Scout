@@ -289,6 +289,10 @@ final class IntegrationRepository extends ServiceEntityRepository implements Sea
             $config->proxyUrl,
             $config->alwaysUseWedge,
             $config->autoWedgeMinGb,
+            // Positional rebuild: every new MyAnonamouseConfig field MUST be appended here too,
+            // or a diverging baseUrl column silently resets it to its default on every read.
+            $config->pauseSweep,
+            $config->pauseMatching,
         );
     }
 

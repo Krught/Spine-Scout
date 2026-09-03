@@ -104,6 +104,29 @@ final class ResolveMamFreeleechHandlerTest extends WebTestCase
         self::assertSame([], $this->handle($this->hardcoverBatched($catalog), maxResolutions: 10));
     }
 
+    public function testAPausedMatcherSpendsNoHardcoverRequestsAndLeavesTheBacklogPending(): void
+    {
+        $this->settings = new FakeMyAnonamouseSettings($this->config(pauseMatching: true));
+        $this->configureHardcover();
+        $catalog = $this->pendingBacklog(12);
+        $requests = 0;
+        $hardcover = new MockHttpClient(static function () use (&$requests): MockResponse {
+            ++$requests;
+
+            return new MockResponse('{"data":{}}', ['response_headers' => ['content-type' => 'application/json']]);
+        });
+
+        self::assertSame([], $this->handle($hardcover, maxResolutions: 10), 'a paused run cannot chain');
+        self::assertSame(0, $requests, 'a paused matcher issues zero HTTP to Hardcover');
+        self::assertSame(
+            12,
+            $this->items->countByResolution()[FreeleechItem::RESOLUTION_PENDING],
+            'the whole backlog is still there for the un-paused run to pick up',
+        );
+        // Nothing recorded a backoff either, so un-pausing resumes at the normal cadence.
+        self::assertSame([], $this->settings->accountState);
+    }
+
     public function testARateLimitedRunDoesNotChainEvenAfterProgress(): void
     {
         $this->configureHardcover();
@@ -264,7 +287,7 @@ final class ResolveMamFreeleechHandlerTest extends WebTestCase
         });
     }
 
-    private function config(bool $enabled = true): MyAnonamouseConfig
+    private function config(bool $enabled = true, bool $pauseMatching = false): MyAnonamouseConfig
     {
         return new MyAnonamouseConfig(
             enabled: $enabled,
@@ -278,6 +301,7 @@ final class ResolveMamFreeleechHandlerTest extends WebTestCase
             vipFetchLimit: MyAnonamouseConfig::DEFAULT_VIP_FETCH_LIMIT,
             dynamicSeedboxUpdate: false,
             proxyUrl: null,
+            pauseMatching: $pauseMatching,
         );
     }
 }

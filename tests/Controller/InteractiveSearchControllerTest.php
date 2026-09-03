@@ -15,6 +15,7 @@ use App\Entity\DownloadJob;
 use App\Entity\Integration;
 use App\Entity\User;
 use App\Controller\InteractiveSearchController;
+use App\Search\Interactive\InteractiveSearchRunner;
 use App\Integration\MyAnonamouse\MyAnonamouseClient;
 use App\Integration\MyAnonamouse\MyAnonamouseConfig;
 use App\Mirror\MirrorListNormalizer;
@@ -308,7 +309,10 @@ final class InteractiveSearchControllerTest extends WebTestCase
         );
         $scored = new ScoredRelease($candidate, 0.74, ['match' => 0.9, 'seeders' => 1.0, 'size' => 1.0, 'format' => 1.0], 0);
 
-        $method = new \ReflectionMethod(InteractiveSearchController::class, 'torrentRow');
+        // The row mapper moved into the shared runner (InteractiveSearchRunner) so
+        // Manual Search emits identical rows; still reflected because the torrent
+        // run path is 409-gated without a download stack.
+        $method = new \ReflectionMethod(InteractiveSearchRunner::class, 'torrentRow');
 
         return $method->invoke(null, $scored, 80, $planContentType);
     }
@@ -831,7 +835,19 @@ final class InteractiveSearchControllerTest extends WebTestCase
         $data = $this->json();
         self::assertSame('mam', $data['source']);
         self::assertNull($data['mirror']);
-        self::assertStringContainsString('/tor/browse.php', (string) $data['searchUrl']);
+        // The operator link points at MAM's new search UI, whose whole state lives
+        // in one JSON `s` parameter — decode it back rather than substring-matching.
+        $searchUrl = (string) $data['searchUrl'];
+        self::assertStringContainsString('/tor/search.php', $searchUrl);
+        parse_str((string) parse_url($searchUrl, PHP_URL_QUERY), $query);
+        self::assertIsString($query['s'] ?? null);
+        $state = json_decode((string) $query['s'], true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(20, $state['perPage']);
+        self::assertSame('Torrents', $state['searchType']);
+        // The query itself sits in the nested `com` block, next to the field
+        // selector — the shape a real search URL from the new UI produces.
+        self::assertStringContainsString('Red Rising', (string) $state['com']['text']);
+        self::assertSame(['title', 'author', 'narrator'], $state['com']['searchIn']);
 
         $rows = [];
         foreach ($data['results'] as $row) {

@@ -77,6 +77,60 @@ final class MamFreeleechRefresherTest extends WebTestCase
         self::assertSame([], $requests);
     }
 
+    public function testAPausedSweepSpendsNoMamRequestsAndLeavesEveryRowAlone(): void
+    {
+        // The row would rotate out of a live sweep — the delete guard must never get the chance.
+        $this->em->persist(new FreeleechItem(101, 'Red Rising [ENG / EPUB]', false));
+        $this->em->flush();
+        $this->settings = new FakeMyAnonamouseSettings($this->config(pauseSweep: true));
+
+        // force: true is the settings page's "Refresh now"; the pause beats it.
+        $summary = $this->refresher($this->mam([], $requests))->refresh(force: true);
+
+        self::assertTrue($summary['skipped']);
+        self::assertSame([], $requests, 'a paused sweep issues zero HTTP to MyAnonamouse');
+        self::assertSame([101], array_keys($this->items->findByMamTorrentIds([101])));
+        self::assertNull(
+            $this->integrations->findByKind(Integration::KIND_MYANONAMOUSE)?->getLastSyncAt(),
+            'a paused sweep must not restart the interval clock',
+        );
+    }
+
+    public function testAPausedSweepDoesNotRunTheHandlerEither(): void
+    {
+        $this->settings = new FakeMyAnonamouseSettings($this->config(pauseSweep: true));
+
+        (new \App\MessageHandler\RefreshMamFreeleechHandler(
+            $this->refresher($this->mam([], $requests)),
+            new NullLogger(),
+        ))(new \App\Message\RefreshMamFreeleech());
+
+        self::assertSame([], $requests, 'the scheduled sweep is paused end to end');
+    }
+
+    public function testPausedMatchingStillLetsTheSweepFetch(): void
+    {
+        // The two switches are independent: MAM is swept, Hardcover is left alone entirely.
+        $this->settings = new FakeMyAnonamouseSettings($this->config(pauseMatching: true, fetchVipFreeleech: false));
+        $this->configureHardcover();
+        $hardcoverRequests = [];
+
+        $summary = $this->refresher(
+            $this->mam([$this->searchResponse([$this->release(101, 'Red Rising [ENG / EPUB]')])]),
+            $this->hardcover('Red Rising', 'Pierce Brown', requests: $hardcoverRequests),
+        )->refresh(force: true);
+
+        self::assertFalse($summary['skipped']);
+        self::assertSame(1, $summary['fetched'], 'the MAM half keeps running while matching is paused');
+        self::assertSame(0, $summary['resolved']);
+        self::assertSame([], $hardcoverRequests, 'and not one Hardcover request is spent');
+        self::assertSame(
+            1,
+            $this->items->countByResolution()[FreeleechItem::RESOLUTION_PENDING],
+            'the new row simply waits for matching to be switched back on',
+        );
+    }
+
     public function testMissingCookieSkips(): void
     {
         $this->settings = new FakeMyAnonamouseSettings($this->config(), null);
@@ -1331,6 +1385,8 @@ final class MamFreeleechRefresherTest extends WebTestCase
         // them are about that phase, and the off-path has its own cases.
         bool $fetchVipFreeleech = true,
         int $vipFetchLimit = MyAnonamouseConfig::DEFAULT_VIP_FETCH_LIMIT,
+        bool $pauseSweep = false,
+        bool $pauseMatching = false,
     ): MyAnonamouseConfig {
         return new MyAnonamouseConfig(
             enabled: $enabled,
@@ -1344,6 +1400,8 @@ final class MamFreeleechRefresherTest extends WebTestCase
             vipFetchLimit: $vipFetchLimit,
             dynamicSeedboxUpdate: $dynamicSeedbox,
             proxyUrl: null,
+            pauseSweep: $pauseSweep,
+            pauseMatching: $pauseMatching,
         );
     }
 }
