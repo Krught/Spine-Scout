@@ -16,7 +16,7 @@ RUN composer install \
         --no-progress
 
 # ---- Stage 2: PHP-FPM runtime ---------------------------------------------
-FROM php:8.4-fpm-alpine AS app
+FROM php:8.4.27-fpm-alpine AS app
 
 # System packages required by Symfony + Doctrine (Postgres) + intl + GD.
 # Cloudflare bypass is delegated to the bundled FlareSolverr compose service, so
